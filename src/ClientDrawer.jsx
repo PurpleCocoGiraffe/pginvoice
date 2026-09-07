@@ -35,6 +35,7 @@ function TaskUsersCell({ userMinutesMap, taskUrl }) {
 // a deeper single-client view: reconciliation bar, consultant contributions, tasks.
 export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthProgress, hasUser, consultantFilter, accruedNames, usedAccruedNames, syncMeta, capPeople, onClose, onSetMatch, onCopy, onPdf, onPdfLineItem, onViewProfile, copied }) {
   const isPackage = isPackageLikeType(c.type);
+  const isQuoted = c.type === "quoted";
   const isQld = c.type === "queensland";
   const [drillConsultant, setDrillConsultant] = useState(null);
   const [tasksOpen, setTasksOpen] = useState(false);
@@ -210,6 +211,16 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                   title: `Accrued sheet says ${fmt(c.priorMismatch.sheetValue)} h${priorMonthPretty ? ` for ${priorMonthPretty}` : ""}, but recalculating from the current ClickUp data for that month gives ${fmt(c.priorMismatch.recomputed)} h. Likely a ClickUp entry was edited after the sheet was last updated.`,
                 } : null} />
             </div>
+          ) : isQuoted ? (
+            <div className="pg-metrics" style={{ marginTop: 14 }}>
+              <Metric label="Worked this month" value={`${fmt(c.workedFiltered)} h`} big />
+              <Metric label="Quoted amount" value={c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—"} />
+              <Metric
+                label="Total worked (all time)"
+                value={`${fmt(c.lifetimeWorked ?? 0)} h`}
+                sub="cumulative across every month, not just this one"
+              />
+            </div>
           ) : (
             <div className="pg-metrics pg-metrics--2" style={{ marginTop: 14 }}>
               <Metric label={consultantFilter ? `Worked (by ${consultantFilter})` : "Worked"} value={`${fmt(c.workedFiltered)} h`} big />
@@ -224,6 +235,16 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                 {fmt(Math.abs(c.remaining))} h
               </span>
               <span className="pg-drawer__overunder-tag">{c.remaining < 0 ? "over-served" : c.remaining > 0 ? "under-served" : ""}</span>
+            </div>
+          )}
+
+          {isQuoted && c.quotedRemaining != null && (
+            <div className="pg-drawer__overunder">
+              <span className="pg-drawer__overunder-label">{c.quotedRemaining < 0 ? "Over the quoted amount by" : "Remaining of quoted amount"}</span>
+              <span className="pg-drawer__overunder-value" style={{ color: c.quotedRemaining < 0 ? "var(--status-over)" : "var(--status-ok)" }}>
+                {fmt(Math.abs(c.quotedRemaining))} h
+              </span>
+              <span className="pg-drawer__overunder-tag">{c.quotedRemaining < 0 ? "over quote" : "within budget"}</span>
             </div>
           )}
         </div>

@@ -503,6 +503,21 @@ export default function PGReconciliation({ onNavigateClients }) {
   }, [clickup, billableOnly]);
   const priorMonthWorked = useMemo(() => computeMonthWorked(priorMonthKey), [computeMonthWorked, priorMonthKey]);
 
+  // Same shape as computeMonthWorked's per-folder map, but summed across every synced
+  // month rather than one -- a Quoted client's remaining balance is the quoted amount
+  // minus everything ever billed against it, not just this month's hours, since a quoted
+  // project runs until its budget is spent rather than resetting monthly like a package.
+  const lifetimeWorkedByFolder = useMemo(() => {
+    if (!clickup) return new Map();
+    const byFolder = new Map();
+    for (const r of clickup.rows) {
+      if (clickup.hasBillable && billableOnly && !r.billable) continue;
+      if (r.isInternal) continue;
+      byFolder.set(r.folder, (byFolder.get(r.folder) || 0) + r.minutes);
+    }
+    return byFolder;
+  }, [clickup, billableOnly]);
+
   // Full per-client reconciliation, parametrized by (monthKey, priorKey) instead of
   // reading dataMonthKey/priorMonthKey directly — so the KPI trend row below can call
   // this exact same logic for the previous month too, instead of a separate, drift-prone
@@ -826,6 +841,18 @@ export default function PGReconciliation({ onNavigateClients }) {
           clientObj.typeTransitionNote = seg.note;
         }
       }
+      // Quoted: a single fixed hour budget for the whole project, not a monthly one --
+      // "remaining" is the quoted amount minus every billable hour ever logged against it,
+      // across every synced month, not just the one currently being viewed. Reuses the
+      // same agreed_hours column package/strategy clients use (set via the Clients module),
+      // just interpreted as a lifetime total instead of a per-month figure for this type.
+      if (clientObj.type === "quoted") {
+        const quotedFolders = c.costCentre ? c.costCentre.accrualFolderNames : [c.name];
+        const lifetimeWorkedMin = quotedFolders.reduce((a, f) => a + (lifetimeWorkedByFolder.get(f) || 0), 0);
+        clientObj.lifetimeWorked = lifetimeWorkedMin / 60;
+        clientObj.quotedAmount = pgProfile?.agreedHours ?? null;
+        clientObj.quotedRemaining = clientObj.quotedAmount != null ? clientObj.quotedAmount - clientObj.lifetimeWorked : null;
+      }
       // This exact folder's own Capacity Planning row (not just a fuzzy group match) --
       // corrects classifyClient()'s "matched an accrued row with a package figure, so it
       // must be a package" assumption for a sub-project folder that only fuzzy-matched
@@ -866,7 +893,7 @@ export default function PGReconciliation({ onNavigateClients }) {
       out.push(clientObj);
     }
     return out;
-  }, [clickup, accrued, accruedNames, nameMap, billableOnly, computeMonthWorked, capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents]);
+  }, [clickup, accrued, accruedNames, nameMap, billableOnly, computeMonthWorked, lifetimeWorkedByFolder, capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents]);
 
   const clients = useMemo(() => buildClientsForMonth(dataMonthKey, priorMonthKey), [buildClientsForMonth, dataMonthKey, priorMonthKey]);
 
@@ -1416,7 +1443,7 @@ export default function PGReconciliation({ onNavigateClients }) {
                 <option value="strategy">Strategy Clients ({typeCounts.strategy})</option>
                 <option value="hourly">Clients on Hourly rate ({typeCounts.hourly})</option>
                 <option value="ad_hoc">Ad hoc Clients ({typeCounts.ad_hoc})</option>
-                <option value="quoted" disabled>Quoted Clients ({typeCounts.quoted}), coming later</option>
+                <option value="quoted">Quoted Clients ({typeCounts.quoted})</option>
                 <option value="project" disabled>Project Clients ({typeCounts.project}), coming later</option>
                 <option value="map">MAP Clients ({typeCounts.map})</option>
                 <option value="queensland">Queensland Clients (prv) ({typeCounts.queensland})</option>
@@ -1558,7 +1585,7 @@ export default function PGReconciliation({ onNavigateClients }) {
             })}
             {visible.length === 0 && (
               <div className="pg-empty">
-                {(clientTypeFilter === "quoted" || clientTypeFilter === "project")
+                {clientTypeFilter === "project"
                   ? `${TYPE_LABELS[clientTypeFilter]} aren't tracked here yet, this bucket is a placeholder.`
                   : consultantFilter
                     ? `${consultantFilter} didn't work on any ${TYPE_LABELS[clientTypeFilter].toLowerCase()} this month.`

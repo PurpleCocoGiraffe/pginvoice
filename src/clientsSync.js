@@ -174,8 +174,10 @@ export function faviconUrlFor(website) {
 // to this same table, so a client added in one place shows up in the other immediately.
 export async function createClient(client, { type, agreedHours, consultant, startDate }) {
   // Strategy is an ongoing engagement with agreed recurring hours -- the same fixed-hours
-  // accrual shape as Package -- so it carries an agreed-hours figure the same way.
-  const isPackageLike = type === "package" || type === "strategy";
+  // accrual shape as Package -- so it carries an agreed-hours figure the same way. Quoted
+  // reuses the same column too, just as a single lifetime budget instead of a monthly one
+  // (see the quotedAmount/quotedRemaining computation in App.jsx's buildClientsForMonth).
+  const isPackageLike = type === "package" || type === "strategy" || type === "quoted";
   const row = {
     client, type, agreed_hours: isPackageLike ? (agreedHours ?? null) : null,
     base_type: type, base_agreed_hours: isPackageLike ? (agreedHours ?? null) : null,

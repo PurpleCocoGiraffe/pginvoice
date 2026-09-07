@@ -101,8 +101,12 @@ const TYPE_LABEL = {
 const TYPES = Object.keys(TYPE_LABEL);
 // Strategy is an ongoing engagement with agreed recurring hours -- same fixed-hours
 // accrual shape as Package (see accrualsSync.js) -- so it needs the same "agreed hours"
-// field wherever the UI asks for a Package's monthly commitment.
-const isPackageLikeType = (t) => t === "package" || t === "strategy";
+// field wherever the UI asks for a Package's monthly commitment. Quoted reuses the exact
+// same input/column too (gating whether the hours field shows and gets required/saved),
+// just as a single lifetime budget rather than a recurring monthly one -- callers that
+// care about that distinction (the display label below) special-case "quoted" separately
+// before falling through to this.
+const isPackageLikeType = (t) => t === "package" || t === "strategy" || t === "quoted";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 // Client names carry their state as a "(Qld)"/"(WA)" suffix rather than a dedicated
@@ -116,12 +120,13 @@ function stateOf(clientName) {
 
 function arrangementLabel(c) {
   if (c.type === "hourly") return "Time-based billing";
-  if (c.type === "quoted") return "Project fee";
+  if (c.type === "quoted") return c.agreedHours != null ? `${c.agreedHours} hours quoted` : "Project fee";
   if (isPackageLikeType(c.type) && c.agreedHours != null) return `${c.agreedHours} hours / month`;
   return TYPE_LABEL[c.type] || c.type;
 }
 function arrangementTagLabel(c) {
   if (c.type === "hourly") return "Hourly";
+  if (c.type === "quoted") return "Quoted";
   if (isPackageLikeType(c.type)) return "Package";
   return TYPE_LABEL[c.type] || c.type;
 }
