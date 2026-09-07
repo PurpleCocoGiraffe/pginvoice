@@ -67,11 +67,13 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useDismissable(() => setMenuOpen(false));
   const isPackage = isPackageLikeType(c.type);
-  // Quoted has no monthly carry/pacing concept -- it's a single fixed hour budget
-  // spent down across however many months the project runs, so it reuses the same
-  // Package/Worked/Remaining columns but with lifetime-worked instead of this-month
-  // worked and no carry figure at all (see quotedAmount/lifetimeWorked/quotedRemaining
-  // computed in App.jsx's buildClientsForMonth).
+  // Quoted has no monthly carry/pacing concept -- it's a single fixed hour budget spent
+  // down across however many months the project runs. Reuses the Package/Worked/Remaining
+  // columns, but "Worked" always stays this month's hours (same meaning as every other
+  // type -- that's what the row is scanned for) with the lifetime total shown in the
+  // otherwise-unused Carry slot instead, rather than replacing the month figure with it
+  // (see quotedAmount/lifetimeWorked/quotedRemaining computed in App.jsx's
+  // buildClientsForMonth).
   const isQuoted = c.type === "quoted";
   const statusTone = isPackage
     ? (c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : "var(--status-ok)")
@@ -84,12 +86,18 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
       ? (c.quotedRemaining < 0 ? `${fmt(Math.abs(c.quotedRemaining))} h over the quoted amount` : `${fmt(c.quotedRemaining)} h left of the quoted amount`)
       : null;
 
-  const worked = isQuoted ? (c.lifetimeWorked ?? 0) : (c.workedFiltered ?? c.worked);
+  // worked is always THIS MONTH's hours, same meaning for every type -- quoted's lifetime
+  // total is a separate figure (lifetimeWorked) shown alongside it, never instead of it.
+  // Losing the this-month figure for quoted rows was a real regression: "did we do any
+  // work on this quoted project this month" is exactly what the row is scanned for.
+  const worked = c.workedFiltered ?? c.worked;
   const pkg = isQuoted ? (c.quotedAmount ?? 0) : (c.pkg ?? 0);
+  const lifetimeWorked = c.lifetimeWorked ?? 0;
   const carry = Math.abs(c.priorBalance ?? 0);
+  const barBase = isQuoted ? lifetimeWorked : worked;
   const effective = pkg - (c.priorBalance ?? 0);
-  const barMax = Math.max(worked, effective, pkg, 1) * 1.15;
-  const workedPct = Math.max(0, Math.min(100, (worked / barMax) * 100));
+  const barMax = Math.max(barBase, effective, pkg, 1) * 1.15;
+  const workedPct = Math.max(0, Math.min(100, (barBase / barMax) * 100));
   const pkgPct = (pkg / barMax) * 100;
 
   // priorBalance < 0: unused hours banked last month, brought into this one — a
@@ -187,15 +195,16 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
           )}
         </span>
         <span className="pg-tag pg-tag--pill" style={{ color: CLIENT_TYPE_TONES[c.type] }}>{TYPE_LABELS_SHORT[c.type]}</span>
-        <span className="pg-row__num" style={carryTone ? { color: carryTone } : undefined} title={isQuoted ? "Quoted is a single fixed budget, not a monthly one -- there's no carry-over." : carryTitle}>
-          <span className="pg-row__num-label">{carryLabel}</span>{isQuoted ? "—" : c.priorBalance != null ? `${fmt(carry)} h` : isPackage ? "—" : ""}
+        <span className="pg-row__num" style={carryTone ? { color: carryTone } : undefined} title={isQuoted ? "Total billed against this quoted project so far, across every month -- not just this one." : carryTitle}>
+          <span className="pg-row__num-label">{isQuoted ? "Total worked" : carryLabel}</span>
+          {isQuoted ? `${fmt(lifetimeWorked)} h` : c.priorBalance != null ? `${fmt(carry)} h` : isPackage ? "—" : ""}
         </span>
         <span className="pg-row__num">
           <span className="pg-row__num-label">{isQuoted ? "Quoted" : "Package"}</span>
           {isQuoted ? (c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—") : c.pkg != null ? `${fmt(c.pkg)} h` : isPackage ? "—" : ""}
         </span>
         <span className="pg-row__num">
-          <span className="pg-row__num-label">{isQuoted ? "Total worked" : "Worked"}</span>{fmt(worked)} h
+          <span className="pg-row__num-label">Worked</span>{fmt(worked)} h
         </span>
         <span className="pg-row__num" style={remainingTone ? { color: remainingTone } : undefined}>
           <span className="pg-row__num-label">Remaining</span>
@@ -260,7 +269,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
             ) : isQuoted && c.quotedAmount != null ? (
               <>
                 <div className="pg-row-inline__barhead">
-                  <span>worked {fmt(worked)} h (all time)</span>
+                  <span>worked {fmt(lifetimeWorked)} h all time ({fmt(worked)} h this month)</span>
                   {c.quotedRemaining != null && (
                     <span style={{ color: statusTone }}>{c.quotedRemaining < 0 ? "over" : "left"} {fmt(Math.abs(c.quotedRemaining))} h</span>
                   )}
@@ -271,7 +280,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
                 </div>
                 <div className="pg-bar-caption" style={{ marginTop: 6 }}>
                   <span>quoted {fmt(pkg)} h</span>
-                  <span>cumulative across every month, not just this one</span>
+                  <span>bar is cumulative across every month, not just this one</span>
                 </div>
               </>
             ) : (
