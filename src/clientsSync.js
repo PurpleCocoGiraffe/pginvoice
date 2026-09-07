@@ -111,6 +111,20 @@ export async function updateClickupFolder(client, folder, { previousFolder } = {
   logClientHistory(client, "folder_change", summary, { from: previousFolder || null, to: folder || null });
 }
 
+// A quoted client's amount is normally set once and only occasionally revised -- unlike
+// a Package's monthly hours, which genuinely change over time and are worth a dated,
+// historical "Transitioning" event, a quoted figure is just editable metadata (same
+// reasoning as updateClickupFolder above), so it's a direct update instead of forcing a
+// same-type-to-same-type transition event just to change one number. Only ever called for
+// a client whose type is already "quoted" -- Package/Strategy's agreed hours still go
+// through the event/transition flow so their history stays replayable month to month.
+export async function updateQuotedAmount(client, hours, { previousHours } = {}) {
+  const { error } = await supabase.from("pginvoice_clients").update({ agreed_hours: hours }).eq("client", client);
+  if (error) throw error;
+  notifyClientsChanged();
+  logClientHistory(client, "quoted_amount_change", `Set quoted amount to ${hours} hrs`, { from: previousHours ?? null, to: hours });
+}
+
 // Saves the client's website URL and, when `autoLogo` is true, derives a logo
 // from it via a public favicon service rather than scraping the site ourselves
 // (no server-side fetch/CORS/edge-function needed for a small icon). Passing an

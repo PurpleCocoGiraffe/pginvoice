@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Search, ArrowRight, Pencil, Check, AlertTriangle, Upload, X, ChevronRight, ChevronDown, ArrowLeft, Plus, Trash2 } from "lucide-react";
 import {
   fetchClients, fetchClientEvents, createClientEvent, deleteClientEvent, applyDueClientEvents,
-  updateClickupFolder, updateClientWebsite, updateClientLogo, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
+  updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
   fetchClientHistory, fetchClientNotes, addClientNote, updateClientNote, deleteClientNote,
 } from "./clientsSync.js";
 import { multiFolderMatchesFor, multiFolderAccrualMatchesFor, setDynamicCostCentres, isDynamicCostCentreClient, findPersonMatch } from "./nameMatch.js";
@@ -461,6 +461,67 @@ function EditPopover({ client, events, onSaved, onEventsChanged }) {
 // ClickUp folder, cost centres/sub-projects, notes, and a full change history.
 // Everything that used to live in the table's inline expand-on-row now lives here
 // instead, reached by clicking a row in the list.
+// Inline "Set/Edit quoted amount" popover next to the Service arrangement line -- a
+// direct, single-number edit (see updateQuotedAmount's reasoning in clientsSync.js) rather
+// than routing through the Transitioning flow, which is built for a client's type actually
+// changing over time, not for just updating one figure on a type that already fits. Owns
+// its own open/saving state (same self-contained pattern as EditPopover/ModifyPanel below)
+// so no new state needs threading through ClientProfileDrawer's already-long prop list.
+function QuotedAmountEditor({ client, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [hours, setHours] = useState(client.agreedHours ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  const ref = useDismissable(() => setOpen(false));
+  useEscape(() => setOpen(false));
+
+  async function save() {
+    const trimmed = String(hours).trim();
+    if (trimmed === "") { setErr("Enter the quoted amount (or cancel)."); return; }
+    const num = Number(trimmed);
+    if (!Number.isFinite(num) || num < 0) { setErr("Enter a valid number of hours."); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      await updateQuotedAmount(client.client, num, { previousHours: client.agreedHours });
+      setOpen(false);
+      onSaved();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        type="button" className="pg-icon-btn-sm" style={{ padding: 2 }}
+        title={client.agreedHours != null ? "Edit quoted amount" : "Set quoted amount"}
+        onClick={() => { setHours(client.agreedHours ?? ""); setErr(null); setOpen((o) => !o); }}
+      >
+        <Pencil size={12} />
+      </button>
+      {open && (
+        <div ref={ref} className="pg-menu" style={{ top: "calc(100% + 4px)", left: 0, right: "auto", width: 220, padding: 12, display: "flex", flexDirection: "column", gap: 10, zIndex: 20 }}
+          onClick={(e) => e.stopPropagation()}>
+          <label className="pg-field">
+            <span className="pg-field__label">Quoted amount (hours)</span>
+            <input
+              className="pg-input" type="number" min="0" step="any" autoFocus
+              value={hours} onChange={(e) => setHours(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+            />
+          </label>
+          {err && <p className="pg-footnote" style={{ color: "var(--status-over)" }}>{err}</p>}
+          <button className="pg-btn" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+          <button className="pg-btn-ghost" style={{ justifyContent: "center" }} onClick={() => setOpen(false)} disabled={saving}>Cancel</button>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function ClientProfileDrawer({
   client: c, events, folderSet, folderList, costCentreInfo, isDynamic, capPeople,
   editingFolder, draftFolder, savingFolder, folderMenuOpen, folderSuggestions,
@@ -522,6 +583,7 @@ function ClientProfileDrawer({
           <span className="pg-drawer__field-value" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
             <span className="pg-tag">{arrangementTagLabel(c)}</span>
             {arrangementLabel(c)}
+            {c.type === "quoted" && <QuotedAmountEditor client={c} onSaved={onSaved} />}
           </span>
         </div>
         <div className="pg-drawer__field" style={{ marginTop: 14 }}>
