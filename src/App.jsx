@@ -1302,10 +1302,14 @@ export default function PGReconciliation({ onNavigateClients }) {
       lines.push(c.remaining >= 0 ? `Remaining this month: ${fmt(c.remaining)} h` : `Over by ${fmt(Math.abs(c.remaining))} h`);
       if (c.status === "over") lines.push(`⚠ Over the +10% KPI (${fmt(c.kpiPct, 1)}% of package)`);
       if (c.status === "under") lines.push(`⚠ Under the −10% KPI (${fmt(c.kpiPct, 1)}% of package), accruing`);
-    } else if (c.type === "quoted" && c.quotedAmount != null) {
-      lines.push(`Quoted amount: ${fmt(c.quotedAmount)} h`);
-      lines.push(`Total time tracked (all time): ${fmt(c.lifetimeWorked ?? 0)} h`);
-      lines.push(c.quotedRemaining >= 0 ? `Remaining of quoted amount: ${fmt(c.quotedRemaining)} h` : `Over the quoted amount by: ${fmt(Math.abs(c.quotedRemaining))} h`);
+    } else if (c.type === "quoted") {
+      if (c.quotedAmount != null) {
+        lines.push(`Quoted amount: ${fmt(c.quotedAmount)} h`);
+        lines.push(`Total time tracked (all time): ${fmt(c.lifetimeWorked ?? 0)} h`);
+        lines.push(c.quotedRemaining >= 0 ? `Remaining of quoted amount: ${fmt(c.quotedRemaining)} h` : `Over the quoted amount by: ${fmt(Math.abs(c.quotedRemaining))} h`);
+      } else {
+        lines.push("No quoted amount on file for this client.");
+      }
     }
     return lines.join("\n");
   };

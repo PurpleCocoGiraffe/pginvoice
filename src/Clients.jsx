@@ -99,14 +99,15 @@ const TYPE_LABEL = {
   map: "MAP", project: "Project", strategy: "Strategy", ad_hoc: "Ad hoc",
 };
 const TYPES = Object.keys(TYPE_LABEL);
-// Strategy is an ongoing engagement with agreed recurring hours -- same fixed-hours
-// accrual shape as Package (see accrualsSync.js) -- so it needs the same "agreed hours"
-// field wherever the UI asks for a Package's monthly commitment. Quoted reuses the exact
-// same input/column too (gating whether the hours field shows and gets required/saved),
-// just as a single lifetime budget rather than a recurring monthly one -- callers that
-// care about that distinction (the display label below) special-case "quoted" separately
-// before falling through to this.
-const isPackageLikeType = (t) => t === "package" || t === "strategy" || t === "quoted";
+// Which client types carry a plain numeric "agreed hours" figure at all (gating whether
+// the hours input shows/is required in the transition popover, and the new_agreed_hours
+// field on a type-change event) -- Package and Strategy's is a recurring monthly figure,
+// Quoted's is a single lifetime budget, but all three need the same input/column. NOT the
+// same thing as format.js's isPackageLikeType (package/strategy only, deliberately
+// excluding quoted, used everywhere the reconciliation/accrual MATH actually applies) --
+// keep these two functions named differently on purpose so a future edit can't
+// accidentally import one where the other belongs and silently change quoted's behavior.
+const hasAgreedHoursField = (t) => t === "package" || t === "strategy" || t === "quoted";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 // Client names carry their state as a "(Qld)"/"(WA)" suffix rather than a dedicated
@@ -121,13 +122,13 @@ function stateOf(clientName) {
 function arrangementLabel(c) {
   if (c.type === "hourly") return "Time-based billing";
   if (c.type === "quoted") return c.agreedHours != null ? `${c.agreedHours} hours quoted` : "Project fee";
-  if (isPackageLikeType(c.type) && c.agreedHours != null) return `${c.agreedHours} hours / month`;
+  if (hasAgreedHoursField(c.type) && c.agreedHours != null) return `${c.agreedHours} hours / month`;
   return TYPE_LABEL[c.type] || c.type;
 }
 function arrangementTagLabel(c) {
   if (c.type === "hourly") return "Hourly";
   if (c.type === "quoted") return "Quoted";
-  if (isPackageLikeType(c.type)) return "Package";
+  if (hasAgreedHoursField(c.type)) return "Package";
   return TYPE_LABEL[c.type] || c.type;
 }
 
@@ -174,7 +175,7 @@ function Stat({ value, label }) {
 // closed months' history (see deleteClientEvent's guard in clientsSync.js).
 function EventRow({ event: e, onDelete, deleting }) {
   const desc = e.kind === "type"
-    ? `→ ${TYPE_LABEL[e.new_type] || e.new_type}${isPackageLikeType(e.new_type) && e.new_agreed_hours != null ? ` (${e.new_agreed_hours} hrs)` : ""}`
+    ? `→ ${TYPE_LABEL[e.new_type] || e.new_type}${hasAgreedHoursField(e.new_type) && e.new_agreed_hours != null ? ` (${e.new_agreed_hours} hrs)` : ""}`
     : e.kind === "consultant" ? `→ ${e.new_consultant || "unassigned"}`
     : e.kind === "offboarding" ? "Offboarded"
     : e.kind === "reactivation" ? "Reactivated"
@@ -232,7 +233,7 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
     // A blank hours field on a Package transition used to silently submit 0 -- a real,
     // billable "0 hrs/month" package, indistinguishable from someone just not having
     // filled the field in yet. Block the save and say so instead of guessing.
-    if (action === "transition" && isPackageLikeType(newType) && newHours.trim() === "") {
+    if (action === "transition" && hasAgreedHoursField(newType) && newHours.trim() === "") {
       setErr("Enter the agreed hours for this package (or choose a different type).");
       return;
     }
@@ -240,7 +241,7 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
     setErr(null);
     try {
       if (action === "transition") {
-        const fields = { new_type: newType, new_agreed_hours: isPackageLikeType(newType) ? Number(newHours) || 0 : null };
+        const fields = { new_type: newType, new_agreed_hours: hasAgreedHoursField(newType) ? Number(newHours) || 0 : null };
         await createClientEvent(client.client, "type", effectiveDate, fields);
       } else if (action === "consultant") {
         await createClientEvent(client.client, "consultant", effectiveDate, { new_consultant: newConsultant || null });
@@ -310,12 +311,12 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
       {action === "transition" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <span className="pg-tag">{TYPE_LABEL[client.type]}{isPackageLikeType(client.type) && client.agreedHours != null ? ` (${client.agreedHours} hrs)` : ""}</span>
+            <span className="pg-tag">{TYPE_LABEL[client.type]}{hasAgreedHoursField(client.type) && client.agreedHours != null ? ` (${client.agreedHours} hrs)` : ""}</span>
             <ArrowRight size={14} />
             <select className="pg-input" value={newType} onChange={(e) => setNewType(e.target.value)}>
               {TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
             </select>
-            {isPackageLikeType(newType) && (
+            {hasAgreedHoursField(newType) && (
               <input className="pg-input" style={{ width: 90 }} type="number" placeholder="hrs" value={newHours} onChange={(e) => setNewHours(e.target.value)} />
             )}
           </div>
