@@ -847,7 +847,17 @@ export default function PGReconciliation({ onNavigateClients }) {
       // same agreed_hours column package/strategy clients use (set via the Clients module),
       // just interpreted as a lifetime total instead of a per-month figure for this type.
       if (clientObj.type === "quoted") {
-        const quotedFolders = c.costCentre ? c.costCentre.accrualFolderNames : [c.name];
+        // c.name may already have been renamed to the accrued/registered client's display
+        // name by the cost-centre merge loop above (e.g. "ARAS", "PRG Strategic Advisors")
+        // even when there's no actual multi-folder rollup (c.costCentre null) -- the exact
+        // same class of bug fixed earlier this session for other figures (ARAS's real
+        // ClickUp folder is "Aged Rights Advocacy Services", nothing like its display name).
+        // lifetimeWorkedByFolder is keyed by REAL ClickUp folder names, so looking it up by
+        // c.name here would silently return 0 for any such client. pgProfile.clickupFolder
+        // (the Clients module's own registered mapping, already resolved above) is the
+        // right key; c.name is only a safe fallback for a client with no registration at
+        // all, where it's still the raw folder name because nothing renamed it.
+        const quotedFolders = c.costCentre ? c.costCentre.accrualFolderNames : [pgProfile?.clickupFolder || c.name];
         const lifetimeWorkedMin = quotedFolders.reduce((a, f) => a + (lifetimeWorkedByFolder.get(f) || 0), 0);
         clientObj.lifetimeWorked = lifetimeWorkedMin / 60;
         clientObj.quotedAmount = pgProfile?.agreedHours ?? null;
@@ -1191,6 +1201,12 @@ export default function PGReconciliation({ onNavigateClients }) {
       "New balance (signed)": c.newBalance != null ? Math.round(c.newBalance * 100) / 100 : "",
       "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
       "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", "no-pkg": "no package" }[c.status],
+      // Quoted has no monthly package/remaining figure (the columns above stay blank for
+      // it) -- its own fixed-budget-vs-lifetime-worked figures get their own columns
+      // instead of being squeezed into fields that mean something different for it.
+      "Quoted amount (h)": c.type === "quoted" ? (c.quotedAmount ?? "") : "",
+      "Total worked all time (h)": c.type === "quoted" ? Math.round((c.lifetimeWorked ?? 0) * 100) / 100 : "",
+      "Quoted remaining (h)": c.type === "quoted" && c.quotedRemaining != null ? Math.round(c.quotedRemaining * 100) / 100 : "",
       "Consultants": [...c.userMinutes.entries()].map(([u, m]) => `${u || "—"} (${fmt(m / 60)}h)`).join("; "),
     }));
   const buildPendingRows = () =>
@@ -1286,6 +1302,10 @@ export default function PGReconciliation({ onNavigateClients }) {
       lines.push(c.remaining >= 0 ? `Remaining this month: ${fmt(c.remaining)} h` : `Over by ${fmt(Math.abs(c.remaining))} h`);
       if (c.status === "over") lines.push(`⚠ Over the +10% KPI (${fmt(c.kpiPct, 1)}% of package)`);
       if (c.status === "under") lines.push(`⚠ Under the −10% KPI (${fmt(c.kpiPct, 1)}% of package), accruing`);
+    } else if (c.type === "quoted" && c.quotedAmount != null) {
+      lines.push(`Quoted amount: ${fmt(c.quotedAmount)} h`);
+      lines.push(`Total time tracked (all time): ${fmt(c.lifetimeWorked ?? 0)} h`);
+      lines.push(c.quotedRemaining >= 0 ? `Remaining of quoted amount: ${fmt(c.quotedRemaining)} h` : `Over the quoted amount by: ${fmt(Math.abs(c.quotedRemaining))} h`);
     }
     return lines.join("\n");
   };

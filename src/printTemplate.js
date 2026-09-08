@@ -8,6 +8,7 @@ const PRINT = { ink: "#000000", inkSoft: "#000000", brand: "#3F008E", line: "#E7
 export function buildPrintHtml(c, monthText, priorMonthText) {
   const type = c.type;
   const isPkg = isPackageLikeType(type) && !c.isLineItemExport;
+  const isQuoted = type === "quoted" && !c.isLineItemExport;
   const taskRows = [...c.tasksFiltered.entries()].sort((a, b) => b[1] - a[1])
     .map(([task, min]) => `<tr class="datarow"><td>${esc(task)}</td><td class="right">${fmt(min / 60)}</td></tr>`).join("");
   const workedRounded = Math.round(c.workedFiltered * 100) / 100;
@@ -26,10 +27,16 @@ export function buildPrintHtml(c, monthText, priorMonthText) {
     <tr class="total"><td>Total accrued time</td><td class="right">${fmt(totalAccrued)} h</td></tr>
     <tr class="datarow"><td class="label">New balance going forward</td><td class="right">${fmt(c.newBalance)} h ${c.newBalance > 0 ? "over" : c.newBalance < 0 ? "credit" : ""}</td></tr>
     <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${c.remaining >= 0 ? fmt(c.remaining) + " h left" : fmt(Math.abs(c.remaining)) + " h over"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.</td></tr>` : `
+    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.</td></tr>` : isQuoted ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">Quoted project summary</td></tr>
+    <tr class="datarow"><td class="label">Quoted amount</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
+    <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
+    <tr class="datarow"><td class="label">Total time tracked (all time)</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
+    <tr class="total"><td>${c.quotedRemaining != null && c.quotedRemaining < 0 ? "Over the quoted amount by" : "Remaining of quoted amount"}</td><td class="right">${c.quotedRemaining != null ? fmt(Math.abs(c.quotedRemaining)) + " h" : "—"}</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">Quoted is a single fixed budget for the whole project, not a monthly one -- the total/remaining figures are cumulative across every month worked, not just this one.</td></tr>` : `
     <tr class="noborder"><td colspan="2" class="section-heading">Summary</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only -- part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package/reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : "Queensland (previously) client: no accrued balance on record."}</td></tr>`;
+    <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only -- part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package/reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
