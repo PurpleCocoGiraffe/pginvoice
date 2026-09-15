@@ -1099,7 +1099,10 @@ button { font: inherit; }
 .pg-drawer__name { font-family: var(--font-display); font-weight: 400; font-size: 20px; color: var(--fg-primary); }
 .pg-drawer__sub { font-family: var(--font-body); font-size: 12px; color: var(--fg-tertiary); margin-top: 2px; }
 .pg-drawer__linked { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-family: var(--font-body); font-size: 11px; color: var(--fg-tertiary); }
-.pg-status-pill { flex: none; font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 5px 10px; border-radius: var(--app-radius-pill); }
+/* white-space: nowrap -- a longer label ("Over quoted amount") wrapped inside the pill's
+   fixed-width grid cell instead of staying on one line, breaking its pill shape. Labels
+   are kept short by convention, but this is the actual guard against it recurring. */
+.pg-status-pill { flex: none; font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 5px 10px; border-radius: var(--app-radius-pill); white-space: nowrap; }
 .pg-status-pill--dot { margin-left: 8px; }
 .pg-status-pill--computed { display: inline-flex; align-items: center; gap: 4px; cursor: help; }
 .pg-drawer__recon-row { display: flex; justify-content: space-between; padding: 6px 0; font-family: var(--font-body); font-size: 12px; color: var(--fg-secondary); border-bottom: 1px dashed var(--border-subtle); }

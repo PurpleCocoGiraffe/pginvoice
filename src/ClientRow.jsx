@@ -137,10 +137,13 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
           ? { label: "At risk", tone: "var(--status-warn)", bg: "var(--status-warn-soft)" }
           : { label: "On pace", tone: "var(--status-ok)", bg: "var(--status-ok-soft)" })
     : isQuoted
+      // Kept as short as the package-side labels ("Overserviced", "At risk", "On pace")
+      // -- "Over quoted amount" was long enough to wrap and spill out of the pill's
+      // fixed-width box instead of staying on one line.
       ? (c.quotedAmount == null
-        ? { label: "No quote on file", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
+        ? { label: "No quote set", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
         : c.quotedRemaining < 0
-          ? { label: "Over quoted amount", tone: "var(--status-over)", bg: "var(--status-over-soft)" }
+          ? { label: "Over quote", tone: "var(--status-over)", bg: "var(--status-over-soft)" }
           : { label: "Within budget", tone: "var(--status-ok)", bg: "var(--status-ok-soft)" })
       : null;
 

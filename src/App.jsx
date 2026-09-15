@@ -277,32 +277,29 @@ export default function PGReconciliation({ onNavigateClients }) {
         justHydratedClickupRef.current = savedClickup;
         // IndexedDB caches whatever's in `clickup` state regardless of its origin --
         // both a manual upload AND a successful live sync end up here (see the
-        // idbSet(CLICKUP_DB_KEY, clickup) effect below). Unconditionally marking
-        // restored data "manual" was wrong: once live sync had ever run once, every
-        // later reload restored that live data from cache and permanently mislabeled
-        // it manual, which also set manualOverrideRef -- silently blocking the live
-        // fetch below from ever taking over again, even on a working sync. Only
-        // treat it as manual if it's NOT the live-sync payload (fetchClickupFromSupabase
-        // always stamps its own fileName; a real manual upload never matches it).
-        if (savedClickup.fileName !== LIVE_SYNC_LABEL) {
-          manualOverrideRef.current = true;
-          setClickupSource("manual");
-        } else {
-          setClickupSource("supabase");
-        }
+        // idbSet(CLICKUP_DB_KEY, clickup) effect below). The cache is ONLY ever a fast
+        // first-paint placeholder while the real live fetch below resolves -- it must
+        // never set manualOverrideRef itself, or it silently breaks the exact promise
+        // the sync-status tooltip makes ("overrides live sync until the next reload"):
+        // setting the ref here from a merely-stale cached fileName meant that once ANY
+        // manual file was ever uploaded (even in some previous session ages ago) and
+        // its data got cached, EVERY future reload kept re-marking it manual and
+        // PERMANENTLY blocking live sync from ever running again for that browser --
+        // not "until the next reload" at all. manualOverrideRef is now only ever set by
+        // an actual upload action taken THIS session (see handleClickup below); the
+        // label shown here is purely informational about what's on screen right now
+        // while the live fetch is in flight.
+        setClickupSource(savedClickup.fileName !== LIVE_SYNC_LABEL ? "manual" : "supabase");
       }
       if (savedAccrued) {
         setAccrued(savedAccrued);
         justHydratedAccruedRef.current = savedAccrued;
-        // Same manual-vs-live distinction as the ClickUp cache above -- a cached
-        // live-sync payload restored from IndexedDB shouldn't be mislabeled manual,
-        // or it'd permanently block the live fetch below from ever refreshing it.
-        if (savedAccrued.fileName !== ACCRUALS_LIVE_SYNC_LABEL) {
-          accruedManualOverrideRef.current = true;
-          setAccruedSource("manual");
-        } else {
-          setAccruedSource("supabase");
-        }
+        // Same fix as the ClickUp cache above -- see that comment for the full story.
+        // This exact bug is what left Client Invoicing showing a client's package
+        // hours from a long-stale manually uploaded accrued sheet indefinitely, with
+        // every direct database correction (and every later live sync) silently
+        // ignored on every reload, no matter how many times the page was refreshed.
+        setAccruedSource(savedAccrued.fileName !== ACCRUALS_LIVE_SYNC_LABEL ? "manual" : "supabase");
       }
       try {
         const raw = window.localStorage.getItem(VIEWSTATE_KEY);
@@ -1381,6 +1378,14 @@ export default function PGReconciliation({ onNavigateClients }) {
             <SyncStatusIcon clickupSource={clickupSource} clickup={clickup} syncMeta={syncMeta} />
             <WarningIcon title="ClickUp export" warnings={clickup?.warnings} />
             <WarningIcon title="Accrued sheet" warnings={accrued?.warnings} />
+            {accruedSource === "manual" && (
+              <span
+                className="pg-status-pill" style={{ color: "var(--status-warn)", background: "var(--status-warn-soft)" }}
+                title={accrued?.fileName ? `Showing a manually uploaded accrued file (${accrued.fileName}) for this view -- upload the sheet again (or reload once live sync has run) to go back to live figures.` : "Showing a manually uploaded accrued file for this view."}
+              >
+                Accrued: manual file
+              </span>
+            )}
             {clickupSource !== "manual" && syncMeta?.last_synced_at && syncMeta?.last_sync_status !== "error" && (
               <span className="pg-status-pill" style={{ color: "var(--status-ok)", background: "var(--status-ok-soft)" }}>Synced</span>
             )}
