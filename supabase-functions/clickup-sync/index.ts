@@ -131,10 +131,25 @@ async function unionKnownUserIds(supabase: any, currentIds: string[]): Promise<s
   return union;
 }
 
+// The workspace this app's data actually lives in. A personal API token can belong to
+// more than one ClickUp team at once (e.g. an auto-created personal workspace alongside
+// the shared one) -- picking data.teams[0] unconditionally means whichever workspace
+// ClickUp happens to list first silently decides where every sync reads from. This broke
+// production for real: a token that was a member of both "Kelly Wagner's Purple Giraffe
+// Workspace" (empty) and "Purple Giraffe Workspace" (the real one) had ClickUp list the
+// empty personal one first, so every sync using that token quietly queried nothing --
+// no error, just "0 entries synced," for a token that in every other sense had full
+// access. Prefer the real workspace by name whenever a token is a member of more than
+// one, rather than trusting list order; explicitTeamId (CLICKUP_TEAM_ID secret) still
+// wins outright if it's ever set, and a token that's only a member of one team is
+// unaffected either way.
+const PREFERRED_WORKSPACE_NAME = "purple giraffe workspace";
 async function resolveTeamId(token: string, explicitTeamId: string | undefined) {
   if (explicitTeamId) return explicitTeamId;
   const data = await clickupFetch(`/team`, token);
-  const team = data.teams?.[0];
+  const teams = data.teams || [];
+  const preferred = teams.find((t: any) => String(t.name || "").trim().toLowerCase() === PREFERRED_WORKSPACE_NAME);
+  const team = preferred || teams[0];
   if (!team) throw new Error("No ClickUp team/workspace found for this token.");
   return String(team.id);
 }
