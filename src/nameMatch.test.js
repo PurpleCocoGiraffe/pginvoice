@@ -11,6 +11,8 @@ import {
   isInternalFolder,
   setDynamicCostCentres,
   isDynamicCostCentreClient,
+  splitTaskPrefixFolders,
+  taskPrefixRulesFor,
 } from "./nameMatch.js";
 
 describe("findMatch", () => {
@@ -262,5 +264,57 @@ describe("dynamic cost centres (Clients module editable rules)", () => {
     setDynamicCostCentres([{ client: "Test Client", folder: "Test Client Cost Centre A", kind: "cost_centre" }]);
     expect(isDynamicCostCentreClient("Some Other Client")).toBe(false);
     expect(multiFolderMatchesFor("Some Other Client", ["Test Client Cost Centre A"])).toBeNull();
+  });
+});
+
+describe("splitTaskPrefixFolders (task-name-prefix cost centres, e.g. Aus3C's new shared-folder tracking)", () => {
+  afterEach(() => setDynamicCostCentres([]));
+
+  it("rewrites a matching row's folder to the synthetic cost-centre identity", () => {
+    setDynamicCostCentres([{ client: "Aus 3C", folder: "Aus3C IRAP", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IRAP" }]);
+    const rows = [{ folder: "Aus3C", task: "IRAP - Social Media organic content creation Sep 2026" }];
+    expect(splitTaskPrefixFolders(rows)[0].folder).toBe("Aus3C IRAP");
+  });
+
+  it("leaves a task with an unrecognized prefix (e.g. Corporate) attributed to the real folder", () => {
+    setDynamicCostCentres([{ client: "Aus 3C", folder: "Aus3C IRAP", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IRAP" }]);
+    const rows = [{ folder: "Aus3C", task: "Corporate - Social Media Community Management - Mon, Wed & Fri" }];
+    expect(splitTaskPrefixFolders(rows)[0].folder).toBe("Aus3C");
+  });
+
+  it("requires a real separator after the prefix, not just a substring match", () => {
+    setDynamicCostCentres([{ client: "Aus 3C", folder: "Aus3C IR Masterclass", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IR Masterclass" }]);
+    // "IR" is a real registered prefix elsewhere in production data (IRAP) -- a task that
+    // merely starts with "IR" but isn't actually "IR Masterclass - ..." must not match it.
+    setDynamicCostCentres([
+      { client: "Aus 3C", folder: "Aus3C IRAP", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IR" },
+      { client: "Aus 3C", folder: "Aus3C IR Masterclass", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IR Masterclass" },
+    ]);
+    const rows = [{ folder: "Aus3C", task: "IR Masterclass - Social Media organic content creation" }];
+    // Longest-prefix-first must pick "IR Masterclass", not let the shorter "IR" shadow it.
+    expect(splitTaskPrefixFolders(rows)[0].folder).toBe("Aus3C IR Masterclass");
+  });
+
+  it("a folder with no task-prefix rules registered is passed through completely untouched", () => {
+    setDynamicCostCentres([{ client: "Aus 3C", folder: "Aus3C IRAP", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IRAP" }]);
+    const row = { folder: "Some Unrelated Client", task: "IRAP - not actually related" };
+    expect(splitTaskPrefixFolders([row])[0]).toBe(row); // same reference, not just equal
+  });
+
+  it("old-convention rows (a real separate folder already named like the synthetic identity) are unaffected", () => {
+    setDynamicCostCentres([{ client: "Aus 3C", folder: "Aus3C IRAP", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IRAP" }]);
+    // A historical row from before the tracking change already has its own real folder,
+    // untouched by any rule (no rule is registered for "Aus3C IRAP" as a *source* folder).
+    const rows = [{ folder: "Aus3C IRAP", task: "Whatever was logged under the old folder" }];
+    expect(splitTaskPrefixFolders(rows)[0].folder).toBe("Aus3C IRAP");
+  });
+
+  it("taskPrefixRulesFor lists only the calling client's own rules", () => {
+    setDynamicCostCentres([
+      { client: "Aus 3C", folder: "Aus3C IRAP", kind: "task_prefix", source_folder: "Aus3C", task_prefix: "IRAP" },
+      { client: "Some Other Client", folder: "Other Sub", kind: "task_prefix", source_folder: "Other", task_prefix: "Sub" },
+    ]);
+    const rules = taskPrefixRulesFor("Aus 3C");
+    expect(rules).toEqual([{ sourceFolder: "Aus3C", prefix: "IRAP", syntheticFolder: "Aus3C IRAP" }]);
   });
 });

@@ -192,18 +192,92 @@ const MULTI_FOLDER_CLIENTS = [
 // client yet" -- exactly what you want before the first fetch resolves.
 let DYNAMIC_COST_CENTRES = new Map(); // client name -> { folders: string[], excludeFromAccrual: string[] (real folder names, not prefixes) }
 
-// `rows`: [{ client, folder, kind }], kind is "cost_centre" or "sub_project" (see
-// pginvoice_cost_centres). Call with the full current table contents each time (not deltas)
-// -- this replaces the whole map, same pattern as the rest of the app's Supabase-backed state.
+// Some clients (Aus3C first) have moved from tracking each cost centre as its own
+// separate ClickUp folder to logging everything in ONE shared folder, with the cost
+// centre identified by a prefix on the TASK name instead ("IRAP - ...", "Cyber Meets -
+// ...", with "Corporate - ..." for the parent's own general work). None of the rest of
+// this app's matching/roll-up/accrual logic knows anything about task names -- it's all
+// keyed on `row.folder` -- so left alone, every one of these tasks would just collapse
+// into one lump under the shared folder's own name, silently losing the exact
+// cost-centre split the old separate-folder convention used to provide for free.
+// Rather than teach every downstream consumer (App.jsx, capacityData.js,
+// accrualsSync.js, TimesheetSummary, PerformanceScorecard, ...) a second way to think
+// about client identity, splitTaskPrefixFolders below rewrites a matching row's
+// `folder` to a SYNTHETIC name that reuses the exact same string the old separate-folder
+// convention already used (e.g. "Aus3C IRAP") -- every existing MULTI_FOLDER_CLIENTS
+// rule, cost-centre roll-up, and accrual computation then treats it exactly like a real
+// folder always did, with zero changes, and a month straddling the old-to-new transition
+// unifies under one identity instead of splitting into two look-alike rows.
+// Map<sourceFolder, Array<{ prefix, syntheticFolder }>> -- keyed by the real, shared
+// ClickUp folder the prefixed tasks actually live in, since that's the only thing a raw
+// row carries to look this up by. Built from pginvoice_cost_centres rows with
+// kind = 'task_prefix' (source_folder, task_prefix, folder = the synthetic name).
+let TASK_PREFIX_RULES = new Map();
+
+// `rows`: [{ client, folder, kind, source_folder, task_prefix }], kind is "cost_centre",
+// "sub_project", or "task_prefix" (see pginvoice_cost_centres). Call with the full current
+// table contents each time (not deltas) -- this replaces both maps, same pattern as the
+// rest of the app's Supabase-backed state.
 export function setDynamicCostCentres(rows) {
   const next = new Map();
+  const nextTaskPrefixRules = new Map();
   for (const r of rows || []) {
+    if (r.kind === "task_prefix") {
+      if (!nextTaskPrefixRules.has(r.source_folder)) nextTaskPrefixRules.set(r.source_folder, []);
+      nextTaskPrefixRules.get(r.source_folder).push({ prefix: r.task_prefix, syntheticFolder: r.folder, client: r.client });
+      continue;
+    }
     if (!next.has(r.client)) next.set(r.client, { folders: [], excludeFromAccrual: [] });
     const entry = next.get(r.client);
     entry.folders.push(r.folder);
     if (r.kind === "sub_project") entry.excludeFromAccrual.push(r.folder);
   }
+  // Longest prefix first within each source folder, so a prefix that's itself a substring
+  // of another registered prefix (e.g. "IR" vs "IR Masterclass") can never shadow the more
+  // specific one just because it happens to be checked first.
+  for (const rules of nextTaskPrefixRules.values()) rules.sort((a, b) => b.prefix.length - a.prefix.length);
   DYNAMIC_COST_CENTRES = next;
+  TASK_PREFIX_RULES = nextTaskPrefixRules;
+}
+
+// A task name "belongs" to a prefix when it starts with the prefix followed by a
+// separator ("-" or ":", any surrounding whitespace) -- not just any substring match,
+// so a prefix like "IR" can't accidentally claim an unrelated task that merely mentions
+// "IR" partway through its name.
+function taskPrefixMatch(taskName, prefix) {
+  const t = String(taskName || "").trimStart();
+  const p = String(prefix || "");
+  if (!p || t.length <= p.length) return false;
+  if (t.slice(0, p.length).toLowerCase() !== p.toLowerCase()) return false;
+  const rest = t.slice(p.length);
+  return /^\s*[-:]\s*\S/.test(rest);
+}
+
+// Rewrites `row.folder` to its synthetic cost-centre identity wherever a task_prefix rule
+// matches, for every row whose real folder has at least one such rule registered; every
+// other row (an unconfigured client, or a task with no recognized prefix -- "Corporate -
+// ..." included) passes through completely untouched, keeping the real folder as that
+// row's identity exactly as it always was. Returns a new array; individual row objects
+// are only shallow-copied when actually rewritten, not for every row, since this runs
+// over the full synced dataset (18k+ rows) on every load.
+export function splitTaskPrefixFolders(rows) {
+  if (!TASK_PREFIX_RULES.size) return rows;
+  return rows.map((r) => {
+    const rules = TASK_PREFIX_RULES.get(r.folder);
+    if (!rules) return r;
+    const hit = rules.find((rule) => taskPrefixMatch(r.task, rule.prefix));
+    return hit ? { ...r, folder: hit.syntheticFolder } : r;
+  });
+}
+
+// For the Clients module's cost-centre editor -- every task_prefix rule currently
+// registered for one client, in the shape the UI wants to list/remove them by.
+export function taskPrefixRulesFor(client) {
+  const out = [];
+  for (const [sourceFolder, rules] of TASK_PREFIX_RULES) {
+    for (const rule of rules) if (rule.client === client) out.push({ sourceFolder, prefix: rule.prefix, syntheticFolder: rule.syntheticFolder });
+  }
+  return out;
 }
 
 // Whether `name` currently has explicit rows in the user-editable table -- a client with

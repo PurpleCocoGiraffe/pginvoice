@@ -1,6 +1,6 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { isInternalFolder } from "./nameMatch.js";
+import { isInternalFolder, splitTaskPrefixFolders } from "./nameMatch.js";
 
 // ---------------------------- time text → minutes ----------------------------
 export function parseTimeTextToMinutes(raw) {
@@ -214,7 +214,10 @@ export function parseClickupCsv(file, onDone, onErr) {
         });
       }
       if (rows.length && zeroCount === rows.length) warnings.push("Every row parsed to zero hours; the ClickUp export format may have changed.");
-      onDone({ rows, hasBillable: !!hBillable, hasUser: !!hUser, hasStartDate: !!hStart, warnings });
+      // Same task-name-prefix rewrite the live Supabase sync applies (see nameMatch.js) --
+      // a manually uploaded export needs the exact same treatment for a client tracked
+      // that way, or it would show differently depending on which data source is loaded.
+      onDone({ rows: splitTaskPrefixFolders(rows), hasBillable: !!hBillable, hasUser: !!hUser, hasStartDate: !!hStart, warnings });
     },
     error: (e) => onErr("Couldn't read the CSV: " + e.message),
   });

@@ -4,6 +4,7 @@
 // Planning, Performance, Timesheet Summary) needs zero changes; they already
 // just read `clickup.rows` regardless of where it came from.
 import { supabase } from "./supabaseClient.js";
+import { splitTaskPrefixFolders } from "./nameMatch.js";
 
 const PAGE_SIZE = 1000; // PostgREST's default row cap per request — paginate past it
 
@@ -37,7 +38,7 @@ export async function fetchClickupFromSupabase(sinceMonthKey) {
   }
   if (!all.length) return null;
 
-  const rows = all.map((r) => ({
+  const rawRows = all.map((r) => ({
     folder: r.folder,
     task: r.task,
     // Real ClickUp task id, when this entry was linked to an actual task -- lets the UI
@@ -53,6 +54,11 @@ export async function fetchClickupFromSupabase(sinceMonthKey) {
     monthLabel: r.month_label || null,
     dateKey: r.date_key || null,
   }));
+  // Rewrites a task-prefix-split client's rows (see nameMatch.js) from their real,
+  // shared ClickUp folder to the synthetic per-cost-centre identity a task's name
+  // prefix maps to -- everything downstream keys off `row.folder`, so this is the one
+  // place that needs to know the difference between the two tracking conventions.
+  const rows = splitTaskPrefixFolders(rawRows);
   return {
     rows,
     hasBillable: rows.some((r) => r.hasBillableCol),

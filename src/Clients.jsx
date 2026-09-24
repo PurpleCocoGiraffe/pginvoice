@@ -3,9 +3,13 @@ import { Search, ArrowRight, Pencil, Check, AlertTriangle, Upload, X, ChevronRig
 import {
   fetchClients, fetchClientEvents, createClientEvent, deleteClientEvent, applyDueClientEvents,
   updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
+  addTaskPrefixCostCentre,
   fetchClientHistory, fetchClientNotes, addClientNote, updateClientNote, deleteClientNote,
 } from "./clientsSync.js";
-import { multiFolderMatchesFor, multiFolderAccrualMatchesFor, setDynamicCostCentres, isDynamicCostCentreClient, findPersonMatch } from "./nameMatch.js";
+import {
+  multiFolderMatchesFor, multiFolderAccrualMatchesFor, setDynamicCostCentres, isDynamicCostCentreClient, findPersonMatch,
+  taskPrefixRulesFor,
+} from "./nameMatch.js";
 import { idbGet, PG_DATA_EVENT } from "./idbStore.js";
 import { CLICKUP_DB_KEY, PG_CLIENTS_KEY, PG_COST_CENTRES_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
 import { SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
@@ -684,10 +688,116 @@ function ClientProfileDrawer({
         </>
       )}
 
+      <TaskPrefixSection client={c.client} folderList={folderList} onChanged={onSaved} />
+
       <NotesSection client={c.client} />
 
       <HistorySection client={c.client} />
     </aside>
+  );
+}
+
+// Task-prefix cost centres: for a client that logs several cost centres into ONE shared
+// ClickUp folder, identified by a prefix on the task name ("IRAP - ...", "Cyber Meets -
+// ...") instead of each having its own folder -- see splitTaskPrefixFolders in
+// nameMatch.js for how this actually gets applied to real rows. Kept as its own small,
+// self-contained section (own local state, own read from nameMatch.js's singleton)
+// rather than threaded through the parent's existing cost-centre/sub-project prop chain,
+// since it needs three fields per row (source folder, prefix, resulting identity) where
+// the existing flow only ever needed one.
+function TaskPrefixSection({ client, folderList, onChanged }) {
+  const [managing, setManaging] = useState(false);
+  const [sourceFolder, setSourceFolder] = useState("");
+  const [prefix, setPrefix] = useState("");
+  const [syntheticFolder, setSyntheticFolder] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const rules = taskPrefixRulesFor(client);
+
+  async function add() {
+    if (!sourceFolder.trim() || !prefix.trim() || !syntheticFolder.trim()) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await addTaskPrefixCostCentre(client, sourceFolder.trim(), prefix.trim(), syntheticFolder.trim());
+      await onChanged?.();
+      setPrefix(""); setSyntheticFolder("");
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(f) {
+    setSaving(true);
+    setErr(null);
+    try {
+      await removeCostCentreFolder(client, f, "task_prefix");
+      await onChanged?.();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!managing && rules.length === 0) {
+    return (
+      <div className="pg-drawer__section">
+        <div className="pg-drawer__section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Task-prefix cost centres</span>
+          <button className="pg-btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => setManaging(true)}>Add</button>
+        </div>
+        <p className="pg-footnote">For a client that tracks several cost centres inside one shared ClickUp folder, split by a prefix on the task name (e.g. "IRAP - ...") instead of a separate folder per cost centre.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pg-drawer__section">
+      <div className="pg-drawer__section-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>Task-prefix cost centres {rules.length > 0 ? `(${rules.length})` : ""}</span>
+        <button className="pg-btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => setManaging((m) => !m)}>{managing ? "Done" : "Edit"}</button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {rules.map((r) => (
+          <div key={r.syntheticFolder} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12 }}>
+            <span style={{ flex: 1 }}>
+              <span style={{ color: "var(--fg-tertiary)" }}>{r.sourceFolder}</span> · "{r.prefix} - …" → <span style={{ color: "var(--fg-primary)" }}>{r.syntheticFolder}</span>
+            </span>
+            {managing && (
+              <button type="button" className="pg-icon-btn-sm" style={{ padding: 0 }} title="Remove" disabled={saving} onClick={() => remove(r.syntheticFolder)}>
+                <X size={10} />
+              </button>
+            )}
+          </div>
+        ))}
+        {rules.length === 0 && <div style={{ fontSize: 12, color: "var(--fg-tertiary)" }}>None yet.</div>}
+        {managing && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+            <label className="pg-field">
+              <span className="pg-field__label">Real ClickUp folder (where these tasks are logged)</span>
+              <input className="pg-input" style={{ fontSize: 12 }} list="task-prefix-folders" value={sourceFolder} onChange={(e) => setSourceFolder(e.target.value)} placeholder="e.g. Aus3C" />
+              <datalist id="task-prefix-folders">{folderList.map((f) => <option key={f} value={f} />)}</datalist>
+            </label>
+            <label className="pg-field">
+              <span className="pg-field__label">Task-name prefix</span>
+              <input className="pg-input" style={{ fontSize: 12 }} value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="e.g. IRAP" />
+            </label>
+            <label className="pg-field">
+              <span className="pg-field__label">Cost-centre name this becomes</span>
+              <input className="pg-input" style={{ fontSize: 12 }} value={syntheticFolder} onChange={(e) => setSyntheticFolder(e.target.value)} placeholder="e.g. Aus3C IRAP" />
+            </label>
+            <button className="pg-btn-ghost" style={{ justifyContent: "center" }} disabled={saving || !sourceFolder.trim() || !prefix.trim() || !syntheticFolder.trim()} onClick={add}>
+              <Check size={12} /> Add
+            </button>
+          </div>
+        )}
+        {err && <p className="pg-footnote" style={{ color: "var(--status-over)" }}>{err}</p>}
+      </div>
+    </div>
   );
 }
 

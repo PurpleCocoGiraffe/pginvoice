@@ -62,6 +62,20 @@ export async function addCostCentreFolder(client, folder, kind) {
   logClientHistory(client, "cost_centre_add", `Added ${label}: ${folder}`, { folder, kind });
 }
 
+// A "task-prefix" cost centre: `sourceFolder` is the real, shared ClickUp folder these
+// tasks live in; `syntheticFolder` is the identity this cost centre gets everywhere else
+// in the app (see splitTaskPrefixFolders in nameMatch.js) -- conventionally the same name
+// the old separate-folder era used for it (e.g. "Aus3C IRAP"), so nothing downstream needs
+// to know this client changed how it tracks time in ClickUp.
+export async function addTaskPrefixCostCentre(client, sourceFolder, taskPrefix, syntheticFolder) {
+  const { error } = await supabase.from("pginvoice_cost_centres").insert({
+    client, folder: syntheticFolder, kind: "task_prefix", source_folder: sourceFolder, task_prefix: taskPrefix,
+  });
+  if (error) throw error;
+  notifyCostCentresChanged();
+  logClientHistory(client, "cost_centre_add", `Added task-prefix cost centre: "${taskPrefix}" in ${sourceFolder} → ${syntheticFolder}`, { sourceFolder, taskPrefix, syntheticFolder });
+}
+
 export async function removeCostCentreFolder(client, folder, kind) {
   const { error } = await supabase.from("pginvoice_cost_centres").delete().eq("client", client).eq("folder", folder);
   if (error) throw error;
