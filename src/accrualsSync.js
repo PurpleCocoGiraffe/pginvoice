@@ -7,8 +7,24 @@ import { fetchClickupFromSupabase } from "./clickupSync.js";
 import { findMatch, multiFolderAccrualMatchesFor, isInternalFolder } from "./nameMatch.js";
 import { fetchClients, fetchClientEvents, typeForMonth, statusForMonth } from "./clientsSync.js";
 import { monthLabel } from "./parsers.js";
+import { PG_DATA_EVENT } from "./idbStore.js";
+import { PG_ACCRUALS_KEY } from "./storageKeys.js";
 
 const PAGE_SIZE = 1000;
+
+// App.jsx (Client Invoicing) reads the accrual ledger exactly once, on mount, and --
+// unlike pgClients/capClients/cost-centres, which all listen for this same event to stay
+// live -- had NO way to ever find out this table changed underneath it. That's a real,
+// confirmed gap: Client Accruals successfully recomputing and writing corrected numbers
+// (e.g. after a ClickUp sync outage got fixed) never reached Client Invoicing for the rest
+// of that browser session, no matter how many times the page was revisited -- only a
+// genuine fresh page load raced Client Invoicing's own quick read against Client Accruals'
+// much slower full-history recompute, and Client Invoicing's read almost always won,
+// showing stale pre-recompute numbers indefinitely. Broadcasting this after every write
+// (single-cell edit or a full recompute) is what actually closes that gap.
+function notifyAccrualsChanged() {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(PG_DATA_EVENT, { detail: { key: PG_ACCRUALS_KEY } }));
+}
 
 // Stamped onto the reconciliation-shaped payload built from Supabase below -- a
 // manually uploaded workbook's fileName is always a real filename, which never
@@ -150,6 +166,7 @@ export async function upsertAccrualCell(client, monthKey, patch, extra = {}) {
   };
   const { error } = await supabase.from("pginvoice_accruals").upsert(row, { onConflict: "client,month_key" });
   if (error) throw error;
+  notifyAccrualsChanged();
 }
 
 export async function upsertAccrualRows(rows) {
@@ -331,7 +348,10 @@ export async function recomputeAccruals(clients) {
     }
   }
 
-  if (updatedRows.length) await upsertAccrualRows(updatedRows);
+  if (updatedRows.length) {
+    await upsertAccrualRows(updatedRows);
+    notifyAccrualsChanged();
+  }
   return { clients: nextClients, updatedCount: updatedRows.length };
 }
 

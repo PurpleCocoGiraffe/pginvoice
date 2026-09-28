@@ -24,7 +24,7 @@ import {
   parseAccruedWorkbook, findHeader, SKIP_FOLDERS, parseStartTextMonth, dateKeyStr, parseClickupCsv,
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
-import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY } from "./storageKeys.js";
+import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY } from "./storageKeys.js";
 // A <label> wrapping a <select> only focuses it on click in most browsers -- opening
 // the dropdown itself needs a second click directly on the control. Used as the
 // onClick for every pill-style filter label so one click anywhere on the pill
@@ -335,13 +335,28 @@ export default function PGReconciliation({ onNavigateClients }) {
       // has real accrual data immediately, no manual sheet upload required. A manual
       // upload later in this session still wins (accruedManualOverrideRef), same
       // pattern as ClickUp's live sync above.
-      fetchAccruedForReconciliation().then((live) => {
-        if (!live || accruedManualOverrideRef.current) return;
-        setAccrued(live);
-        setAccruedSource("supabase");
-      }).catch((e) => console.error("Supabase accruals fetch failed:", e));
+      refetchAccrued();
     })();
   }, []);
+
+  // Client Accruals stays mounted for the whole session too (see Shell.jsx), so a
+  // recompute it runs -- including one fixing figures that were wrong because of a
+  // sync outage -- never reached this module's own one-time mount fetch above, no
+  // matter how long the tab stayed open or how many times this page was revisited.
+  // pgClients/capClients already listen for this same event for exactly this reason;
+  // accrued data was the one live Supabase source in this file that didn't.
+  const refetchAccrued = useCallback(() => {
+    fetchAccruedForReconciliation().then((live) => {
+      if (!live || accruedManualOverrideRef.current) return;
+      setAccrued(live);
+      setAccruedSource("supabase");
+    }).catch((e) => console.error("Supabase accruals fetch failed:", e));
+  }, []);
+  useEffect(() => {
+    const onUpdate = (e) => { if (!e.detail || e.detail.key === PG_ACCRUALS_KEY) refetchAccrued(); };
+    window.addEventListener(PG_DATA_EVENT, onUpdate);
+    return () => window.removeEventListener(PG_DATA_EVENT, onUpdate);
+  }, [refetchAccrued]);
 
   const handleManualSync = async () => {
     setSyncing(true);
