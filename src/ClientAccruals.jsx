@@ -55,7 +55,16 @@ export default function ClientAccruals() {
         try {
           const { clients: next } = await recomputeAccruals(data);
           setClients(next);
-        } catch (e) { /* best-effort — leave whatever loaded from Supabase */ }
+        } catch (e) {
+          // Previously a silent no-op -- a real failure here (a timeout on the
+          // full-ClickUp-history fetch this depends on, an unexpected RLS case, anything)
+          // vanished with zero trace, leaving the page looking merely "not yet updated"
+          // instead of visibly broken. Surfacing it is what made a real, multi-week-old
+          // stuck-accrual incident (Aus3C and 44 other clients, frozen since a ClickUp
+          // sync outage) impossible to diagnose from the UI at all.
+          console.error("Auto-recompute failed:", e);
+          setLoadError("Auto-recompute on load failed: " + (e.message || e) + " -- showing last-saved figures. Try \"Recompute\" below.");
+        }
       }
     } catch (e) {
       setLoadError(e.message || String(e));
