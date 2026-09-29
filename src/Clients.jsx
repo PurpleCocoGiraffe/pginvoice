@@ -1150,7 +1150,13 @@ export default function Clients() {
       const rows = await fetchCostCentres();
       setDynamicCostCentres(rows);
       setCostCentreVersion((v) => v + 1);
-    } catch (e) {}
+    } catch (e) {
+      // Previously silent -- a failure here left every dynamic/task-prefix cost-centre
+      // rule stale with zero indication, the same failure class that made a real
+      // multi-week accrual-staleness incident invisible from the UI (see ClientAccruals.jsx).
+      console.error("Couldn't load cost centres:", e);
+      setLoadError("Couldn't load cost-centre rules: " + (e.message || e));
+    }
   }
 
   useEffect(() => {

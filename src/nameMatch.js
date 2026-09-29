@@ -291,43 +291,79 @@ export function isDynamicCostCentreClient(name) {
   return DYNAMIC_COST_CENTRES.has(name);
 }
 
+// Every synthetic folder identity a client's OWN task_prefix rules can produce, regardless
+// of whether any row currently in `allFolders` actually uses it this month -- callers filter
+// against their own real folder list. Unioned additively into both functions below, on top
+// of whichever other path (dynamic cost_centre/sub_project rows, or a hardcoded
+// MULTI_FOLDER_CLIENTS rule) already resolves for this client -- NOT as an alternative
+// branch. A client can have task_prefix rows with no dynamic cost_centre/sub_project rows
+// and no hardcoded rule at all (any future client adopting the shared-folder convention from
+// scratch, unlike Aus3C which happens to also have a legacy hardcoded rule) -- without this
+// union, such a client's synthetic sub-folders would have nothing to roll them up under
+// their parent at all, showing as orphaned top-level cards despite being fully configured.
+function taskPrefixSyntheticFoldersFor(name) {
+  const out = [];
+  for (const rules of TASK_PREFIX_RULES.values()) {
+    for (const rule of rules) if (rule.client === name) out.push(rule.syntheticFolder);
+  }
+  return out;
+}
+
 // Returns every real ClickUp folder belonging to a multi-folder client, or null if `name`
 // isn't one of them (meaning the caller should fall back to plain findMatch instead). Checks
-// the user-editable dynamic table first (exact name match) -- a client with explicit rows
-// there is fully managed through the Clients module UI, and the hardcoded MULTI_FOLDER_CLIENTS
-// prefix rule below (if any) is ignored for it entirely, rather than the two silently
-// combining into a confusing double-match.
+// the user-editable dynamic table first (exact name match) -- a client with explicit
+// cost_centre/sub_project rows there is fully managed through the Clients module UI, and the
+// hardcoded MULTI_FOLDER_CLIENTS prefix rule below (if any) is ignored for it entirely,
+// rather than the two silently combining into a confusing double-match. Task-prefix synthetic
+// folders (see taskPrefixSyntheticFoldersFor) are unioned in on top of whichever of those two
+// resolves, since they're additive by nature rather than an alternative identity source.
 export function multiFolderMatchesFor(name, allFolders) {
   const dynamic = DYNAMIC_COST_CENTRES.get(name);
-  if (dynamic) return allFolders.filter((f) => dynamic.folders.includes(f));
-  const norm = normalizeName(name);
-  const rule = MULTI_FOLDER_CLIENTS.find((r) => norm.includes(r.key));
-  if (!rule) return null;
-  return allFolders.filter((f) => {
-    const nf = normalizeName(f);
-    if (rule.exact && rule.exact.includes(nf)) return true;
-    return rule.prefixes.some((p) => nf.startsWith(p));
-  });
+  const taskPrefixFolders = taskPrefixSyntheticFoldersFor(name);
+  let base;
+  if (dynamic) {
+    base = allFolders.filter((f) => dynamic.folders.includes(f));
+  } else {
+    const norm = normalizeName(name);
+    const rule = MULTI_FOLDER_CLIENTS.find((r) => norm.includes(r.key));
+    base = rule ? allFolders.filter((f) => {
+      const nf = normalizeName(f);
+      if (rule.exact && rule.exact.includes(nf)) return true;
+      return rule.prefixes.some((p) => nf.startsWith(p));
+    }) : null;
+  }
+  const extra = allFolders.filter((f) => taskPrefixFolders.includes(f) && !(base && base.includes(f)));
+  if (!extra.length) return base;
+  return [...(base || []), ...extra];
 }
 
 // Same as multiFolderMatchesFor, but drops any folder marked "sub_project" in the dynamic
 // table (or listed under a hardcoded rule's excludeFromAccrual prefixes) — use this
 // specifically for accrual/package-hours math (recomputeAccruals), not for total-worked-hours
 // views, which should keep using multiFolderMatchesFor so those sub-project folders don't
-// just vanish from reporting.
+// just vanish from reporting. Task-prefix synthetic folders always count toward accrual (this
+// schema has no way to mark one "billed separately" the way a sub_project row can yet), so
+// they're unioned in unconditionally here too.
 export function multiFolderAccrualMatchesFor(name, allFolders) {
   const dynamic = DYNAMIC_COST_CENTRES.get(name);
-  if (dynamic) return allFolders.filter((f) => dynamic.folders.includes(f) && !dynamic.excludeFromAccrual.includes(f));
-  const norm = normalizeName(name);
-  const rule = MULTI_FOLDER_CLIENTS.find((r) => norm.includes(r.key));
-  if (!rule) return null;
-  return allFolders.filter((f) => {
-    const nf = normalizeName(f);
-    const matched = (rule.exact && rule.exact.includes(nf)) || rule.prefixes.some((p) => nf.startsWith(p));
-    if (!matched) return false;
-    if (rule.excludeFromAccrual && rule.excludeFromAccrual.some((p) => nf.startsWith(p))) return false;
-    return true;
-  });
+  const taskPrefixFolders = taskPrefixSyntheticFoldersFor(name);
+  let base;
+  if (dynamic) {
+    base = allFolders.filter((f) => dynamic.folders.includes(f) && !dynamic.excludeFromAccrual.includes(f));
+  } else {
+    const norm = normalizeName(name);
+    const rule = MULTI_FOLDER_CLIENTS.find((r) => norm.includes(r.key));
+    base = rule ? allFolders.filter((f) => {
+      const nf = normalizeName(f);
+      const matched = (rule.exact && rule.exact.includes(nf)) || rule.prefixes.some((p) => nf.startsWith(p));
+      if (!matched) return false;
+      if (rule.excludeFromAccrual && rule.excludeFromAccrual.some((p) => nf.startsWith(p))) return false;
+      return true;
+    }) : null;
+  }
+  const extra = allFolders.filter((f) => taskPrefixFolders.includes(f) && !(base && base.includes(f)));
+  if (!extra.length) return base;
+  return [...(base || []), ...extra];
 }
 
 // Internal / non-revenue folders (per the billable-hours guide, §3.1): onboarding/

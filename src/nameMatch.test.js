@@ -317,4 +317,39 @@ describe("splitTaskPrefixFolders (task-name-prefix cost centres, e.g. Aus3C's ne
     const rules = taskPrefixRulesFor("Aus 3C");
     expect(rules).toEqual([{ sourceFolder: "Aus3C", prefix: "IRAP", syntheticFolder: "Aus3C IRAP" }]);
   });
+
+  it("a client with ONLY task_prefix rules (no hardcoded rule, no dynamic cost_centre/sub_project rows) still gets its synthetic folders rolled up -- the future-client case, not just Aus3C's own legacy-rule coincidence", () => {
+    setDynamicCostCentres([
+      { client: "Brand New Client", folder: "Brand New Client Onboarding Track", kind: "task_prefix", source_folder: "Brand New Client", task_prefix: "Onboarding" },
+    ]);
+    const folders = ["Brand New Client", "Brand New Client Onboarding Track", "Some Other Folder"];
+    expect(multiFolderMatchesFor("Brand New Client", folders)).toEqual(["Brand New Client Onboarding Track"]);
+    expect(multiFolderAccrualMatchesFor("Brand New Client", folders)).toEqual(["Brand New Client Onboarding Track"]);
+  });
+
+  it("task_prefix synthetic folders union additively on top of a hardcoded MULTI_FOLDER_CLIENTS match, not replacing it", () => {
+    setDynamicCostCentres([
+      { client: "Aus 3C", folder: "Aus3C IRAP", kind: "task_prefix", source_folder: "Australian Cyber Collaboration Centre", task_prefix: "IRAP" },
+    ]);
+    // A real, still-active leftover folder from the old separate-folder convention, matched
+    // only via the hardcoded rule -- must not disappear just because a task_prefix rule now
+    // also exists for this client.
+    const folders = ["Australian Cyber Collaboration Centre", "Aus3C Cyber Meets", "Aus3C IRAP"];
+    const result = multiFolderMatchesFor("Aus 3C", folders);
+    expect(result).toContain("Australian Cyber Collaboration Centre");
+    expect(result).toContain("Aus3C Cyber Meets");
+    expect(result).toContain("Aus3C IRAP");
+  });
+
+  it("task_prefix synthetic folders union additively on top of explicit dynamic cost_centre rows too", () => {
+    setDynamicCostCentres([
+      { client: "Hybrid Client", folder: "Hybrid Client Sub A", kind: "cost_centre" },
+      { client: "Hybrid Client", folder: "Hybrid Client Split Track", kind: "task_prefix", source_folder: "Hybrid Client", task_prefix: "Split" },
+    ]);
+    const folders = ["Hybrid Client Sub A", "Hybrid Client Split Track", "Unrelated"];
+    const result = multiFolderMatchesFor("Hybrid Client", folders);
+    expect(result).toContain("Hybrid Client Sub A");
+    expect(result).toContain("Hybrid Client Split Track");
+    expect(result).not.toContain("Unrelated");
+  });
 });
