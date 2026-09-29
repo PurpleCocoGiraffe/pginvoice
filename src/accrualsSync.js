@@ -272,8 +272,14 @@ export async function recomputeAccruals(clients) {
       // On hold pauses the accrual clock without erasing the balance -- unlike a genuine
       // off-package gap (below), the running balance carries forward unchanged so it picks
       // back up exactly where it left off once the client resumes. A human override is still
-      // left alone regardless of status.
-      if (monthStatus === "on_hold" && !existing?.isOverride) {
+      // left alone regardless of status. Gated on package/strategy the same way the
+      // not-on-package branch below is -- "Put On Hold" has no type restriction in the
+      // Clients module UI, so an Hourly/Quoted/Project/MAP/Ad-hoc client can be put on hold
+      // too; without this check, every one of that client's on-hold months got a bogus
+      // "On hold — accrual paused" row written here (accrual_value 0, since it never had a
+      // package to carry a real prior balance from) that made a client with no package look
+      // like a package client in Client Accruals until the following recompute cycle.
+      if (monthStatus === "on_hold" && (seg.type === "package" || seg.type === "strategy") && !existing?.isOverride) {
         const cell = { accrualValue: prior, accrualNote: "On hold — accrual paused", pct: null, comment: existing?.comment ?? null, workedHours: existing?.workedHours ?? null, isOverride: false, hoursFlagged: false };
         const changed = !existing || existing.accrualValue !== cell.accrualValue || existing.accrualNote !== cell.accrualNote;
         c.months[mk] = cell;

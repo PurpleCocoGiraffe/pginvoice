@@ -309,6 +309,16 @@ function taskPrefixSyntheticFoldersFor(name) {
   return out;
 }
 
+// Shared by multiFolderMatchesFor/multiFolderAccrualMatchesFor -- both need to union a
+// client's task-prefix synthetic folders onto whatever their own dynamic/hardcoded-rule
+// resolution already produced, identically, regardless of what makes their two `base`
+// computations diverge (accrual exclusion rules).
+function unionTaskPrefixFolders(base, allFolders, taskPrefixFolders) {
+  const extra = allFolders.filter((f) => taskPrefixFolders.includes(f) && !(base && base.includes(f)));
+  if (!extra.length) return base;
+  return [...(base || []), ...extra];
+}
+
 // Returns every real ClickUp folder belonging to a multi-folder client, or null if `name`
 // isn't one of them (meaning the caller should fall back to plain findMatch instead). Checks
 // the user-editable dynamic table first (exact name match) -- a client with explicit
@@ -332,9 +342,7 @@ export function multiFolderMatchesFor(name, allFolders) {
       return rule.prefixes.some((p) => nf.startsWith(p));
     }) : null;
   }
-  const extra = allFolders.filter((f) => taskPrefixFolders.includes(f) && !(base && base.includes(f)));
-  if (!extra.length) return base;
-  return [...(base || []), ...extra];
+  return unionTaskPrefixFolders(base, allFolders, taskPrefixFolders);
 }
 
 // Same as multiFolderMatchesFor, but drops any folder marked "sub_project" in the dynamic
@@ -361,9 +369,7 @@ export function multiFolderAccrualMatchesFor(name, allFolders) {
       return true;
     }) : null;
   }
-  const extra = allFolders.filter((f) => taskPrefixFolders.includes(f) && !(base && base.includes(f)));
-  if (!extra.length) return base;
-  return [...(base || []), ...extra];
+  return unionTaskPrefixFolders(base, allFolders, taskPrefixFolders);
 }
 
 // Internal / non-revenue folders (per the billable-hours guide, §3.1): onboarding/

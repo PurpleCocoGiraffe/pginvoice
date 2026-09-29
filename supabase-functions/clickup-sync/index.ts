@@ -105,13 +105,6 @@ async function clickupFetch(path: string, token: string) {
   return res.json();
 }
 
-async function fetchAllTeamMemberIds(token: string, teamId: string): Promise<string[]> {
-  const data = await clickupFetch(`/team`, token);
-  const team = (data.teams || []).find((t: any) => String(t.id) === String(teamId)) || data.teams?.[0];
-  if (!team) throw new Error("No ClickUp team/workspace found for this token.");
-  return (team.members || []).map((m: any) => String(m.user?.id)).filter(Boolean);
-}
-
 // ClickUp's time-entries API only returns entries for users listed in `assignee` — omit it
 // and you get just the token owner's own entries. Scoping that filter to *today's* /team
 // member list (as this used to) means the moment someone is removed from the workspace
@@ -144,14 +137,29 @@ async function unionKnownUserIds(supabase: any, currentIds: string[]): Promise<s
 // wins outright if it's ever set, and a token that's only a member of one team is
 // unaffected either way.
 const PREFERRED_WORKSPACE_NAME = "purple giraffe workspace";
-async function resolveTeamId(token: string, explicitTeamId: string | undefined) {
-  if (explicitTeamId) return explicitTeamId;
+// Fetches /team exactly once and resolves the single team object the rest of this
+// invocation uses for BOTH the time_entries URL and the assignee member list -- resolveTeamId
+// and fetchAllTeamMemberIds used to each call /team independently, so a resolved id was passed
+// across a second, separate lookup that fell back to teams[0] with no use of
+// PREFERRED_WORKSPACE_NAME whenever anything didn't line up (a stale/wrong CLICKUP_TEAM_ID,
+// or workspace membership changing between the two calls) -- reintroducing the exact
+// "0 entries synced, no error, wrong workspace" failure this file was just fixed for, just one
+// function over. A single resolved object removes that whole class of drift: there is now
+// exactly one place this token's workspace gets decided. An explicit CLICKUP_TEAM_ID is also
+// now validated against the real team list rather than trusted blind -- an unrecognized id
+// throws instead of silently taking effect against a workspace that isn't actually there.
+async function resolveTeam(token: string, explicitTeamId: string | undefined) {
   const data = await clickupFetch(`/team`, token);
   const teams = data.teams || [];
+  if (explicitTeamId) {
+    const explicit = teams.find((t: any) => String(t.id) === String(explicitTeamId));
+    if (!explicit) throw new Error(`CLICKUP_TEAM_ID "${explicitTeamId}" is not a workspace this token belongs to.`);
+    return explicit;
+  }
   const preferred = teams.find((t: any) => String(t.name || "").trim().toLowerCase() === PREFERRED_WORKSPACE_NAME);
   const team = preferred || teams[0];
   if (!team) throw new Error("No ClickUp team/workspace found for this token.");
-  return String(team.id);
+  return team;
 }
 
 // Confirmed live (2026-07-31) against a raw sample from the real workspace: normal
@@ -221,8 +229,9 @@ Deno.serve(async (req: Request) => {
 
   try {
     const explicitTeamId = Deno.env.get("CLICKUP_TEAM_ID") || undefined;
-    const teamId = await resolveTeamId(token, explicitTeamId);
-    const currentMemberIds = await fetchAllTeamMemberIds(token, teamId);
+    const team = await resolveTeam(token, explicitTeamId);
+    const teamId = String(team.id);
+    const currentMemberIds = (team.members || []).map((m: any) => String(m.user?.id)).filter(Boolean);
     const memberIds = await unionKnownUserIds(supabase, currentMemberIds);
     const assignee = memberIds.join(",");
 
@@ -257,7 +266,11 @@ Deno.serve(async (req: Request) => {
     const monthRows: any[] = [];
     for (const entry of entries) {
       const minutes = Number(entry.duration || 0) / 60000;
-      if (!minutes) continue;
+      // A currently-running timer can report a negative duration (elapsed-so-far, not yet
+      // finalized) -- `!minutes` alone only filters exactly 0, so a still-running entry
+      // caught mid-sync would previously upsert a negative-minutes row and silently reduce
+      // a client's worked-hours total instead of just being skipped until it actually stops.
+      if (!minutes || minutes < 0) continue;
       const folder = resolveFolderName(entry);
       const startMs = Number(entry.start || 0);
       const { year, month, day } = localDateParts(startMs);
