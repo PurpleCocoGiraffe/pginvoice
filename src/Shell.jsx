@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, Plug, HelpCircle, Menu, X, MoreHorizontal } from "lucide-react";
+import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, Plug, HelpCircle, Menu, X, MoreHorizontal, Handshake } from "lucide-react";
 import Overview from "./Overview.jsx";
 import PlaceholderPage from "./PlaceholderPage.jsx";
 import PGReconciliation from "./App.jsx";
@@ -31,6 +31,7 @@ const MODULES = [
   { key: "timesheet", label: "Timesheets", icon: CalendarDays },
   { key: "accruals", label: "Client Accruals", icon: Clock },
   { key: "performance", label: "Reporting", icon: TrendingUp },
+  { key: "bdm", label: "BDM", icon: Handshake },
 ];
 // What Consultant/Coordinator can see: Overview, Clients, Client Accruals,
 // Reporting only — real enforcement is the RLS scoping to their assigned
@@ -315,6 +316,9 @@ export default function Shell() {
           <div style={{ display: active === "capacity" ? "block" : "none" }}><CapacityDashboard onNavigateTeam={() => setActive("team")} /></div>
           <div style={{ display: active === "team" ? "block" : "none" }}><TeamDashboard /></div>
           <div style={{ display: active === "timesheet" ? "block" : "none" }}><TimesheetSummary /></div>
+          <div style={{ display: active === "bdm" ? "block" : "none" }}>
+            <PlaceholderPage title="BDM." subtitle="Business development tracking isn't built yet." icon={Handshake} empty="BDM module coming soon." />
+          </div>
         </>}
         <div style={{ display: active === "performance" ? "block" : "none" }}><PerformanceScorecard /></div>
         <div style={{ display: active === "accruals" ? "block" : "none" }}><ClientAccruals /></div>
