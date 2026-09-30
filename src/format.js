@@ -50,3 +50,12 @@ export function clickupTaskUrl(taskIdSet) {
 // package/reconciliation UI decides "does the accrued-balance math apply", Strategy is
 // treated identically to Package.
 export const isPackageLikeType = (t) => t === "package" || t === "strategy";
+
+// The balance a month actually hands forward to the next one. A month can carry a one-off
+// "reset" (pginvoice_accruals.reset_value -- e.g. the legacy macro sheet's authoritative
+// August 2026 closing figure) that replaces our own computed balance as the carry-in for
+// the following month, while the computed accrual_value itself stays untouched for display.
+// Same sign convention as accrual_value (negative = hours owed to the client). A reset of 0
+// is a real figure, hence `??` and never `||`. Lives here (not accrualsSync.js) because
+// overviewData.js is deliberately free of any Supabase import.
+export const carryOutOf = (cell) => (cell ? (cell.resetValue ?? cell.accrualValue ?? null) : null);

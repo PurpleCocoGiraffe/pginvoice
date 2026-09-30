@@ -206,6 +206,9 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                 flag={c.priorBalanceEstimated ? {
                   text: "estimated",
                   title: `The accrued sheet has no column for ${priorMonthPretty || "the prior month"} — this figure is estimated from ClickUp hours worked that month instead of the sheet's own recorded balance. Re-upload the accrued sheet with that month's column once it's available for the verified number.`,
+                } : c.priorRebaselined ? {
+                  text: "re-baselined",
+                  title: `Carry is ${priorMonthPretty || "the prior month"}'s reset figure from the macro sheet (system computed ${c.priorRebaselined.computed != null ? `${fmt(c.priorRebaselined.computed)} h` : "no figure"}).`,
                 } : c.priorMismatch ? {
                   text: "mismatch identified",
                   title: `Accrued sheet says ${fmt(c.priorMismatch.sheetValue)} h${priorMonthPretty ? ` for ${priorMonthPretty}` : ""}, but recalculating from the current ClickUp data for that month gives ${fmt(c.priorMismatch.recomputed)} h. Likely a ClickUp entry was edited after the sheet was last updated.`,
@@ -235,6 +238,15 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                 {fmt(Math.abs(c.remaining))} h
               </span>
               <span className="pg-drawer__overunder-tag">{c.remaining < 0 ? "over-served" : c.remaining > 0 ? "under-served" : ""}</span>
+            </div>
+          )}
+          {isPackage && c.remainingReset != null && (
+            <div className="pg-drawer__overunder" title={`Macro sheet: ${fmt(c.resetValue)} h`}>
+              <span className="pg-drawer__overunder-label">Remaining reset (macro sheet)</span>
+              <span className="pg-drawer__overunder-value" style={{ color: c.remainingReset < 0 ? "var(--status-over)" : c.remainingReset > 0 ? "var(--status-ok)" : undefined }}>
+                {c.remainingReset < 0 ? "−" : ""}{fmt(Math.abs(c.remainingReset))} h
+              </span>
+              <span className="pg-drawer__overunder-tag">carried into next month</span>
             </div>
           )}
 

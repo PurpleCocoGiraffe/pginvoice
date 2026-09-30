@@ -17,17 +17,23 @@ export function buildPrintHtml(c, monthText, priorMonthText) {
                     : priorSigned > 0 ? "Over-used in previous month"
                     : "Prior month balance";
   const priorAbs = Math.abs(priorSigned);
+  // Prior month re-baselined from the legacy macro sheet (see carryOutOf in format.js).
+  const priorRebased = c.priorRebaselined ? " (re-baselined)" : "";
+  // A month carrying its own macro-sheet reset reports that as the balance going forward
+  // and as Remaining (Remaining convention = negated signed balance).
+  const balanceForward = c.resetValue ?? c.newBalance;
+  const remainingShown = c.remainingReset ?? c.remaining;
   const totalAccrued = workedRounded + priorSigned; // as spec'd: current spent + prior signed
 
   const reconciliation = isPkg ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Package</td><td class="right">${fmt(c.pkg)} h / month</td></tr>
-    <tr class="datarow"><td class="label">${priorLabel}${priorMonthText ? ` (${esc(priorMonthText)})` : ""}</td><td class="right">${fmt(priorAbs)} h</td></tr>
+    <tr class="datarow"><td class="label">${priorLabel}${priorMonthText ? ` (${esc(priorMonthText)})` : ""}${priorRebased}</td><td class="right">${fmt(priorAbs)} h</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="total"><td>Total accrued time</td><td class="right">${fmt(totalAccrued)} h</td></tr>
-    <tr class="datarow"><td class="label">New balance going forward</td><td class="right">${fmt(c.newBalance)} h ${c.newBalance > 0 ? "over" : c.newBalance < 0 ? "credit" : ""}</td></tr>
-    <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${c.remaining >= 0 ? fmt(c.remaining) + " h left" : fmt(Math.abs(c.remaining)) + " h over"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.</td></tr>` : isQuoted ? `
+    <tr class="datarow"><td class="label">New balance going forward</td><td class="right">${fmt(balanceForward)} h ${balanceForward > 0 ? "over" : balanceForward < 0 ? "credit" : ""}</td></tr>
+    <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${remainingShown >= 0 ? fmt(remainingShown) + " h left" : fmt(Math.abs(remainingShown)) + " h over"}</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are re-baselined to the accrual sheet's closing figure." : ""}</td></tr>` : isQuoted ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Quoted project summary</td></tr>
     <tr class="datarow"><td class="label">Quoted amount</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>

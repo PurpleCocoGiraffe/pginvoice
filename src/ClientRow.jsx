@@ -17,7 +17,7 @@ import { ExportItem } from "./ExportItem.jsx";
 // the accrual (billed separately, e.g. a quoted one-off project) never appears here —
 // it stays its own ordinary row, nested underneath via the existing sub-project
 // mechanism (see the `nested` prop below), tagged "Sub project" rather than folded in.
-function CostCentreBreakdown({ client: c, divider }) {
+function CostCentreBreakdown({ client: c, divider, showReset }) {
   const { lineItems } = c.costCentre;
   return (
     <div className={"pg-costcentre-mini" + (divider ? " pg-costcentre-mini--divider" : "")}>
@@ -26,7 +26,7 @@ function CostCentreBreakdown({ client: c, divider }) {
         // independent layout, so each line item's hours land in exactly the same column
         // as the "Worked" figure on the row above -- a fixed left-padding/flex layout
         // can't guarantee that once folder names vary in length.
-        <div className="pg-costcentre-mini__row pg-row-grid-cols" key={item.name}>
+        <div className={"pg-costcentre-mini__row pg-row-grid-cols" + (showReset ? " pg-row-grid-cols--reset" : "")} key={item.name}>
           <span />
           <span className="pg-costcentre-mini__dotcell"><span className="pg-costcentre-mini__dot" /></span>
           <span className="pg-costcentre-mini__name">{item.name}</span>
@@ -56,7 +56,11 @@ function CostCentreBreakdown({ client: c, divider }) {
 // so it's labelled against its parent's number instead (parent "26" -> sub-project
 // "26s", a second one "26s2", ...). `avatarOf` carries the parent's {name, logo} so the
 // sub-project's avatar reads as the same client's picture, not a distinct one of its own.
-export function ClientRow({ index, client: c, active, onOpen, nested, parentName, onCopy, onPdf, tileRow, hasMoreBelow, subIndex, avatarOf }) {
+//
+// `showReset`: the viewed month has at least one macro-sheet reset somewhere in the list,
+// so every row (and the header) gets the extra "Remaining Reset" track -- blank for a
+// client without one -- keeping all columns aligned.
+export function ClientRow({ index, client: c, active, onOpen, nested, parentName, onCopy, onPdf, tileRow, hasMoreBelow, subIndex, avatarOf, showReset }) {
   const [inlineOpen, setInlineOpen] = useState(false);
   // Cost-centre breakdown starts collapsed, same as every other row's expand affordance
   // (the reconciliation breakdown below, the drawer) -- the list should read as a plain
@@ -120,6 +124,9 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
     : c.remaining == null || c.remaining === 0 ? undefined
     : c.remaining < 0 ? "var(--status-over)" : "var(--status-ok)";
 
+  const remainingResetTone = c.remainingReset == null || c.remainingReset === 0 ? undefined
+    : c.remainingReset < 0 ? "var(--status-over)" : "var(--status-ok)";
+
   // A friendlier status pill (On pace / At risk / Overserviced / No package) for
   // package-style clients, reusing the same over/under/ok tone already computed
   // above; non-package clients just get their type as a neutral pill.
@@ -166,6 +173,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
         role="button" tabIndex={0}
         className={
           "pg-row pg-row-grid-cols"
+          + (showReset ? " pg-row-grid-cols--reset" : "")
           + (tileRow ? " pg-row--in-tile" : "")
           + (active ? " pg-row--active" : "")
           + (inlineOpen ? " pg-row--expanded" : "")
@@ -215,6 +223,18 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
             ? (c.quotedRemaining != null ? `${c.quotedRemaining < 0 ? "−" : ""}${fmt(Math.abs(c.quotedRemaining))} h` : "—")
             : c.remaining != null ? `${c.remaining < 0 ? "−" : ""}${fmt(Math.abs(c.remaining))} h` : isPackage ? "—" : ""}
         </span>
+        {showReset && (
+          // Same Remaining convention/colouring as the cell above; the tooltip shows the raw
+          // signed ledger figure (negative = hours owed to the client).
+          <span
+            className="pg-row__num"
+            style={remainingResetTone ? { color: remainingResetTone } : undefined}
+            title={c.resetValue != null ? `Macro sheet: ${fmt(c.resetValue)} h` : undefined}
+          >
+            {c.remainingReset != null && <span className="pg-row__num-label">Remaining Reset</span>}
+            {c.remainingReset != null ? `${c.remainingReset < 0 ? "−" : ""}${fmt(Math.abs(c.remainingReset))} h` : ""}
+          </span>
+        )}
         <span className="pg-row__status">
           {statusPill && (
             <span className="pg-status-pill" style={{ color: statusPill.tone, background: statusPill.bg }} title={statusText || undefined}>
@@ -246,7 +266,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
         </span>
       </div>
 
-      {c.costCentre && costCentreOpen && <CostCentreBreakdown client={c} divider={miniDivider} />}
+      {c.costCentre && costCentreOpen && <CostCentreBreakdown client={c} divider={miniDivider} showReset={showReset} />}
 
       {inlineOpen && (
         <div className="pg-row-inline">
