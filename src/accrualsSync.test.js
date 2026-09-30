@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import {
   rowsToClients, buildReconciliationClients, parseAgreedHours,
-  carryOutOf, replayClientAccruals, accrualFolderMinutesFor,
+  carryOutOf, replayClientAccruals, accrualFolderMinutesFor, undatedEndStatus,
 } from "./accrualsSync.js";
+import { statusForMonth } from "./clientsSync.js";
 import { setDynamicCostCentres } from "./nameMatch.js";
 
 // Regression coverage for two real production bugs found and fixed in this codebase's
@@ -212,6 +213,116 @@ describe("replayClientAccruals -- chaining through a reset", () => {
     const c = client({ "2026-07": {} });
     run(c, { worked: WORKED, segFor: (mk) => (mk === "2026-08" ? HOURLY : PKG) });
     expect(c.months["2026-09"].accrualValue).toBe(3);
+  });
+});
+
+describe("replayClientAccruals -- offboarded/archived clients stop accruing", () => {
+  const PKG = { type: "package", agreedHours: 10 };
+  const minutes = (byMonth) => (mk) => (byMonth[mk] || 0) * 60;
+  const profile = (status) => ({ client: "A", status });
+  const ev = (id, kind, effective_date) => ({ id, client: "A", kind, effective_date, applied: true });
+  const run = (c, { events = [], status = "active", worked = {}, cur = "2026-10", startMonth = "2026-06" } = {}) =>
+    replayClientAccruals(c, {
+      startMonth, cur, segFor: () => PKG,
+      statusFor: (mk) => statusForMonth(profile(status), events, mk),
+      workedMinutesFor: minutes(worked),
+      undatedEnd: undatedEndStatus(profile(status), events),
+    });
+  const stale = (accrualValue, workedHours = 0) => ({ accrualValue, workedHours, accrualNote: null, isOverride: false });
+  const WORKED = { "2026-06": 12, "2026-07": 7, "2026-08": 1, "2026-09": 0, "2026-10": 0 };
+
+  it("a month-end offboarding event (Warrina, 2026-07-31) stops accrual from the next month and clears later computed rows", () => {
+    const events = [ev(1, "offboarding", "2026-07-31")];
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-08": stale(-11.66, 1), "2026-09": stale(-10.34) } };
+    const rows = run(c, { events, status: "offboarded", worked: WORKED });
+    expect(c.months["2026-06"].accrualValue).toBe(2);
+    expect(c.months["2026-07"].accrualValue).toBe(-1); // effective month itself still accrues
+    for (const mk of ["2026-08", "2026-09"]) {
+      expect(c.months[mk].accrualValue).toBeNull();
+      expect(c.months[mk].workedHours).toBeNull();
+      expect(c.months[mk].accrualNote).toBe("Client offboarded");
+    }
+    expect(c.months["2026-10"]).toBeUndefined(); // no new row created after the end
+    const cleared = rows.filter((r) => r.accrual_note === "Client offboarded").map((r) => r.month_key);
+    expect(cleared).toEqual(["2026-08", "2026-09"]);
+    for (const r of rows) expect(r).not.toHaveProperty("reset_value");
+  });
+
+  it("archived with no event (Kellybrook): stops after its last worked/override month; override rows are kept", () => {
+    const c = {
+      client: "A", manager: null, agreedHpm: "170", months: {
+        "2026-05": { accrualValue: -340, isOverride: true },
+        "2026-06": stale(-510),
+        "2026-07": stale(-680),
+        "2026-08": { accrualValue: 99, isOverride: true },
+        "2026-09": stale(-850),
+      },
+    };
+    // Last worked month is June, but the Aug override is later evidence.
+    run(c, { status: "archived", worked: { "2026-06": 5 }, startMonth: "2026-05" });
+    expect(c.months["2026-05"].accrualValue).toBe(-340);
+    expect(c.months["2026-06"].accrualValue).toBe(5 - 10 - 340);
+    expect(c.months["2026-07"].accrualValue).toBe(-10 + (5 - 10 - 340)); // still before last evidence
+    expect(c.months["2026-08"]).toEqual({ accrualValue: 99, isOverride: true }); // override untouched
+    expect(c.months["2026-09"].accrualValue).toBeNull();
+    expect(c.months["2026-09"].accrualNote).toBe("Client archived");
+    expect(c.months["2026-10"]).toBeUndefined();
+  });
+
+  it("archived with no evidence at all: nothing computed accrues, overrides kept", () => {
+    const c = { client: "A", manager: null, agreedHpm: "16", months: { "2026-07": stale(-64), "2026-08": stale(-80), "2026-09": stale(-96) } };
+    const rows = run(c, { status: "archived", startMonth: "2026-07" });
+    expect(rows.map((r) => r.month_key)).toEqual(["2026-07", "2026-08", "2026-09"]);
+    for (const mk of ["2026-07", "2026-08", "2026-09"]) expect(c.months[mk].accrualValue).toBeNull();
+  });
+
+  it("a later reactivation resumes accrual with prior reset to 0", () => {
+    const events = [ev(1, "offboarding", "2026-07-31"), ev(2, "reactivation", "2026-09-01")];
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {} } };
+    run(c, { events, status: "active", worked: { ...WORKED, "2026-09": 13, "2026-10": 6 } });
+    expect(c.months["2026-08"]).toBeUndefined();
+    expect(c.months["2026-09"].accrualValue).toBe(3);
+    expect(c.months["2026-10"].accrualValue).toBe(-1);
+  });
+
+  it("a reset on an offboarded month stays on the in-memory cell (and carries forward)", () => {
+    const events = [ev(1, "offboarding", "2026-07-31"), ev(2, "reactivation", "2026-09-01")];
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-08": { ...stale(-5, 1), resetValue: -20, resetNote: "macro" } } };
+    const rows = run(c, { events, status: "active", worked: { ...WORKED, "2026-09": 13 } });
+    expect(c.months["2026-08"].accrualValue).toBeNull();
+    expect(c.months["2026-08"].resetValue).toBe(-20);
+    expect(c.months["2026-08"].resetNote).toBe("macro");
+    expect(c.months["2026-09"].accrualValue).toBe(13 - 10 - 20);
+    for (const r of rows) {
+      expect(r).not.toHaveProperty("reset_value");
+      expect(r).not.toHaveProperty("reset_note");
+      expect(r).not.toHaveProperty("reset_at");
+    }
+  });
+
+  it("an active client is unchanged by the rule, and a second pass is idempotent", () => {
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {} } };
+    run(c, { worked: WORKED });
+    expect(c.months["2026-10"].accrualValue).toBe(2 - 3 - 9 - 10 - 10);
+    expect(Object.values(c.months).every((m) => m.accrualNote === null)).toBe(true);
+
+    const ended = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-09": stale(-3) } };
+    const events = [ev(1, "offboarding", "2026-07-31")];
+    expect(run(ended, { events, status: "offboarded", worked: WORKED }).length).toBeGreaterThan(0);
+    const snapshot = JSON.parse(JSON.stringify(ended.months));
+    expect(run(ended, { events, status: "offboarded", worked: WORKED })).toEqual([]);
+    expect(ended.months).toEqual(snapshot);
+    const archived = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-09": stale(-3) } };
+    run(archived, { status: "archived", worked: WORKED });
+    expect(run(archived, { status: "archived", worked: WORKED })).toEqual([]);
+  });
+
+  it("undatedEndStatus: only when no applied offboarding event is the latest status event", () => {
+    expect(undatedEndStatus(profile("active"), [])).toBeNull();
+    expect(undatedEndStatus(profile("on_hold"), [])).toBeNull();
+    expect(undatedEndStatus(profile("archived"), [])).toBe("archived");
+    expect(undatedEndStatus(profile("offboarded"), [ev(1, "offboarding", "2026-07-31")])).toBeNull();
+    expect(undatedEndStatus(profile("archived"), [ev(1, "offboarding", "2026-01-31"), ev(2, "reactivation", "2026-03-01")])).toBe("archived");
   });
 });
 
