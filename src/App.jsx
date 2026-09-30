@@ -25,6 +25,7 @@ import {
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY } from "./storageKeys.js";
+import { filterClientList } from "./clientListFilter.js";
 // A <label> wrapping a <select> only focuses it on click in most browsers -- opening
 // the dropdown itself needs a second click directly on the control. Used as the
 // onClick for every pill-style filter label so one click anywhere on the pill
@@ -85,34 +86,6 @@ function computePrimaryNameByGroup(clientList) {
     result.set(group, primary.name);
   });
   return result;
-}
-
-// Shared type/consultant/search filter + primary-group suppression (everything
-// `visible` below needs except the final sort, which only the current-month list
-// actually does). Used for both the current month's `visible` list and the prior
-// month's `prevStats` comparison list, so "what's currently in view" can't
-// silently diverge between the two -- previously prevStats hand-duplicated this
-// exact filtering logic as a separate inline copy.
-function filterClientList(list, { clientTypeFilter, consultantFilter, search, primaryNameByGroup }) {
-  let out = clientTypeFilter === "all" ? list.slice()
-    : clientTypeFilter === "map" ? list.filter((c) => c.isMap)
-    : list.filter((c) => c.type === clientTypeFilter);
-  if (consultantFilter) out = out.filter((c) => c.userMinutes.has(consultantFilter));
-  out = out.filter((c) => {
-    if (!c.capGroup) return true;
-    const primaryName = primaryNameByGroup.get(c.capGroup);
-    return !primaryName || c.name === primaryName;
-  });
-  // A folder explicitly tagged as another cost-centre client's sub-project (see
-  // costCentreParentAccName in buildClientsForMonth) is always shown nested under that
-  // parent's tile, never again as its own top-level card -- same rule as capGroup above,
-  // just driven by nameMatch.js's rules instead of Capacity Planning's grouping.
-  out = out.filter((c) => !c.costCentreParentAccName);
-  if (search.trim()) {
-    const q = search.trim().toLowerCase();
-    out = out.filter((c) => c.name.toLowerCase().includes(q) || (c.displayName || "").toLowerCase().includes(q));
-  }
-  return out;
 }
 
 // ================================ COMPONENT =================================
