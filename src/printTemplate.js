@@ -18,11 +18,11 @@ export function buildPrintHtml(c, monthText, priorMonthText) {
                     : "Prior month balance";
   const priorAbs = Math.abs(priorSigned);
   // Prior month re-baselined from the legacy macro sheet (see carryOutOf in format.js).
-  const priorRebased = c.priorRebaselined ? " (re-baselined)" : "";
+  const priorRebased = c.priorRebaseline ? " (re-baselined)" : "";
   // A month carrying its own macro-sheet reset reports that as the balance going forward
   // and as Remaining (Remaining convention = negated signed balance).
-  const balanceForward = c.resetValue ?? c.newBalance;
-  const remainingShown = c.remainingReset ?? c.remaining;
+  const balanceForward = c.balanceForward;
+  const remainingShown = c.remainingShown;
   const totalAccrued = workedRounded + priorSigned; // as spec'd: current spent + prior signed
 
   const reconciliation = isPkg ? `

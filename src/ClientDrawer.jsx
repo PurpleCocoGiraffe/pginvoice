@@ -206,9 +206,9 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                 flag={c.priorBalanceEstimated ? {
                   text: "estimated",
                   title: `The accrued sheet has no column for ${priorMonthPretty || "the prior month"} — this figure is estimated from ClickUp hours worked that month instead of the sheet's own recorded balance. Re-upload the accrued sheet with that month's column once it's available for the verified number.`,
-                } : c.priorRebaselined ? {
+                } : c.priorRebaseline ? {
                   text: "re-baselined",
-                  title: `Carry is ${priorMonthPretty || "the prior month"}'s reset figure from the macro sheet (system computed ${c.priorRebaselined.computed != null ? `${fmt(c.priorRebaselined.computed)} h` : "no figure"}).`,
+                  title: `Carry is ${priorMonthPretty || "the prior month"}'s reset figure from the macro sheet (system computed ${c.priorRebaseline.computed != null ? `${fmt(c.priorRebaseline.computed)} h` : "no figure"}).`,
                 } : c.priorMismatch ? {
                   text: "mismatch identified",
                   title: `Accrued sheet says ${fmt(c.priorMismatch.sheetValue)} h${priorMonthPretty ? ` for ${priorMonthPretty}` : ""}, but recalculating from the current ClickUp data for that month gives ${fmt(c.priorMismatch.recomputed)} h. Likely a ClickUp entry was edited after the sheet was last updated.`,

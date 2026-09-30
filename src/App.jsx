@@ -792,7 +792,7 @@ export default function PGReconciliation({ onNavigateClients }) {
       let priorBalance = accruedClient && priorKey ? (accruedClient.balances[priorKey] ?? null) : null;
       const priorReset = accruedClient && priorKey ? (accruedClient.resets?.[priorKey] ?? null) : null;
       // The drawer explains a re-baselined carry (instead of flagging it as a mismatch).
-      const priorRebaselined = priorReset !== null
+      const priorRebaseline = priorReset !== null
         ? { resetValue: priorReset, computed: accruedClient.computedBalances?.[priorKey] ?? null }
         : null;
       // This month's own reset, if any -- shown as the "Remaining Reset" column alongside
@@ -828,7 +828,7 @@ export default function PGReconciliation({ onNavigateClients }) {
       let priorMismatch = null;
       // Skipped for a re-baselined prior month: the reset deliberately differs from what
       // ClickUp hours recompute to, so it isn't a mismatch (the drawer explains it instead).
-      if (!priorBalanceEstimated && !priorRebaselined && pkg !== null && pkg > 0 && priorBalance !== null && monthWorked) {
+      if (!priorBalanceEstimated && !priorRebaseline && pkg !== null && pkg > 0 && priorBalance !== null && monthWorked) {
         const priorWorkedH = priorMonthWorkedMin / 60;
         const priorPriorBalance = accruedClient.balances[prevMonthKeyStr(priorKey)] ?? 0;
         const recomputed = priorWorkedH - pkg + priorPriorBalance;
@@ -839,10 +839,15 @@ export default function PGReconciliation({ onNavigateClients }) {
       const clientObj = {
         ...c, worked, accruedClient, matchInfo,
         pkg, priorBalance, priorBalanceEstimated, newBalance, remaining, kpiPct, status, priorMismatch,
-        priorRebaselined,
+        priorRebaseline,
         resetValue: monthReset,
         // Remaining convention (positive = hours left): the negated signed reset.
         remainingReset: monthReset !== null ? 0 - monthReset : null, // 0 - x, not -x: a reset of 0 must not become -0
+        // The official closing figures every export/copy/PDF path must use: the macro-sheet
+        // reset when this month has one, otherwise our computed figures. Read these, never
+        // newBalance/remaining directly, or an export silently undoes the reset.
+        balanceForward: monthReset ?? newBalance,
+        remainingShown: monthReset !== null ? 0 - monthReset : remaining,
         matched: !!accruedClient,
         displayName: accruedClient?.name ?? c.name,
         costCentre: c.costCentre || null,
@@ -1223,7 +1228,6 @@ export default function PGReconciliation({ onNavigateClients }) {
     // balance ARE the reset (the agreed official figure); our own computed Remaining is kept
     // alongside in "System computed remaining (h)" -- a column that only exists for a month
     // that actually has resets.
-    const anyReset = clients.some((c) => c.resetValue != null);
     return clients.map((c) => ({
       "Client (ClickUp)": c.name,
       "Client type": TYPE_LABELS_SHORT[c.type],
@@ -1234,12 +1238,12 @@ export default function PGReconciliation({ onNavigateClients }) {
       "Carried in (h)": c.priorBalance != null && c.priorBalance < 0 ? Math.abs(c.priorBalance) : "",
       "Over used prior (h)": c.priorBalance != null && c.priorBalance > 0 ? c.priorBalance : "",
       "Worked this month (h)": Math.round(c.worked * 100) / 100,
-      "Remaining (h)": (c.remainingReset ?? c.remaining) != null ? Math.round((c.remainingReset ?? c.remaining) * 100) / 100 : "",
-      ...(anyReset ? {
+      "Remaining (h)": c.remainingShown != null ? Math.round(c.remainingShown * 100) / 100 : "",
+      ...(showResetCol ? {
         "Macro sheet reset": c.resetValue != null ? "Yes" : "",
         "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
       } : {}),
-      "New balance (signed)": (c.resetValue ?? c.newBalance) != null ? Math.round((c.resetValue ?? c.newBalance) * 100) / 100 : "",
+      "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
       "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
       "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", "no-pkg": "no package" }[c.status],
       // Quoted has no monthly package/remaining figure (the columns above stay blank for
@@ -1260,10 +1264,10 @@ export default function PGReconciliation({ onNavigateClients }) {
         "Package (h/month)": c.pkg,
         "Prior month balance": Math.round((c.priorBalance ?? 0) * 100) / 100,
         "Worked this month (h)": Math.round(c.worked * 100) / 100,
-        "New balance (h)": Math.round(c.newBalance * 100) / 100,
-        "Direction": c.newBalance > 0 ? "OVER-SERVED (owe next month)" : "UNDER-SERVED (client credit)",
+        "New balance (h)": Math.round(c.balanceForward * 100) / 100,
+        "Direction": c.balanceForward > 0 ? "OVER-SERVED (owe next month)" : "UNDER-SERVED (client credit)",
         // Next month starts from the carry-out, i.e. this month's macro-sheet reset if it has one.
-        "Available next month (h)": Math.round((c.pkg - (c.resetValue ?? c.newBalance)) * 100) / 100,
+        "Available next month (h)": Math.round((c.pkg - c.balanceForward) * 100) / 100,
         "KPI variance (%)": Math.round(c.kpiPct * 10) / 10,
       }));
   // Ready-to-merge accrued-hours export for the real last calendar month (not
@@ -1287,7 +1291,7 @@ export default function PGReconciliation({ onNavigateClients }) {
         // The carry-out (macro-sheet reset when the month has one), not our computed
         // balance -- merging the computed figure back into the master sheet would undo
         // the reset.
-        [colLabel]: (c.resetValue ?? c.newBalance) != null ? Math.round((c.resetValue ?? c.newBalance) * 100) / 100 : "",
+        [colLabel]: c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
         "Estimated (no sheet data for this month yet)": c.priorBalanceEstimated ? "Yes" : "",
         "Macro sheet reset": c.resetValue != null ? "Yes" : "",
       })),
@@ -1342,13 +1346,13 @@ export default function PGReconciliation({ onNavigateClients }) {
     if (isPackageLikeType(c.type) && c.pkg != null) {
       lines.push(`Package: ${fmt(c.pkg)} h`);
       const p = c.priorBalance ?? 0;
-      const rebased = c.priorRebaselined ? " (re-baselined)" : "";
+      const rebased = c.priorRebaseline ? " (re-baselined)" : "";
       if (p < 0) lines.push(`Carried in from ${priorMonthPretty}${rebased}: ${fmt(Math.abs(p))} h`);
       else if (p > 0) lines.push(`Over-used in ${priorMonthPretty}${rebased}: ${fmt(p)} h`);
       else lines.push(`Prior balance${rebased}: 0 h`);
       lines.push(`Total accrued time: ${fmt(c.worked + p)} h`);
       // A month re-baselined from the macro sheet reports the reset as its Remaining figure.
-      const rem = c.remainingReset ?? c.remaining;
+      const rem = c.remainingShown;
       lines.push(rem >= 0 ? `Remaining this month: ${fmt(rem)} h` : `Over by ${fmt(Math.abs(rem))} h`);
       if (c.status === "over") lines.push(`⚠ Over the +10% KPI (${fmt(c.kpiPct, 1)}% of package)`);
       if (c.status === "under") lines.push(`⚠ Under the −10% KPI (${fmt(c.kpiPct, 1)}% of package), accruing`);
