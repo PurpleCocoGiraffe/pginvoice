@@ -252,17 +252,62 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
 // stored reset survives every recompute) -- but every rebuilt in-memory cell must carry it
 // over, or a second recompute in the same session would lose it and chain from our own
 // figure instead.
-export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, workedMinutesFor }) {
+//
+// Offboarded/archived: a month inside one of the client's end periods (see endPeriodsFor)
+// accrues nothing. Each period is `{ from, until, after, note }`: ended from month `from`
+// (inclusive) up to `until` (exclusive; null = still ended). `from: null` means undated --
+// the end is derived here as the month after the last "evidence" month (worked hours > 0,
+// an override, or a reset) within [after, until); with no evidence in that window the whole
+// window is ended. Ended months clear any existing computed row (override rows untouched)
+// and only create a row when ClickUp still shows worked hours for a package-like month
+// (wrap-up work) -- a cleared row, so Client Invoicing sees "no package" for that month
+// instead of estimating from the stale client-level scalar. Prior restarts at 0 after an
+// end (or carries a reset/override figure from the last ended month), so any on-hold
+// balance in place when a client is offboarded is dropped -- intended.
+export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, workedMinutesFor, endPeriods = [] }) {
   const rows = [];
   let prior = 0;
   let mk = startMonth;
   let guard = 0;
+  const evidenceMonths = new Set(Object.keys(c.months).filter((k) => c.months[k]?.isOverride || c.months[k]?.resetValue != null));
+  for (let k = startMonth, g = 0; k <= cur && g++ < 240; k = shiftMonthKey(k, 1)) {
+    if (workedMinutesFor(k) > 0) evidenceMonths.add(k);
+  }
+  const periods = endPeriods.map((p) => {
+    if (p.from) return p;
+    let last = null;
+    for (const k of evidenceMonths) {
+      if ((p.after == null || k >= p.after) && (p.until == null || k < p.until) && (last === null || k > last)) last = k;
+    }
+    return { ...p, from: last ? shiftMonthKey(last, 1) : (p.after ?? "0000-01") };
+  });
   while (mk <= cur && guard++ < 240) {
     const seg = segFor(mk);
     const existing = c.months[mk];
     const monthStatus = statusFor(mk);
     const resetValue = existing?.resetValue ?? null;
     const resetNote = existing?.resetNote ?? null;
+    const endedNote = periods.find((p) => mk >= p.from && (p.until == null || mk < p.until))?.note ?? null;
+    if (endedNote) {
+      if (existing?.isOverride) {
+        prior = resetValue ?? existing.accrualValue ?? 0;
+      } else {
+        const hasValues = existing && (existing.accrualValue !== null || existing.workedHours !== null);
+        const wrapUpWork = !existing && (seg.type === "package" || seg.type === "strategy") && workedMinutesFor(mk) > 0;
+        if (hasValues || wrapUpWork) {
+          const cell = { accrualValue: null, accrualNote: endedNote, pct: null, comment: existing?.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false, resetValue, resetNote };
+          c.months[mk] = cell;
+          rows.push({
+            client: c.client, account_manager: c.manager || null, agreed_hpm: null,
+            month_key: mk, accrual_value: null, accrual_note: endedNote, pct_over_under: null,
+            comment: cell.comment, worked_hours: null, is_override: false, hours_flagged: false,
+          });
+        }
+        prior = resetValue ?? 0;
+      }
+      mk = shiftMonthKey(mk, 1);
+      continue;
+    }
     // On hold pauses the accrual clock without erasing the balance -- unlike a genuine
     // off-package gap (below), the running balance carries forward unchanged so it picks
     // back up exactly where it left off once the client resumes. A human override is still
@@ -352,6 +397,53 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
   return rows;
 }
 
+// First month a dated end takes effect: the month after the date's month, unless the date
+// is the 1st (then that month itself) -- the same boundary statusForMonth applies, so a
+// 2026-07-31 or 2026-08-15 offboarding still accrues its whole effective month.
+function firstMonthOnOrAfter(date) {
+  return date.slice(8, 10) === "01" ? date.slice(0, 7) : shiftMonthKey(date.slice(0, 7), 1);
+}
+
+// Builds the end periods replayClientAccruals skips, from applied offboarding/reactivation
+// events plus the client's current status:
+//   - an offboarding opens a dated period from firstMonthOnOrAfter(effective_date);
+//   - a reactivation closes the open period at its own month (the reactivation month
+//     accrues in full, even mid-month). A reactivation with no open period (the client was
+//     archived/offboarded by a direct status edit, then reactivated) implies an undated end
+//     between the previous reactivation (if any) and this one;
+//   - still offboarded/archived with no open period at the end (status set directly): an
+//     open-ended period from profile.endDate when set, else undated.
+// Hold/resume don't affect ends (statusForMonth still drives on-hold).
+export function endPeriodsFor(profile, events) {
+  const statusEvents = events
+    .filter((e) => e.client === profile.client && e.applied && (e.kind === "offboarding" || e.kind === "reactivation"))
+    .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || a.id - b.id);
+  const periods = [];
+  let open = null;
+  let after = null; // month of the latest reactivation -- lower bound for an undated end's evidence window
+  for (const e of statusEvents) {
+    if (e.kind === "offboarding") {
+      if (!open) open = { from: firstMonthOnOrAfter(e.effective_date), until: null, after: null, note: "Client offboarded" };
+    } else {
+      const until = e.effective_date.slice(0, 7);
+      periods.push(open ? { ...open, until } : { from: null, until, after, note: "Client offboarded" });
+      open = null;
+      after = until;
+    }
+  }
+  if (open) periods.push(open);
+  else if (profile.status === "offboarded" || profile.status === "archived") {
+    const note = profile.status === "archived" ? "Client archived" : "Client offboarded";
+    // An end_date earlier than a later reactivation is stale (the app clears it on
+    // reactivation; only a direct edit leaves it) -- treat the end as undated so the
+    // evidence rule decides, rather than ending the client from the reactivation month.
+    const endFrom = profile.endDate ? firstMonthOnOrAfter(profile.endDate) : null;
+    const from = endFrom && after && endFrom < after ? null : endFrom;
+    periods.push({ from, until: null, after, note });
+  }
+  return periods;
+}
+
 // Chains newBalance = worked - agreedHours + prior forward, replaying every non-override
 // month from each client's earliest month on file through the current one (not just gap-
 // filling forward) — because a retroactive ClickUp edit to an earlier closed month changes
@@ -406,6 +498,7 @@ export async function recomputeAccruals(clients) {
       segFor: (mk) => typeForMonth(profile, events, mk),
       statusFor: (mk) => statusForMonth(profile, events, mk),
       workedMinutesFor: (mk) => folderMinutes?.get(mk) || 0,
+      endPeriods: endPeriodsFor(profile, events),
     });
     for (const r of rows) updatedRows.push(r);
   }
