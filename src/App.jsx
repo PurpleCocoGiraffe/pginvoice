@@ -777,11 +777,21 @@ export default function PGReconciliation({ onNavigateClients }) {
       // live ClickUp data, if it covers that month) minus package, plus whatever
       // balance the sheet DOES have for the month before that. Flagged as estimated
       // rather than presented as verified accrued-sheet data.
+      // The prior month's OWN agreed hours: undefined = no ledger row for it at all, null =
+      // a row saying the client wasn't on a package that month. Estimating a prior balance
+      // with THIS month's package used to invent a carry for a client just moving onto a
+      // package: GPEx went hourly -> 70h in Sep 2026, and August's 128h of hourly work minus
+      // September's 70h showed up as a bogus 58.32h "over-used prior". A month off package
+      // carries nothing into a new package (same as recomputeAccruals' off-package gap).
+      const priorAgreed = accruedClient && priorKey ? accruedClient.agreedByMonth?.[priorKey] : undefined;
+      const priorPkg = priorAgreed ?? pkg; // agreedByMonth values are already parsed numbers
       let priorBalanceEstimated = false;
-      if (priorBalance === null && accruedClient && pkg !== null && pkg > 0 && monthWorked) {
+      if (priorBalance === null && accruedClient && priorAgreed === null && pkg !== null && pkg > 0) {
+        priorBalance = 0;
+      } else if (priorBalance === null && accruedClient && pkg !== null && pkg > 0 && monthWorked) {
         const priorWorkedH = priorMonthWorkedMin / 60;
         const priorPriorBalance = accruedClient.balances[prevMonthKeyStr(priorKey)] ?? 0;
-        priorBalance = priorWorkedH - pkg + priorPriorBalance;
+        priorBalance = priorWorkedH - priorPkg + priorPriorBalance;
         priorBalanceEstimated = true;
       }
       let newBalance = null, remaining = null, kpiPct = null, status = "no-pkg";
@@ -801,10 +811,10 @@ export default function PGReconciliation({ onNavigateClients }) {
       let priorMismatch = null;
       // Skipped for a re-baselined prior month: the reset deliberately differs from what
       // ClickUp hours recompute to, so it isn't a mismatch (the drawer explains it instead).
-      if (!priorBalanceEstimated && !priorRebaseline && pkg !== null && pkg > 0 && priorBalance !== null && monthWorked) {
+      if (!priorBalanceEstimated && !priorRebaseline && priorAgreed !== null && pkg !== null && pkg > 0 && priorBalance !== null && monthWorked) {
         const priorWorkedH = priorMonthWorkedMin / 60;
         const priorPriorBalance = accruedClient.balances[prevMonthKeyStr(priorKey)] ?? 0;
-        const recomputed = priorWorkedH - pkg + priorPriorBalance;
+        const recomputed = priorWorkedH - priorPkg + priorPriorBalance;
         if (Math.abs(recomputed - priorBalance) > MISMATCH_TOLERANCE_H) {
           priorMismatch = { sheetValue: priorBalance, recomputed };
         }
