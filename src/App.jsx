@@ -1219,7 +1219,10 @@ export default function PGReconciliation({ onNavigateClients }) {
     setTimeout(() => URL.revokeObjectURL(url), 200);
   };
   const buildSummaryRows = () => {
-    // "Remaining reset (h)" only exists as a column for a month that actually has resets.
+    // For a client whose month carries a macro-sheet reset, the export's Remaining / New
+    // balance ARE the reset (the agreed official figure); our own computed Remaining is kept
+    // alongside in "System computed remaining (h)" -- a column that only exists for a month
+    // that actually has resets.
     const anyReset = clients.some((c) => c.resetValue != null);
     return clients.map((c) => ({
       "Client (ClickUp)": c.name,
@@ -1231,9 +1234,12 @@ export default function PGReconciliation({ onNavigateClients }) {
       "Carried in (h)": c.priorBalance != null && c.priorBalance < 0 ? Math.abs(c.priorBalance) : "",
       "Over used prior (h)": c.priorBalance != null && c.priorBalance > 0 ? c.priorBalance : "",
       "Worked this month (h)": Math.round(c.worked * 100) / 100,
-      "Remaining (h)": c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
-      ...(anyReset ? { "Remaining reset (h)": c.remainingReset != null ? Math.round(c.remainingReset * 100) / 100 : "" } : {}),
-      "New balance (signed)": c.newBalance != null ? Math.round(c.newBalance * 100) / 100 : "",
+      "Remaining (h)": (c.remainingReset ?? c.remaining) != null ? Math.round((c.remainingReset ?? c.remaining) * 100) / 100 : "",
+      ...(anyReset ? {
+        "Macro sheet reset": c.resetValue != null ? "Yes" : "",
+        "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
+      } : {}),
+      "New balance (signed)": (c.resetValue ?? c.newBalance) != null ? Math.round((c.resetValue ?? c.newBalance) * 100) / 100 : "",
       "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
       "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", "no-pkg": "no package" }[c.status],
       // Quoted has no monthly package/remaining figure (the columns above stay blank for
