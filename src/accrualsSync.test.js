@@ -332,6 +332,18 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     ]);
   });
 
+  it("a stale end_date earlier than a later reactivation falls back to the evidence rule", () => {
+    // reactivated 2026-08-01, later set offboarded by a direct edit that left end_date 2026-05-15
+    const events = [ev(1, "reactivation", "2026-08-01")];
+    const periods = endPeriodsFor(profile("offboarded", "2026-05-15"), events);
+    expect(periods[periods.length - 1]).toEqual({ from: null, until: null, after: "2026-08", note: "Client offboarded" });
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": {} } };
+    run(c, { events, status: "offboarded", endDate: "2026-05-15", startMonth: "2026-08", worked: { "2026-08": 4, "2026-09": 10 } });
+    expect(c.months["2026-08"].accrualValue).toBe(-6); // reactivation month accrues
+    expect(c.months["2026-09"].accrualValue).toBe(-6); // last evidence month, still accrues
+    expect(c.months["2026-10"]).toBeUndefined();
+  });
+
   it("QA repro: reactivating an archived client with no offboarding event does not re-accrue the gap", () => {
     // 10h package, work only in 2026-06, Jul/Aug already cleared as archived, then reactivated 2026-10-01.
     const cleared = (note) => ({ accrualValue: null, workedHours: null, accrualNote: note, isOverride: false });

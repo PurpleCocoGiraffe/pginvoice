@@ -434,8 +434,12 @@ export function endPeriodsFor(profile, events) {
   if (open) periods.push(open);
   else if (profile.status === "offboarded" || profile.status === "archived") {
     const note = profile.status === "archived" ? "Client archived" : "Client offboarded";
-    const from = profile.endDate ? firstMonthOnOrAfter(profile.endDate) : null;
-    periods.push({ from: from && after && from < after ? after : from, until: null, after, note });
+    // An end_date earlier than a later reactivation is stale (the app clears it on
+    // reactivation; only a direct edit leaves it) -- treat the end as undated so the
+    // evidence rule decides, rather than ending the client from the reactivation month.
+    const endFrom = profile.endDate ? firstMonthOnOrAfter(profile.endDate) : null;
+    const from = endFrom && after && endFrom < after ? null : endFrom;
+    periods.push({ from, until: null, after, note });
   }
   return periods;
 }
