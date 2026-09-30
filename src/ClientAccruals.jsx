@@ -119,7 +119,9 @@ export default function ClientAccruals() {
   async function saveComment(client, monthKey) {
     setSaving(true);
     try {
-      await upsertAccrualCell(client.client, monthKey, { comment: draftComment || null }, { manager: client.manager, agreedHpm: client.agreedHpm });
+      // This month's own agreed hours, never the stale client-level scalar (see CLAUDE.md) --
+      // the upsert writes agreed_hpm back onto the row.
+      await upsertAccrualCell(client.client, monthKey, { comment: draftComment || null }, { manager: client.manager, agreedHpm: client.months[monthKey]?.agreedHpm ?? null });
       setClients((prev) => prev.map((c) => (c.client !== client.client ? c : { ...c, months: { ...c.months, [monthKey]: { ...(c.months[monthKey] || {}), comment: draftComment || null } } })));
       setEditingCell(null);
     } catch (e) {

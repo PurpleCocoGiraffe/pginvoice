@@ -40,7 +40,10 @@ export function parseHeaderToMonth(cell, contextYear) {
     return { year: cell.getFullYear(), month: cell.getMonth(), label: monthLabel(cell.getFullYear(), cell.getMonth()) };
   const s = String(cell).trim();
   const lower = s.toLowerCase();
-  if (lower.includes("%") || lower.includes("comment")) return null;
+  // "reset" too: Client Accruals' own export adds an "<Mon YYYY> Reset (macro sheet)" column,
+  // which would otherwise be read as a second (rightmost, so winning) balance column for
+  // that month and blank every non-reset client's balance on re-import.
+  if (lower.includes("%") || lower.includes("comment") || lower.includes("reset")) return null;
   const dmy = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
   if (dmy) {
     let year = parseInt(dmy[3], 10);

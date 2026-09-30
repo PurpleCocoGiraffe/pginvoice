@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - `npm test` — run the vitest suite once (`npm run test:coverage` for coverage)
 
-Tests: a handful of vitest `*.test.js` files (`nameMatch.test.js`, `accrualsSync.test.js`, `capacityData.test.js`, `overviewData.test.js`, `DateRangePicker.test.js`). Playwright is a devDependency with no `.spec` files checked in; if you add any, wire up an `npm` script for them.
+Tests: a handful of vitest `*.test.js` files (`nameMatch.test.js`, `accrualsSync.test.js`, `capacityData.test.js`, `overviewData.test.js`, `DateRangePicker.test.js`, `parsers.test.js`). Playwright is a devDependency with no `.spec` files checked in; if you add any, wire up an `npm` script for them.
 
 This test suite is small and pointed: it exists almost entirely to pin previously-shipped **silent bugs** as permanent regressions (wrong active-client counts, sign-cancellation in accrual health, UTC date off-by-one, several stale-scalar bugs — see below), not for general coverage. Treat the files/behaviors they cover as fragile and re-check them after touching adjacent logic.
 
