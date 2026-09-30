@@ -916,6 +916,10 @@ button { font: inherit; }
    "PACKAGE" vs "HOURLY" are different widths, so every column after Type
    shifted row to row). Grid fixes every column to the same track everywhere. */
 .pg-row-grid-cols { grid-template-columns: 18px 32px minmax(0, 1.4fr) 90px 90px 90px 90px 90px 130px 26px; }
+/* Same track list plus one more numeric track right after Remaining, for a month where
+   some client carries a macro-sheet "Remaining Reset" (header, rows and cost-centre mini
+   rows all switch together -- see ClientRow.jsx's `showReset`). */
+.pg-row-grid-cols--reset { grid-template-columns: 18px 32px minmax(0, 1.4fr) 90px 90px 90px 90px 90px 90px 130px 26px; }
 .pg-rowlist__head {
   display: grid; align-items: center; gap: 16px; padding: 10px 18px;
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
@@ -975,6 +979,7 @@ button { font: inherit; }
    predictable track instead of wrapping organically. */
 @media (max-width: 900px) {
   .pg-row-grid-cols { grid-template-columns: 16px 28px minmax(0, 1.1fr) 64px 64px 64px 64px 64px 92px 22px; gap: 10px; }
+  .pg-row-grid-cols--reset { grid-template-columns: 16px 28px minmax(0, 1.1fr) 64px 64px 64px 64px 64px 64px 92px 22px; }
   .pg-rowlist__head { display: none; }
   .pg-row__num-label { display: block; }
 }
@@ -993,6 +998,10 @@ button { font: inherit; }
   .pg-row-grid-cols > *:nth-child(7) { grid-column: 3 / 5; grid-row: 3; }
   .pg-row-grid-cols > *:nth-child(8) { grid-column: 5 / 7; grid-row: 3; }
   .pg-row-grid-cols > .pg-row__status { grid-column: 3 / 7; grid-row: 4; text-align: left; }
+  /* Reset variant: the 9th cell (Remaining Reset) sits directly under Remaining on the
+     status line, with the status pill narrowed to the left half beside it. */
+  .pg-row-grid-cols--reset > *:nth-child(9) { grid-column: 5 / 7; grid-row: 4; }
+  .pg-row-grid-cols--reset > .pg-row__status { grid-column: 3 / 5; }
   /* Kebab menu stays pinned to the row's trailing edge across every row instead of
      drifting into the reflowed body -- spans the full row height, aligned top-right. */
   .pg-row-grid-cols > .pg-row__menu { grid-column: 7; grid-row: 1 / 5; align-self: start; justify-self: end; }
@@ -1053,8 +1062,11 @@ button { font: inherit; }
 .pg-costcentre-mini__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); z-index: 1; }
 .pg-costcentre-mini__name { min-width: 0; font-family: var(--font-body); font-size: 13px; color: var(--fg-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pg-costcentre-mini__hours { font-family: var(--font-mono); font-size: 13px; color: var(--fg-primary); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 900px) { .pg-costcentre-mini__row { grid-template-columns: 16px 28px minmax(0, 1.1fr) 64px 64px 64px 64px 64px 92px 22px; } }
-@media (max-width: 640px) { .pg-costcentre-mini__row { grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 8px; } .pg-costcentre-mini__row > *:not(.pg-costcentre-mini__dotcell):not(.pg-costcentre-mini__name):not(.pg-costcentre-mini__hours) { display: none; } }
+@media (max-width: 900px) {
+  .pg-costcentre-mini__row { grid-template-columns: 16px 28px minmax(0, 1.1fr) 64px 64px 64px 64px 64px 92px 22px; }
+  .pg-costcentre-mini__row.pg-row-grid-cols--reset { grid-template-columns: 16px 28px minmax(0, 1.1fr) 64px 64px 64px 64px 64px 64px 92px 22px; }
+}
+@media (max-width: 640px) { .pg-costcentre-mini__row, .pg-costcentre-mini__row.pg-row-grid-cols--reset { grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 8px; } .pg-costcentre-mini__row > *:not(.pg-costcentre-mini__dotcell):not(.pg-costcentre-mini__name):not(.pg-costcentre-mini__hours) { display: none; } }
 
 /* ---- client invoicing: right-side drawer -----------------------------------
    Purple Giraffe Design OS §11.7 — client detail, opened alongside the list

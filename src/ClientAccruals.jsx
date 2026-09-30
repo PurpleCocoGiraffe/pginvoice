@@ -93,7 +93,7 @@ export default function ClientAccruals() {
       // the status filter — better to surface an orphaned/unmatched record than silently drop it.
       const status = statusByClient.get(c.client);
       if (statusFilter !== "all" && status && status !== statusFilter) return false;
-      const values = months.map((mk) => c.months[mk]?.accrualValue).filter((v) => typeof v === "number" && v !== 0);
+      const values = months.flatMap((mk) => [c.months[mk]?.accrualValue, c.months[mk]?.resetValue]).filter((v) => typeof v === "number" && v !== 0);
       if (values.length === 0) return false; // months with no accrual for this client are never shown
       if (signFilter === "positive" && !values.some((v) => v > 0)) return false;
       if (signFilter === "negative" && !values.some((v) => v < 0)) return false;
@@ -119,7 +119,9 @@ export default function ClientAccruals() {
   async function saveComment(client, monthKey) {
     setSaving(true);
     try {
-      await upsertAccrualCell(client.client, monthKey, { comment: draftComment || null }, { manager: client.manager, agreedHpm: client.agreedHpm });
+      // This month's own agreed hours, never the stale client-level scalar (see CLAUDE.md) --
+      // the upsert writes agreed_hpm back onto the row.
+      await upsertAccrualCell(client.client, monthKey, { comment: draftComment || null }, { manager: client.manager, agreedHpm: client.months[monthKey]?.agreedHpm ?? null });
       setClients((prev) => prev.map((c) => (c.client !== client.client ? c : { ...c, months: { ...c.months, [monthKey]: { ...(c.months[monthKey] || {}), comment: draftComment || null } } })));
       setEditingCell(null);
     } catch (e) {
@@ -128,6 +130,9 @@ export default function ClientAccruals() {
       setSaving(false);
     }
   }
+
+  // Months where any client carries a macro-sheet reset get an extra "Reset" sub-column.
+  const resetMonths = new Set(months.filter((mk) => (clients || []).some((c) => c.months[mk]?.resetValue != null)));
 
   function exportRange() {
     exportAccrualsWorkbook(filtered, months, `client-accruals-${months[0]}_to_${months[months.length - 1]}`);
@@ -230,7 +235,7 @@ export default function ClientAccruals() {
               <th>Client</th>
               <th>Manager</th>
               <th>Agreed hrs</th>
-              {months.map((mk) => <th key={mk} colSpan={4}>{monthLabelOf(mk)}</th>)}
+              {months.map((mk) => <th key={mk} colSpan={resetMonths.has(mk) ? 5 : 4}>{monthLabelOf(mk)}</th>)}
             </tr>
             <tr>
               <th /><th /><th />
@@ -238,6 +243,7 @@ export default function ClientAccruals() {
                 <React.Fragment key={mk}>
                   <th style={{ fontWeight: 400 }}>Worked</th>
                   <th style={{ fontWeight: 400 }}>Accrual</th>
+                  {resetMonths.has(mk) && <th style={{ fontWeight: 400 }} title="Closing figure from the legacy macro sheet -- carried into next month in place of the computed accrual">Reset</th>}
                   <th style={{ fontWeight: 400 }}>Accrual %</th>
                   <th style={{ fontWeight: 400 }}>Comments</th>
                 </React.Fragment>
@@ -281,6 +287,11 @@ export default function ClientAccruals() {
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }} title={cell.isOverride ? "Historical figure from the original sheet" : "Computed from ClickUp hours"}>
                           {cell.accrualValue ?? cell.accrualNote ?? "—"}{cell.isOverride && <span className="pg-tag pg-tag--muted" style={{ marginLeft: 4 }}>sheet</span>}
                         </td>
+                        {resetMonths.has(mk) && (
+                          <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }} title={cell.resetValue != null ? `Macro sheet reset${cell.resetNote ? `: ${cell.resetNote}` : ""} -- next month carries this instead of the computed accrual` : undefined}>
+                            {cell.resetValue != null ? cell.resetValue : ""}
+                          </td>
+                        )}
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cell.pct != null ? `${(cell.pct * 100).toFixed(1)}%` : "—"}</td>
                         <td style={{ minWidth: 200 }}>
                           {editingCell === commentKey ? (

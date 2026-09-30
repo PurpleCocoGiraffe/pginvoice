@@ -5,6 +5,7 @@
 // cap_people roster, and ClickUp rows) and returns plain aggregates.
 import { findPersonMatch } from "./nameMatch.js";
 import { computeMonthlyAvailability, last6MonthKeys } from "./capacityData.js";
+import { carryOutOf } from "./format.js";
 
 /* ============================================================
    TEAM — per-consultant, per-month billable/non-billable/PG-time totals
@@ -134,7 +135,9 @@ export function accrualHealth(accrualClients, negativeThresholdHrs = NEGATIVE_BA
     const months = Object.keys(c.months || {}).sort();
     if (!months.length) continue;
     const latestKey = months[months.length - 1];
-    const value = c.months[latestKey]?.accrualValue;
+    // Carry-out, not the raw computed figure: a month re-baselined by a macro-sheet reset
+    // (see carryOutOf) hands the reset forward, so that's the client's real balance.
+    const value = carryOutOf(c.months[latestKey]);
     if (value === null || value === undefined) continue;
     netHours += value;
     if (value < -negativeThresholdHrs) negativeList.push({ client: c.client, balance: value, monthKey: latestKey });
@@ -213,9 +216,10 @@ export function sixMonthTrend(accrualClients, clickupRows, monthKeysOverride) {
         hasAny = true;
         if (cell.pct > 0.10) overServiced++;
       }
-      if (cell.accrualValue !== null && cell.accrualValue !== undefined) {
+      const carry = carryOutOf(cell); // reset ?? computed balance -- see accrualHealth
+      if (carry !== null) {
         hasAny = true;
-        totalAccrued += cell.accrualValue;
+        totalAccrued += carry;
       }
     }
     if (!hasAny) continue; // no data at all for this month — omit, don't zero-fill

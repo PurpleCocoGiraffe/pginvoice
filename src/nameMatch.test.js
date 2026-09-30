@@ -267,6 +267,43 @@ describe("dynamic cost centres (Clients module editable rules)", () => {
   });
 });
 
+describe("multiFolderAccrualMatchesFor -- a dynamic client's own folder (Majestic Plumbing accrual regression)", () => {
+  afterEach(() => setDynamicCostCentres([]));
+  // Live bug: Majestic's dynamic rows are one cost_centre + one sub_project, and neither is
+  // its own folder, so the accrual set was ONLY "MP - Commercial Leak Tech (WA)" -- the
+  // ledger dropped every hour logged under "Majestic Plumbing (WA)" itself.
+  const MAJESTIC_ROWS = [
+    { client: "Majestic Plumbing + CLT", folder: "MP - Commercial Leak Tech (WA)", kind: "cost_centre" },
+    { client: "Majestic Plumbing + CLT", folder: "Majestic Plumbing Quoted Web Project (WA)", kind: "sub_project" },
+  ];
+  const FOLDERS = ["Majestic Plumbing (WA)", "MP - Commercial Leak Tech (WA)", "Majestic Plumbing Quoted Web Project (WA)", "Unrelated"];
+
+  it("folds the registered own folder in alongside the cost centre, still excluding the sub-project", () => {
+    setDynamicCostCentres(MAJESTIC_ROWS);
+    const got = multiFolderAccrualMatchesFor("Majestic Plumbing + CLT", FOLDERS, "Majestic Plumbing (WA)");
+    expect([...got].sort()).toEqual(["MP - Commercial Leak Tech (WA)", "Majestic Plumbing (WA)"].sort());
+  });
+
+  it("without the own-folder argument keeps its previous (sibling-only) result", () => {
+    setDynamicCostCentres(MAJESTIC_ROWS);
+    expect(multiFolderAccrualMatchesFor("Majestic Plumbing + CLT", FOLDERS)).toEqual(["MP - Commercial Leak Tech (WA)"]);
+  });
+
+  it("does not add the own folder when every dynamic row is a sub-project (caller falls back to the own folder itself)", () => {
+    setDynamicCostCentres([{ client: "ARAS", folder: "ARAS Website Optimisation Project", kind: "sub_project" }]);
+    expect(multiFolderAccrualMatchesFor("ARAS", ["Aged Rights Advocacy Services", "ARAS Website Optimisation Project"], "Aged Rights Advocacy Services")).toEqual([]);
+  });
+
+  it("never adds an own folder that is itself marked sub_project, or one absent from the live folder list", () => {
+    setDynamicCostCentres([
+      { client: "X", folder: "X Cost Centre", kind: "cost_centre" },
+      { client: "X", folder: "X Own", kind: "sub_project" },
+    ]);
+    expect(multiFolderAccrualMatchesFor("X", ["X Cost Centre", "X Own"], "X Own")).toEqual(["X Cost Centre"]);
+    expect(multiFolderAccrualMatchesFor("X", ["X Cost Centre"], "X Missing")).toEqual(["X Cost Centre"]);
+  });
+});
+
 describe("splitTaskPrefixFolders (task-name-prefix cost centres, e.g. Aus3C's new shared-folder tracking)", () => {
   afterEach(() => setDynamicCostCentres([]));
 

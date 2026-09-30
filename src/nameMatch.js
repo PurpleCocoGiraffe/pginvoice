@@ -352,24 +352,40 @@ export function multiFolderMatchesFor(name, allFolders) {
 // just vanish from reporting. Task-prefix synthetic folders always count toward accrual (this
 // schema has no way to mark one "billed separately" the way a sub_project row can yet), so
 // they're unioned in unconditionally here too.
-export function multiFolderAccrualMatchesFor(name, allFolders) {
+// `ownFolder` (optional): the client's own registered ClickUp folder (pginvoice_clients.
+// clickup_folder). A DYNAMIC client's cost-centre rows never include its own folder unless
+// someone adds it as a row by hand, so without this a client with at least one real
+// cost_centre sibling resolved to ONLY that sibling -- recomputeAccruals then summed just the
+// sibling's hours and silently dropped the client's own (Majestic Plumbing: only "MP -
+// Commercial Leak Tech (WA)" counted, its own "Majestic Plumbing (WA)" folder's hours never
+// did). Mirrors the same fold Client Invoicing's roll-up already does (App.jsx). Only added
+// when something else already matched -- an empty/null result still means "fall back to the
+// caller's single-folder path" -- and never when the folder is itself excluded from accrual.
+export function multiFolderAccrualMatchesFor(name, allFolders, ownFolder) {
   const dynamic = DYNAMIC_COST_CENTRES.get(name);
   const taskPrefixFolders = taskPrefixSyntheticFoldersFor(name);
   let base;
+  let isExcluded = () => false;
   if (dynamic) {
-    base = allFolders.filter((f) => dynamic.folders.includes(f) && !dynamic.excludeFromAccrual.includes(f));
+    isExcluded = (f) => dynamic.excludeFromAccrual.includes(f);
+    base = allFolders.filter((f) => dynamic.folders.includes(f) && !isExcluded(f));
   } else {
     const norm = normalizeName(name);
     const rule = MULTI_FOLDER_CLIENTS.find((r) => norm.includes(r.key));
+    if (rule?.excludeFromAccrual) isExcluded = (f) => rule.excludeFromAccrual.some((p) => normalizeName(f).startsWith(p));
     base = rule ? allFolders.filter((f) => {
       const nf = normalizeName(f);
       const matched = (rule.exact && rule.exact.includes(nf)) || rule.prefixes.some((p) => nf.startsWith(p));
       if (!matched) return false;
-      if (rule.excludeFromAccrual && rule.excludeFromAccrual.some((p) => nf.startsWith(p))) return false;
+      if (isExcluded(f)) return false;
       return true;
     }) : null;
   }
-  return unionTaskPrefixFolders(base, allFolders, taskPrefixFolders);
+  const out = unionTaskPrefixFolders(base, allFolders, taskPrefixFolders);
+  if (ownFolder && out && out.length && !out.includes(ownFolder) && allFolders.includes(ownFolder) && !isExcluded(ownFolder)) {
+    return [...out, ownFolder];
+  }
+  return out;
 }
 
 // Internal / non-revenue folders (per the billable-hours guide, §3.1): onboarding/

@@ -786,7 +786,18 @@ export default function PGReconciliation({ onNavigateClients }) {
       // agreed-hours column at all).
       const monthAgreed = accruedClient?.agreedByMonth?.[monthKey];
       const pkg = monthAgreed !== undefined ? monthAgreed : (accruedClient?.package ?? null);
+      // `balances` holds each month's carry-out (a macro-sheet reset when the month has one,
+      // otherwise the computed balance -- see buildReconciliationClients), so a reset prior
+      // month flows in here, and into both priorPriorBalance lookups below, automatically.
       let priorBalance = accruedClient && priorKey ? (accruedClient.balances[priorKey] ?? null) : null;
+      const priorReset = accruedClient && priorKey ? (accruedClient.resets?.[priorKey] ?? null) : null;
+      // The drawer explains a re-baselined carry (instead of flagging it as a mismatch).
+      const priorRebaseline = priorReset !== null
+        ? { resetValue: priorReset, computed: accruedClient.computedBalances?.[priorKey] ?? null }
+        : null;
+      // This month's own reset, if any -- shown as the "Remaining Reset" column alongside
+      // our own computed Remaining (which is left unchanged).
+      const monthReset = accruedClient && monthKey ? (accruedClient.resets?.[monthKey] ?? null) : null;
       // The accrued sheet doesn't have a column for the prior month (e.g. it hasn't
       // been re-uploaded with last month's closing balance yet) — estimate it the same
       // way the mismatch cross-check below does: worked hours that month (from the
@@ -815,7 +826,9 @@ export default function PGReconciliation({ onNavigateClients }) {
       // ClickUp data we have for that month right now. A mismatch usually means ClickUp
       // entries were edited after the accrued sheet was last updated for that period.
       let priorMismatch = null;
-      if (!priorBalanceEstimated && pkg !== null && pkg > 0 && priorBalance !== null && monthWorked) {
+      // Skipped for a re-baselined prior month: the reset deliberately differs from what
+      // ClickUp hours recompute to, so it isn't a mismatch (the drawer explains it instead).
+      if (!priorBalanceEstimated && !priorRebaseline && pkg !== null && pkg > 0 && priorBalance !== null && monthWorked) {
         const priorWorkedH = priorMonthWorkedMin / 60;
         const priorPriorBalance = accruedClient.balances[prevMonthKeyStr(priorKey)] ?? 0;
         const recomputed = priorWorkedH - pkg + priorPriorBalance;
@@ -826,6 +839,15 @@ export default function PGReconciliation({ onNavigateClients }) {
       const clientObj = {
         ...c, worked, accruedClient, matchInfo,
         pkg, priorBalance, priorBalanceEstimated, newBalance, remaining, kpiPct, status, priorMismatch,
+        priorRebaseline,
+        resetValue: monthReset,
+        // Remaining convention (positive = hours left): the negated signed reset.
+        remainingReset: monthReset !== null ? 0 - monthReset : null, // 0 - x, not -x: a reset of 0 must not become -0
+        // The official closing figures every export/copy/PDF path must use: the macro-sheet
+        // reset when this month has one, otherwise our computed figures. Read these, never
+        // newBalance/remaining directly, or an export silently undoes the reset.
+        balanceForward: monthReset ?? newBalance,
+        remainingShown: monthReset !== null ? 0 - monthReset : remaining,
         matched: !!accruedClient,
         displayName: accruedClient?.name ?? c.name,
         costCentre: c.costCentre || null,
@@ -924,6 +946,9 @@ export default function PGReconciliation({ onNavigateClients }) {
   // Shifts both the reporting month and the balance-lookup month back by one, mirroring
   // what the "prior balance from" auto-chain effect does when you step the month picker.
   const prevMonthDataKey = dataMonthKey ? prevMonthKeyStr(dataMonthKey) : "";
+  // Data-driven, not tied to any specific month: the "Remaining Reset" column only appears
+  // for a viewed month where at least one client carries a macro-sheet reset.
+  const showResetCol = useMemo(() => clients.some((c) => c.resetValue != null), [clients]);
   const prevClients = useMemo(
     () => (dataMonthKey ? buildClientsForMonth(prevMonthDataKey, prevMonthKeyStr(priorMonthKey || prevMonthDataKey)) : []),
     [buildClientsForMonth, dataMonthKey, prevMonthDataKey, priorMonthKey]
@@ -1198,8 +1223,12 @@ export default function PGReconciliation({ onNavigateClients }) {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 200);
   };
-  const buildSummaryRows = () =>
-    clients.map((c) => ({
+  const buildSummaryRows = () => {
+    // For a client whose month carries a macro-sheet reset, the export's Remaining / New
+    // balance ARE the reset (the agreed official figure); our own computed Remaining is kept
+    // alongside in "System computed remaining (h)" -- a column that only exists for a month
+    // that actually has resets.
+    return clients.map((c) => ({
       "Client (ClickUp)": c.name,
       "Client type": TYPE_LABELS_SHORT[c.type],
       "Matched to (Accrued)": c.accruedClient?.name ?? "",
@@ -1209,8 +1238,12 @@ export default function PGReconciliation({ onNavigateClients }) {
       "Carried in (h)": c.priorBalance != null && c.priorBalance < 0 ? Math.abs(c.priorBalance) : "",
       "Over used prior (h)": c.priorBalance != null && c.priorBalance > 0 ? c.priorBalance : "",
       "Worked this month (h)": Math.round(c.worked * 100) / 100,
-      "Remaining (h)": c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
-      "New balance (signed)": c.newBalance != null ? Math.round(c.newBalance * 100) / 100 : "",
+      "Remaining (h)": c.remainingShown != null ? Math.round(c.remainingShown * 100) / 100 : "",
+      ...(showResetCol ? {
+        "Macro sheet reset": c.resetValue != null ? "Yes" : "",
+        "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
+      } : {}),
+      "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
       "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
       "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", "no-pkg": "no package" }[c.status],
       // Quoted has no monthly package/remaining figure (the columns above stay blank for
@@ -1221,6 +1254,7 @@ export default function PGReconciliation({ onNavigateClients }) {
       "Quoted remaining (h)": c.type === "quoted" && c.quotedRemaining != null ? Math.round(c.quotedRemaining * 100) / 100 : "",
       "Consultants": [...c.userMinutes.entries()].map(([u, m]) => `${u || "—"} (${fmt(m / 60)}h)`).join("; "),
     }));
+  };
   const buildPendingRows = () =>
     clients
       .filter((c) => isPackageLikeType(c.type) && (c.status === "over" || c.status === "under"))
@@ -1230,9 +1264,10 @@ export default function PGReconciliation({ onNavigateClients }) {
         "Package (h/month)": c.pkg,
         "Prior month balance": Math.round((c.priorBalance ?? 0) * 100) / 100,
         "Worked this month (h)": Math.round(c.worked * 100) / 100,
-        "New balance (h)": Math.round(c.newBalance * 100) / 100,
-        "Direction": c.newBalance > 0 ? "OVER-SERVED (owe next month)" : "UNDER-SERVED (client credit)",
-        "Available next month (h)": Math.round((c.pkg - c.newBalance) * 100) / 100,
+        "New balance (h)": Math.round(c.balanceForward * 100) / 100,
+        "Direction": c.balanceForward > 0 ? "OVER-SERVED (owe next month)" : "UNDER-SERVED (client credit)",
+        // Next month starts from the carry-out, i.e. this month's macro-sheet reset if it has one.
+        "Available next month (h)": Math.round((c.pkg - c.balanceForward) * 100) / 100,
         "KPI variance (%)": Math.round(c.kpiPct * 10) / 10,
       }));
   // Ready-to-merge accrued-hours export for the real last calendar month (not
@@ -1253,8 +1288,12 @@ export default function PGReconciliation({ onNavigateClients }) {
       rows: list.map((c) => ({
         "Client": c.displayName,
         "Agreed h.p.m": c.pkg,
-        [colLabel]: c.newBalance != null ? Math.round(c.newBalance * 100) / 100 : "",
+        // The carry-out (macro-sheet reset when the month has one), not our computed
+        // balance -- merging the computed figure back into the master sheet would undo
+        // the reset.
+        [colLabel]: c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
         "Estimated (no sheet data for this month yet)": c.priorBalanceEstimated ? "Yes" : "",
+        "Macro sheet reset": c.resetValue != null ? "Yes" : "",
       })),
       lastMonthKey, colLabel,
     };
@@ -1307,11 +1346,15 @@ export default function PGReconciliation({ onNavigateClients }) {
     if (isPackageLikeType(c.type) && c.pkg != null) {
       lines.push(`Package: ${fmt(c.pkg)} h`);
       const p = c.priorBalance ?? 0;
-      if (p < 0) lines.push(`Carried in from ${priorMonthPretty}: ${fmt(Math.abs(p))} h`);
-      else if (p > 0) lines.push(`Over-used in ${priorMonthPretty}: ${fmt(p)} h`);
-      else lines.push(`Prior balance: 0 h`);
+      const rebased = c.priorRebaseline ? " (re-baselined)" : "";
+      if (p < 0) lines.push(`Carried in from ${priorMonthPretty}${rebased}: ${fmt(Math.abs(p))} h`);
+      else if (p > 0) lines.push(`Over-used in ${priorMonthPretty}${rebased}: ${fmt(p)} h`);
+      else lines.push(`Prior balance${rebased}: 0 h`);
       lines.push(`Total accrued time: ${fmt(c.worked + p)} h`);
-      lines.push(c.remaining >= 0 ? `Remaining this month: ${fmt(c.remaining)} h` : `Over by ${fmt(Math.abs(c.remaining))} h`);
+      // A month re-baselined from the macro sheet reports the reset as its Remaining figure.
+      const rem = c.remainingShown;
+      lines.push(rem >= 0 ? `Remaining this month: ${fmt(rem)} h` : `Over by ${fmt(Math.abs(rem))} h`);
+      if (c.resetValue != null) lines.push("(Remaining re-baselined to the accrual sheet's closing figure for this month.)");
       if (c.status === "over") lines.push(`⚠ Over the +10% KPI (${fmt(c.kpiPct, 1)}% of package)`);
       if (c.status === "under") lines.push(`⚠ Under the −10% KPI (${fmt(c.kpiPct, 1)}% of package), accruing`);
     } else if (c.type === "quoted") {
@@ -1586,7 +1629,7 @@ export default function PGReconciliation({ onNavigateClients }) {
         {/* client list — numbered rows, click one to open its full detail in the drawer */}
         {ready && (
           <div className="pg-rowlist">
-            <div className="pg-rowlist__head pg-row-grid-cols" aria-hidden="true">
+            <div className={"pg-rowlist__head pg-row-grid-cols" + (showResetCol ? " pg-row-grid-cols--reset" : "")} aria-hidden="true">
               <span />
               <span />
               <span>Client</span>
@@ -1595,6 +1638,7 @@ export default function PGReconciliation({ onNavigateClients }) {
               <span>Package</span>
               <span>Worked</span>
               <span>Remaining</span>
+              {showResetCol && <span title="Closing figure from the legacy macro sheet -- carried into next month in place of our computed balance">Remaining Reset</span>}
               <span>Status</span>
               <span />
             </div>
@@ -1607,16 +1651,16 @@ export default function PGReconciliation({ onNavigateClients }) {
               // border/shadow/radius in favor of the tile's, with divider lines
               // between rows instead of gaps between separate cards.
               if (!c.costCentre && siblings.length === 0) {
-                return <ClientRow key={c.name} index={i + 1} client={c} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} />;
+                return <ClientRow key={c.name} index={i + 1} client={c} showReset={showResetCol} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} />;
               }
               return (
                 <div className="pg-tile" key={c.name}>
-                  <ClientRow index={i + 1} client={c} tileRow hasMoreBelow={siblings.length > 0} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} />
+                  <ClientRow index={i + 1} client={c} showReset={showResetCol} tileRow hasMoreBelow={siblings.length > 0} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} />
                   {siblings.map((s, idx) => {
                     const sc = withConsultantFilter(s, consultantFilter);
                     return (
                       <ClientRow
-                        key={sc.name} client={sc} nested tileRow hasMoreBelow={idx < siblings.length - 1}
+                        key={sc.name} client={sc} showReset={showResetCol} nested tileRow hasMoreBelow={idx < siblings.length - 1}
                         subIndex={`${i + 1}s${idx === 0 ? "" : idx + 1}`}
                         avatarOf={{ name: c.displayName, logo: c.logoUrl }}
                         parentName={c.displayName} active={drawerClientName === sc.name}

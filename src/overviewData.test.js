@@ -150,3 +150,17 @@ describe("teamMonthlyTotals", () => {
     expect(teamMonthlyTotals([], null, []).size).toBe(0);
   });
 });
+
+describe("accrual reset (macro-sheet re-baseline) -- Overview uses the carry-out figure", () => {
+  it("accrualHealth and sixMonthTrend read reset ?? accrualValue for a re-baselined month (0 included)", () => {
+    const clients = [
+      { client: "Reset", months: { "2026-08": { accrualValue: 5, resetValue: -30 } } },
+      { client: "ZeroReset", months: { "2026-08": { accrualValue: 7, resetValue: 0 } } },
+      { client: "Plain", months: { "2026-08": { accrualValue: 2 } } },
+    ];
+    const health = accrualHealth(clients);
+    expect(health.netHours).toBe(-28);
+    expect(health.negativeList.map((n) => n.client)).toEqual(["Reset"]);
+    expect(sixMonthTrend(clients, [], ["2026-08"]).totalAccruedHours).toEqual([-28]);
+  });
+});

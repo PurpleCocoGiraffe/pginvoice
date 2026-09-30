@@ -9,6 +9,9 @@ import { fetchClients, fetchClientEvents, typeForMonth, statusForMonth } from ".
 import { monthLabel } from "./parsers.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { PG_ACCRUALS_KEY } from "./storageKeys.js";
+import { carryOutOf } from "./format.js";
+
+export { carryOutOf };
 
 const PAGE_SIZE = 1000;
 
@@ -62,7 +65,7 @@ export async function fetchAccrualsFromSupabase() {
   while (true) {
     const { data, error } = await supabase
       .from("pginvoice_accruals")
-      .select("client, account_manager, agreed_hpm, month_key, accrual_value, accrual_note, pct_over_under, comment, worked_hours, is_override, hours_flagged")
+      .select("client, account_manager, agreed_hpm, month_key, accrual_value, accrual_note, pct_over_under, comment, worked_hours, is_override, hours_flagged, reset_value, reset_note")
       .order("client", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
@@ -112,12 +115,23 @@ export function buildReconciliationClients(rows) {
     // package since August, no row written for August's agreed_hpm -- still showing its
     // old 32 hr/month figure, pulled from the stale client-level scalar as a fallback.
     const agreedByMonth = {};
+    // `balances` is each month's CARRY-OUT (reset ?? computed balance) -- every reader in
+    // Client Invoicing uses it as "the prior month's balance" for the following month, so a
+    // macro-sheet reset flows into Carry, the estimate fallback, the mismatch cross-check and
+    // the last-month export without each of those needing its own special case.
+    // `computedBalances` keeps our own system figure for display alongside a reset, and
+    // `resets` flags exactly which months were re-baselined.
+    const computedBalances = {};
+    const resets = {};
     for (const [mk, cell] of Object.entries(c.months)) {
       monthSet.add(mk);
-      if (cell.accrualValue !== null) balances[mk] = cell.accrualValue;
+      const carry = carryOutOf(cell);
+      if (carry !== null) balances[mk] = carry;
+      if (cell.accrualValue !== null) computedBalances[mk] = cell.accrualValue;
+      if (cell.resetValue != null) resets[mk] = cell.resetValue;
       agreedByMonth[mk] = cell.agreedHpm !== null ? parseAgreedHours(cell.agreedHpm) : null;
     }
-    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances };
+    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets };
   });
   const balanceCols = [...monthSet].sort().map((mk) => {
     const [y, m] = mk.split("-").map(Number); // m is 1-12
@@ -147,6 +161,11 @@ export function rowsToClients(rows) {
       // event, or simply moving off package for a while), so the right figure for any
       // given month is THIS row's, never the client-level agreedHpm below.
       agreedHpm: r.agreed_hpm === null || r.agreed_hpm === undefined ? null : r.agreed_hpm,
+      // One-off re-baseline from the legacy macro sheet (currently only ever on 2026-08,
+      // enforced by a table check constraint). Same sign as accrualValue; 0 is a real value.
+      // Never written by recomputeAccruals -- see carryOutOf in format.js.
+      resetValue: r.reset_value == null ? null : Number(r.reset_value),
+      resetNote: r.reset_note || null,
     };
   }
   return [...byClient.values()].sort((a, b) => a.client.localeCompare(b.client));
@@ -180,6 +199,159 @@ export async function upsertAccrualRows(rows) {
 }
 
 // -------------------------- auto-compute from live ClickUp hours --------------------------
+
+// Which folders' minutes count toward one client's package accrual, summed per month.
+// Returns Map(monthKey -> minutes), or null when nothing matched at all.
+export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolderMonth, folderNames = [...workedByFolderMonth.keys()]) {
+  // Some clients (Aus3C, Clarke Energy, Magain, etc.) log real work across several
+  // sibling ClickUp folders instead of one umbrella folder -- sum minutes across all of
+  // them per month rather than picking a single best-match folder, which was silently
+  // undercounting these clients' accruals. The client's own registered folder is passed
+  // through so a dynamic cost-centre client's own hours are never dropped in favour of
+  // only its siblings' (see multiFolderAccrualMatchesFor).
+  const multi = multiFolderAccrualMatchesFor(clientName, folderNames, clickupFolder);
+  if (multi && multi.length) {
+    const folderMinutes = new Map();
+    for (const f of multi) {
+      const fm = workedByFolderMonth.get(f);
+      if (!fm) continue;
+      for (const [mk, min] of fm) folderMinutes.set(mk, (folderMinutes.get(mk) || 0) + min);
+    }
+    return folderMinutes;
+  }
+  if (clickupFolder && workedByFolderMonth.has(clickupFolder)) {
+    // The Clients module already has an authoritative, human-set folder mapping for
+    // this exact client (pginvoice_clients.clickup_folder) -- prefer it over re-deriving
+    // a match from the accrual sheet's own client name string. Found via a real
+    // discrepancy: "Coonwarra" (the accrual sheet's name for this client) doesn't
+    // fuzzy-match its real ClickUp folder "Coonawarra Grape and Wine Inc" at all (one
+    // letter off, zero shared tokens after the "Grape and Wine Inc" suffix), so the old
+    // name-only lookup below silently recorded 0 worked hours against a client with
+    // 21.23h of real billable July work (29.02h total logged, 7.78h of it non-billable
+    // and correctly excluded) -- and "PRG Strategic Advisors" vs "PRG Financial Services
+    // Outsourced Marketing" hit the exact same failure mode (0 of 8.37 real billable
+    // hours counted). Client Invoicing already prefers this same registered mapping for
+    // exactly this reason (see pgProfileByFolder in App.jsx); accruals were the one
+    // place still re-deriving the folder from the name instead of trusting it.
+    return workedByFolderMonth.get(clickupFolder);
+  }
+  const match = findMatch(clientName, folderNames);
+  return match ? workedByFolderMonth.get(match.name) : null;
+}
+
+// Replays one client's ledger month by month from `startMonth` through `cur`, mutating
+// `c.months` in place with every rebuilt cell and returning the upsert payload rows for
+// whatever changed. Pure (no I/O) so the chaining rules are testable: `segFor(mk)` ->
+// typeForMonth's { type, agreedHours }, `statusFor(mk)` -> statusForMonth's status string,
+// `workedMinutesFor(mk)` -> this client's accrual-eligible minutes for that month.
+//
+// Resets: a month carrying a macro-sheet `resetValue` hands THAT figure forward as the next
+// month's prior, in every branch (package, override, on hold, off package), while its own
+// computed accrual_value is still recalculated and stored as normal. The reset itself is
+// never part of an upsert payload (PostgREST upsert only touches listed columns, so the
+// stored reset survives every recompute) -- but every rebuilt in-memory cell must carry it
+// over, or a second recompute in the same session would lose it and chain from our own
+// figure instead.
+export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, workedMinutesFor }) {
+  const rows = [];
+  let prior = 0;
+  let mk = startMonth;
+  let guard = 0;
+  while (mk <= cur && guard++ < 240) {
+    const seg = segFor(mk);
+    const existing = c.months[mk];
+    const monthStatus = statusFor(mk);
+    const resetValue = existing?.resetValue ?? null;
+    const resetNote = existing?.resetNote ?? null;
+    // On hold pauses the accrual clock without erasing the balance -- unlike a genuine
+    // off-package gap (below), the running balance carries forward unchanged so it picks
+    // back up exactly where it left off once the client resumes. A human override is still
+    // left alone regardless of status. Gated on package/strategy the same way the
+    // not-on-package branch below is -- "Put On Hold" has no type restriction in the
+    // Clients module UI, so an Hourly/Quoted/Project/MAP/Ad-hoc client can be put on hold
+    // too; without this check, every one of that client's on-hold months got a bogus
+    // "On hold — accrual paused" row written here (accrual_value 0, since it never had a
+    // package to carry a real prior balance from) that made a client with no package look
+    // like a package client in Client Accruals until the following recompute cycle.
+    if (monthStatus === "on_hold" && (seg.type === "package" || seg.type === "strategy") && !existing?.isOverride) {
+      const cell = { accrualValue: prior, accrualNote: "On hold — accrual paused", pct: null, comment: existing?.comment ?? null, workedHours: existing?.workedHours ?? null, isOverride: false, hoursFlagged: false, resetValue, resetNote };
+      const changed = !existing || existing.accrualValue !== cell.accrualValue || existing.accrualNote !== cell.accrualNote;
+      c.months[mk] = cell;
+      if (changed) {
+        rows.push({
+          client: c.client, account_manager: c.manager || null, agreed_hpm: seg.agreedHours != null ? String(seg.agreedHours) : null,
+          month_key: mk, accrual_value: cell.accrualValue, accrual_note: cell.accrualNote, pct_over_under: null,
+          comment: cell.comment, worked_hours: cell.workedHours, is_override: false, hours_flagged: false,
+        });
+      }
+      if (resetValue !== null) prior = resetValue;
+      mk = shiftMonthKey(mk, 1);
+      continue;
+    }
+    // Strategy is an ongoing engagement with agreed recurring hours -- the same fixed-
+    // hours accrual shape as a Package -- so it accrues the same way; every other type
+    // (Quoted, Project, MAP, Hourly, Ad hoc, Queensland) has no monthly accrual.
+    if ((seg.type !== "package" && seg.type !== "strategy") || seg.agreedHours === null) {
+      // Not on a package this month -- no accrual applies. A month that WAS package before
+      // (e.g. Baintech before June, GPEx before it briefly switched to hourly) can still have
+      // a stale computed row sitting in the table from back when it did apply; clear it so it
+      // doesn't keep showing an accrual for a period the client wasn't actually on a package.
+      // A human-entered override is presumed intentional regardless of type and is left alone.
+      if (existing && !existing.isOverride && (existing.accrualValue !== null || existing.workedHours !== null)) {
+        const cell = { accrualValue: null, accrualNote: "Not on a package this month", pct: null, comment: existing.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false, resetValue, resetNote };
+        c.months[mk] = cell;
+        rows.push({
+          // Not the client-level c.agreedHpm here -- that's a stale snapshot from whenever a
+          // package month last wrote it and doesn't apply during a non-package period (see
+          // the isPackageNow check in ClientAccruals.jsx, which now prefers the live profile
+          // over this column anyway, but keep the raw data honest too).
+          client: c.client, account_manager: c.manager || null, agreed_hpm: null,
+          month_key: mk, accrual_value: null, accrual_note: "Not on a package this month", pct_over_under: null,
+          comment: cell.comment, worked_hours: null, is_override: false, hours_flagged: false,
+        });
+      }
+      // A package pause doesn't carry an accrual balance across the gap -- unless the macro
+      // sheet gave this month an explicit figure, which is carried forward as-is.
+      prior = resetValue ?? 0;
+      mk = shiftMonthKey(mk, 1);
+      continue;
+    }
+    const agreedNum = Number(seg.agreedHours);
+
+    if (existing?.isOverride) {
+      prior = resetValue ?? existing.accrualValue ?? prior;
+    } else {
+      const worked = workedMinutesFor(mk) / 60;
+      const workedHours = Math.round(worked * 100) / 100;
+      const accrualValue = Math.round((worked - agreedNum + prior) * 100) / 100;
+      const pct = agreedNum ? Math.round((accrualValue / agreedNum) * 10000) / 10000 : null;
+      const isClosedMonth = mk < cur;
+      const hoursFlagged = isClosedMonth && existing?.workedHours != null && Math.abs(existing.workedHours - workedHours) > 0.01;
+      const cell = { accrualValue, accrualNote: null, pct, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged, resetValue, resetNote };
+      const changed = !existing || existing.accrualValue !== accrualValue || existing.workedHours !== workedHours;
+      c.months[mk] = cell;
+      if (changed) {
+        rows.push({
+          // The client's *current-month* agreed hours (from typeForMonth, same value
+          // agreedNum above was computed from) -- not c.agreedHpm, a stale snapshot set
+          // once from whichever row happened to be scanned first in rowsToClients() and
+          // never updated after. Writing that instead of agreedNum meant a package's
+          // displayed hours figure could get stuck at an old value forever after a type
+          // event changed it (Amorim Cork stuck at 0 after a Jul 2025 event raised it to
+          // 16; Warrina Homes stuck at 24 after an Aug 2026 event dropped it to 13) even
+          // though the accrual math itself (which does use agreedNum) was already correct.
+          client: c.client, account_manager: c.manager || null, agreed_hpm: String(agreedNum),
+          month_key: mk, accrual_value: accrualValue, accrual_note: null, pct_over_under: pct,
+          comment: cell.comment, worked_hours: workedHours, is_override: false, hours_flagged: hoursFlagged,
+        });
+      }
+      prior = resetValue ?? accrualValue;
+    }
+    mk = shiftMonthKey(mk, 1);
+  }
+  return rows;
+}
+
 // Chains newBalance = worked - agreedHours + prior forward, replaying every non-override
 // month from each client's earliest month on file through the current one (not just gap-
 // filling forward) — because a retroactive ClickUp edit to an earlier closed month changes
@@ -226,132 +398,16 @@ export async function recomputeAccruals(clients) {
   for (const c of nextClients) {
     const profile = profileByClient.get(c.client);
     if (!profile) continue; // no client profile on file — nothing to compute against
-    // Some clients (Aus3C, Clarke Energy, Magain, etc.) log real work across several
-    // sibling ClickUp folders instead of one umbrella folder -- sum minutes across all of
-    // them per month rather than picking a single best-match folder, which was silently
-    // undercounting these clients' accruals.
-    const multi = multiFolderAccrualMatchesFor(c.client, folderNames);
-    let folderMinutes = null;
-    if (multi && multi.length) {
-      folderMinutes = new Map();
-      for (const f of multi) {
-        const fm = workedByFolderMonth.get(f);
-        if (!fm) continue;
-        for (const [mk, min] of fm) folderMinutes.set(mk, (folderMinutes.get(mk) || 0) + min);
-      }
-    } else if (profile.clickupFolder && workedByFolderMonth.has(profile.clickupFolder)) {
-      // The Clients module already has an authoritative, human-set folder mapping for
-      // this exact client (pginvoice_clients.clickup_folder) -- prefer it over re-deriving
-      // a match from the accrual sheet's own client name string. Found via a real
-      // discrepancy: "Coonwarra" (the accrual sheet's name for this client) doesn't
-      // fuzzy-match its real ClickUp folder "Coonawarra Grape and Wine Inc" at all (one
-      // letter off, zero shared tokens after the "Grape and Wine Inc" suffix), so the old
-      // name-only lookup below silently recorded 0 worked hours against a client with
-      // 21.23h of real billable July work (29.02h total logged, 7.78h of it non-billable
-      // and correctly excluded) -- and "PRG Strategic Advisors" vs "PRG Financial Services
-      // Outsourced Marketing" hit the exact same failure mode (0 of 8.37 real billable
-      // hours counted). Client Invoicing already prefers this same registered mapping for
-      // exactly this reason (see pgProfileByFolder in App.jsx); accruals were the one
-      // place still re-deriving the folder from the name instead of trusting it.
-      folderMinutes = workedByFolderMonth.get(profile.clickupFolder);
-    } else {
-      const match = findMatch(c.client, folderNames);
-      folderMinutes = match ? workedByFolderMonth.get(match.name) : null;
-    }
-
+    const folderMinutes = accrualFolderMinutesFor(c.client, profile.clickupFolder, workedByFolderMonth, folderNames);
     const existingMonths = Object.keys(c.months).sort();
     const startMonth = existingMonths.length ? existingMonths[0] : (profile.startDate ? profile.startDate.slice(0, 7) : cur);
-
-    let prior = 0;
-    let mk = startMonth;
-    let guard = 0;
-    while (mk <= cur && guard++ < 240) {
-      const seg = typeForMonth(profile, events, mk);
-      const existing = c.months[mk];
-      const monthStatus = statusForMonth(profile, events, mk);
-      // On hold pauses the accrual clock without erasing the balance -- unlike a genuine
-      // off-package gap (below), the running balance carries forward unchanged so it picks
-      // back up exactly where it left off once the client resumes. A human override is still
-      // left alone regardless of status. Gated on package/strategy the same way the
-      // not-on-package branch below is -- "Put On Hold" has no type restriction in the
-      // Clients module UI, so an Hourly/Quoted/Project/MAP/Ad-hoc client can be put on hold
-      // too; without this check, every one of that client's on-hold months got a bogus
-      // "On hold — accrual paused" row written here (accrual_value 0, since it never had a
-      // package to carry a real prior balance from) that made a client with no package look
-      // like a package client in Client Accruals until the following recompute cycle.
-      if (monthStatus === "on_hold" && (seg.type === "package" || seg.type === "strategy") && !existing?.isOverride) {
-        const cell = { accrualValue: prior, accrualNote: "On hold — accrual paused", pct: null, comment: existing?.comment ?? null, workedHours: existing?.workedHours ?? null, isOverride: false, hoursFlagged: false };
-        const changed = !existing || existing.accrualValue !== cell.accrualValue || existing.accrualNote !== cell.accrualNote;
-        c.months[mk] = cell;
-        if (changed) {
-          updatedRows.push({
-            client: c.client, account_manager: c.manager || null, agreed_hpm: seg.agreedHours != null ? String(seg.agreedHours) : null,
-            month_key: mk, accrual_value: cell.accrualValue, accrual_note: cell.accrualNote, pct_over_under: null,
-            comment: cell.comment, worked_hours: cell.workedHours, is_override: false, hours_flagged: false,
-          });
-        }
-        mk = shiftMonthKey(mk, 1);
-        continue;
-      }
-      // Strategy is an ongoing engagement with agreed recurring hours -- the same fixed-
-      // hours accrual shape as a Package -- so it accrues the same way; every other type
-      // (Quoted, Project, MAP, Hourly, Ad hoc, Queensland) has no monthly accrual.
-      if ((seg.type !== "package" && seg.type !== "strategy") || seg.agreedHours === null) {
-        // Not on a package this month -- no accrual applies. A month that WAS package before
-        // (e.g. Baintech before June, GPEx before it briefly switched to hourly) can still have
-        // a stale computed row sitting in the table from back when it did apply; clear it so it
-        // doesn't keep showing an accrual for a period the client wasn't actually on a package.
-        // A human-entered override is presumed intentional regardless of type and is left alone.
-        if (existing && !existing.isOverride && (existing.accrualValue !== null || existing.workedHours !== null)) {
-          const cell = { accrualValue: null, accrualNote: "Not on a package this month", pct: null, comment: existing.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false };
-          c.months[mk] = cell;
-          updatedRows.push({
-            // Not the client-level c.agreedHpm here -- that's a stale snapshot from whenever a
-            // package month last wrote it and doesn't apply during a non-package period (see
-            // the isPackageNow check in ClientAccruals.jsx, which now prefers the live profile
-            // over this column anyway, but keep the raw data honest too).
-            client: c.client, account_manager: c.manager || null, agreed_hpm: null,
-            month_key: mk, accrual_value: null, accrual_note: "Not on a package this month", pct_over_under: null,
-            comment: cell.comment, worked_hours: null, is_override: false, hours_flagged: false,
-          });
-        }
-        prior = 0; // a package pause doesn't carry an accrual balance across the gap
-        mk = shiftMonthKey(mk, 1);
-        continue;
-      }
-      const agreedNum = Number(seg.agreedHours);
-
-      if (existing?.isOverride) {
-        prior = existing.accrualValue ?? prior;
-      } else {
-        const worked = (folderMinutes?.get(mk) || 0) / 60;
-        const workedHours = Math.round(worked * 100) / 100;
-        const accrualValue = Math.round((worked - agreedNum + prior) * 100) / 100;
-        const pct = agreedNum ? Math.round((accrualValue / agreedNum) * 10000) / 10000 : null;
-        const isClosedMonth = mk < cur;
-        const hoursFlagged = isClosedMonth && existing?.workedHours != null && Math.abs(existing.workedHours - workedHours) > 0.01;
-        const cell = { accrualValue, accrualNote: null, pct, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged };
-        const changed = !existing || existing.accrualValue !== accrualValue || existing.workedHours !== workedHours;
-        c.months[mk] = cell;
-        if (changed) {
-          updatedRows.push({
-            // The client's *current-month* agreed hours (from typeForMonth, same value
-            // agreedNum above was computed from) -- not c.agreedHpm, a stale snapshot set
-            // once from whichever row happened to be scanned first in rowsToClients() and
-            // never updated after. Writing that instead of agreedNum meant a package's
-            // displayed hours figure could get stuck at an old value forever after a type
-            // event changed it (Amorim Cork stuck at 0 after a Jul 2025 event raised it to
-            // 16; Warrina Homes stuck at 24 after an Aug 2026 event dropped it to 13) even
-            // though the accrual math itself (which does use agreedNum) was already correct.
-            client: c.client, account_manager: c.manager || null, agreed_hpm: String(agreedNum),
-            month_key: mk, accrual_value: accrualValue, accrual_note: null, pct_over_under: pct,
-            comment: cell.comment, worked_hours: workedHours, is_override: false, hours_flagged: hoursFlagged,
-          });
-        }
-        prior = accrualValue;
-      }
-      mk = shiftMonthKey(mk, 1);
-    }
+    const rows = replayClientAccruals(c, {
+      startMonth, cur,
+      segFor: (mk) => typeForMonth(profile, events, mk),
+      statusFor: (mk) => statusForMonth(profile, events, mk),
+      workedMinutesFor: (mk) => folderMinutes?.get(mk) || 0,
+    });
+    for (const r of rows) updatedRows.push(r);
   }
 
   if (updatedRows.length) {
@@ -363,8 +419,15 @@ export async function recomputeAccruals(clients) {
 
 // -------------------------- export, same layout as the source sheet --------------------------
 export function exportAccrualsWorkbook(clients, monthKeys, fileLabel) {
+  // A "Reset" sub-column only for months where at least one exported client carries a
+  // macro-sheet reset -- every other month keeps the source sheet's exact layout.
+  const resetMonths = new Set(monthKeys.filter((mk) => clients.some((c) => c.months[mk]?.resetValue != null)));
   const header = ["Client", "Agreed h.p.m"];
-  for (const mk of monthKeys) header.push(`Worked hrs (${monthLabelOf(mk)})`, monthLabelOf(mk) + " Accrued", "% over/under hours", `Comments (${monthLabelOf(mk)})`);
+  for (const mk of monthKeys) {
+    header.push(`Worked hrs (${monthLabelOf(mk)})`, monthLabelOf(mk) + " Accrued");
+    if (resetMonths.has(mk)) header.push(monthLabelOf(mk) + " Reset (macro sheet)");
+    header.push("% over/under hours", `Comments (${monthLabelOf(mk)})`);
+  }
   const aoa = [["PG Weekly Hours Summary (Accumulative Total)"], [], header];
   for (const c of clients) {
     // Prefer the most recent in-range month's own agreed_hpm over the client-level
@@ -379,12 +442,14 @@ export function exportAccrualsWorkbook(clients, monthKeys, fileLabel) {
     const row = [c.client, agreedForRange];
     for (const mk of monthKeys) {
       const cell = c.months[mk] || {};
-      row.push(cell.workedHours ?? "", cell.accrualValue ?? cell.accrualNote ?? "", cell.pct ?? "", cell.comment ?? "");
+      row.push(cell.workedHours ?? "", cell.accrualValue ?? cell.accrualNote ?? "");
+      if (resetMonths.has(mk)) row.push(cell.resetValue ?? "");
+      row.push(cell.pct ?? "", cell.comment ?? "");
     }
     aoa.push(row);
   }
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 28 }, { wch: 12 }, ...monthKeys.flatMap(() => [{ wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 40 }])];
+  ws["!cols"] = [{ wch: 28 }, { wch: 12 }, ...monthKeys.flatMap((mk) => (resetMonths.has(mk) ? [{ wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 40 }] : [{ wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 40 }]))];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Accrued Hours");
   const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
