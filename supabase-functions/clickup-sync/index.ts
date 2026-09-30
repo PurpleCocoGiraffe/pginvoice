@@ -301,16 +301,37 @@ Deno.serve(async (req: Request) => {
 
     // Stale-row cleanup, scoped to just this month so neither the id list nor
     // the delete query ever has to cover more than one month's data at a time.
-    const { data: existing, error: existingError } = await supabase
-      .from("pginvoice_clickup_entries")
-      .select("entry_id")
-      .gte("entry_start", start.toISOString())
-      .lt("entry_start", end.toISOString());
-    if (existingError) throw existingError;
+    // Paginated -- PostgREST caps a single select at 1000 rows and a month holds
+    // ~3,000+ entries, so the unpaginated version only ever compared the first
+    // 1000 stored ids: an entry deleted in ClickUp that sat past that page stayed
+    // in Supabase forever (found for real: 5 deleted September entries, two of
+    // them billable, still counting in invoicing and timesheets).
+    const existingIds: string[] = [];
+    for (let pageFrom = 0; ; pageFrom += 1000) {
+      const { data: page, error: existingError } = await supabase
+        .from("pginvoice_clickup_entries")
+        .select("entry_id")
+        .gte("entry_start", start.toISOString())
+        .lt("entry_start", end.toISOString())
+        .order("entry_id", { ascending: true })
+        .range(pageFrom, pageFrom + 999);
+      if (existingError) throw existingError;
+      if (!page || !page.length) break;
+      for (const r of page) existingIds.push(r.entry_id);
+      if (page.length < 1000) break;
+    }
     const fetchedIds = new Set(monthRows.map((r) => r.entry_id));
-    const staleIds = (existing || []).map((r) => r.entry_id).filter((id) => !fetchedIds.has(id));
-    if (staleIds.length) {
-      const { error: deleteError } = await supabase.from("pginvoice_clickup_entries").delete().in("entry_id", staleIds);
+    const staleIds = existingIds.filter((id) => !fetchedIds.has(id));
+    // Safety valve: now that cleanup sees the whole month, a bad ClickUp response
+    // (an empty/truncated page, a wrong workspace) would otherwise wipe that month's
+    // stored history. Real deletions are a handful at a time -- refuse to delete when
+    // they'd remove more than 20% of the month (or anything, when ClickUp returned
+    // nothing at all) and surface it as a sync error instead.
+    if (staleIds.length && (!monthRows.length || staleIds.length > Math.max(20, existingIds.length * 0.2))) {
+      throw new Error(`Refusing stale-row cleanup: ${staleIds.length} of ${existingIds.length} stored entries missing from ClickUp's response (${monthRows.length} returned). Check the ClickUp token/workspace before re-running.`);
+    }
+    for (let i = 0; i < staleIds.length; i += 200) {
+      const { error: deleteError } = await supabase.from("pginvoice_clickup_entries").delete().in("entry_id", staleIds.slice(i, i + 200));
       if (deleteError) throw deleteError;
     }
 
