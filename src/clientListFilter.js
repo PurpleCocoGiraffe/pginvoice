@@ -34,7 +34,15 @@ export function computePrimaryNameByGroup(clientList) {
 // both the current month's `visible` list and the prior month's `prevStats` comparison list,
 // so "what's currently in view" can't silently diverge between the two. Pure (no React/
 // Supabase imports) so it's directly testable.
-export function filterClientList(list, { clientTypeFilter, consultantFilter, search, primaryNameByGroup }) {
+// `workedOnly` (the "Worked only" toggle) drops rows with no hours this month -- the selected
+// consultant's hours when one is picked, otherwise everyone's. Like the consultant filter, a
+// parent stays in view when anything nested under it has hours, since nested rows only ever
+// render inside their parent's tile (App.jsx hides the zero-hour nested rows themselves).
+export function hasWorkedHours(c, consultantFilter) {
+  return consultantFilter ? (c.userMinutes?.get(consultantFilter) || 0) > 0 : (c.worked || 0) > 0;
+}
+
+export function filterClientList(list, { clientTypeFilter, consultantFilter, search, primaryNameByGroup, workedOnly = false }) {
   // A nested row is only hidden when the row it nests under actually exists in the full
   // list -- otherwise it was hidden as a child of nothing (e.g. a sub-project whose hourly
   // parent logged no time this month and so has no row at all).
@@ -58,15 +66,12 @@ export function filterClientList(list, { clientTypeFilter, consultantFilter, sea
     // they had no billable time on Apex Energy itself that month. Nested rows are found
     // in the FULL list (not the type-filtered one), same as App.jsx's sibling lookup.
     const worked = (c) => c.userMinutes.has(consultantFilter);
-    const parentsWithNestedWork = new Set();
-    for (const c of list) {
-      if (!worked(c)) continue;
-      if (c.costCentreParentAccName) parentsWithNestedWork.add(c.costCentreParentAccName);
-      if (c.capGroup) {
-        const primaryName = primaryNameByGroup.get(c.capGroup);
-        if (primaryName && primaryName !== c.name) parentsWithNestedWork.add(primaryName);
-      }
-    }
+    const parentsWithNestedWork = parentsWithNested(list, worked, primaryNameByGroup);
+    out = out.filter((c) => worked(c) || parentsWithNestedWork.has(c.name));
+  }
+  if (workedOnly) {
+    const worked = (c) => hasWorkedHours(c, consultantFilter);
+    const parentsWithNestedWork = parentsWithNested(list, worked, primaryNameByGroup);
     out = out.filter((c) => worked(c) || parentsWithNestedWork.has(c.name));
   }
   // A non-primary capGroup member, or a folder explicitly tagged as another cost-centre
@@ -89,6 +94,21 @@ export function filterClientList(list, { clientTypeFilter, consultantFilter, sea
     out = out.filter((c) => matchesSearch(c, q) || (nestedByParent.get(c.name) || []).some((s) => matchesSearch(s, q)));
   }
   return out;
+}
+
+// Names of every parent row that has at least one row nested under it passing `test`
+// (searched in the FULL list, not the type-filtered one, same as App.jsx's sibling lookup).
+function parentsWithNested(list, test, primaryNameByGroup) {
+  const parents = new Set();
+  for (const c of list) {
+    if (!test(c)) continue;
+    if (c.costCentreParentAccName) parents.add(c.costCentreParentAccName);
+    if (c.capGroup) {
+      const primaryName = primaryNameByGroup.get(c.capGroup);
+      if (primaryName && primaryName !== c.name) parents.add(primaryName);
+    }
+  }
+  return parents;
 }
 
 // Free-text match against everything a user might know a client by: its row name, display
