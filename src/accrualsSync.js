@@ -282,11 +282,17 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
 // instead of estimating from the stale client-level scalar. Prior restarts at 0 after an
 // end (or carries a reset/override figure from the last ended month), so any on-hold
 // balance in place when a client is offboarded is dropped -- intended.
+// accrual_note on a month where an offboarded client's owed balance is being drawn down
+// by wrap-up work (see the ended-period branch of replayClientAccruals).
+export const WRAP_UP_NOTE = "Offboarded — wrap-up work deducted from owed hours";
+
 export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, workedMinutesFor, endPeriods = [] }) {
   const rows = [];
   let prior = 0;
   let mk = startMonth;
   let guard = 0;
+  let wasEnded = false;
+  let endedReset = null; // the last ended month's macro-sheet reset, if any
   const evidenceMonths = new Set(Object.keys(c.months).filter((k) => c.months[k]?.isOverride || c.months[k]?.resetValue != null));
   for (let k = startMonth, g = 0; k <= cur && g++ < 240; k = shiftMonthKey(k, 1)) {
     if (workedMinutesFor(k) > 0) evidenceMonths.add(k);
@@ -306,9 +312,47 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
     const resetValue = existing?.resetValue ?? null;
     const resetNote = existing?.resetNote ?? null;
     const endedNote = periods.find((p) => mk >= p.from && (p.until == null || mk < p.until))?.note ?? null;
+    // Leaving an ended stretch (reactivation / re-engagement) restarts the clock at 0 -- an
+    // owed balance being drawn down below never follows the client into a new engagement --
+    // unless the macro sheet gave the last ended month an explicit closing figure.
+    if (!endedNote && wasEnded) prior = endedReset ?? 0;
+    wasEnded = !!endedNote;
+    endedReset = endedNote ? resetValue : null;
     if (endedNote) {
       if (existing?.isOverride) {
         prior = resetValue ?? existing.accrualValue ?? 0;
+      } else if (prior < 0) {
+        // Wrap-up drawdown: we still owe an offboarded client its unutilised hours, so any
+        // work logged after the end date is deducted from that owed balance (no new package
+        // hours are added). Only months with work write a row; a month with none just holds
+        // the balance. Once the owed hours are used up (balance >= 0) the drawdown stops and
+        // later months fall through to the plain ended handling below.
+        const worked = workedMinutesFor(mk) / 60;
+        if (worked > 0) {
+          const workedHours = Math.round(worked * 100) / 100;
+          const accrualValue = Math.round((prior + worked) * 100) / 100;
+          const cell = { accrualValue, accrualNote: WRAP_UP_NOTE, pct: null, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
+          const changed = !existing || existing.accrualValue !== accrualValue || existing.workedHours !== workedHours || existing.accrualNote !== WRAP_UP_NOTE || existing.agreedHpm != null;
+          c.months[mk] = cell;
+          if (changed) {
+            rows.push({
+              client: c.client, account_manager: c.manager || null, agreed_hpm: null,
+              month_key: mk, accrual_value: accrualValue, accrual_note: WRAP_UP_NOTE, pct_over_under: null,
+              worked_hours: workedHours, is_override: false, hours_flagged: false, flagged_from_hours: null,
+            });
+          }
+          prior = resetValue ?? accrualValue;
+        } else {
+          if (existing && (existing.accrualValue !== null || existing.workedHours !== null)) {
+            c.months[mk] = { accrualValue: null, accrualNote: endedNote, pct: null, comment: existing.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
+            rows.push({
+              client: c.client, account_manager: c.manager || null, agreed_hpm: null,
+              month_key: mk, accrual_value: null, accrual_note: endedNote, pct_over_under: null,
+              worked_hours: null, is_override: false, hours_flagged: false, flagged_from_hours: null,
+            });
+          }
+          if (resetValue !== null) prior = resetValue;
+        }
       } else {
         const hasValues = existing && (existing.accrualValue !== null || existing.workedHours !== null);
         const wrapUpWork = !existing && (seg.type === "package" || seg.type === "strategy") && workedMinutesFor(mk) > 0;
