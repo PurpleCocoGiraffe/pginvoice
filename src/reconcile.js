@@ -126,11 +126,16 @@ export function billableMinutesByFolder(rows, monthKey, hasBillable) {
 // allowScalarPackage -- only a manually uploaded workbook (no per-month agreed hours at all)
 //                  may fall back to the client-level `package` scalar; on live data that
 //                  scalar is a stale last-write-wins value (see accrualsSync.js).
+// A Quoted or MAP month (isLifetimeBudgetType) gets no monthly figures here at all -- its
+// budget is lifetimeBudgetFor's, computed by the caller.
 export function reconcileClientMonth({
   worked, accruedClient: a, monthKey, priorKey, priorWorkedH = null,
   monthType = null, priorType = null, monthStatus = null, priorStatus = null,
   monthSegmentAgreed = null, allowScalarPackage = false, priorEnded = false,
 }) {
+  // Digital Package: a fixed monthly price. Hours are tracked for reference only -- no
+  // package, carry, remaining or accrual figures of any kind.
+  if (monthType === "digital") return { ...NO_PACKAGE_RESULT, status: "fixed_price" };
   const monthOffPackage = monthType != null && !isPackageLikeType(monthType);
   // An ended prior month is treated like an off-package one: recomputeAccruals restarts
   // prior at (reset ?? 0) after an end period, so estimating a carry from the old package
@@ -224,6 +229,37 @@ export function reconcileClientMonth({
   };
 }
 
+const NO_PACKAGE_RESULT = {
+  pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, kpiPct: null,
+  status: "no-pkg", priorMismatch: null, priorRebaseline: null, resetValue: null, remainingReset: null,
+  balanceForward: null, remainingShown: null,
+};
+
+// ------------------------------ client type ------------------------------
+// A folder tagged as another client's separately-billed sub-project (costCentreParentAccName)
+// is never package-like -- it neither consumes nor shows its parent's package. Its own
+// registered profile's type wins (when not package-like), then Capacity Planning's basis
+// for that exact folder, else its name: "(QP)"/"QP"/"quoted" -> quoted, otherwise hourly.
+// (Majestic Plumbing Quoted Web Project (WA) showed PACKAGE, Apex Comms Website (QP) HOURLY.)
+export const QUOTED_FOLDER_RE = /\bQP\b|\(QP\)|quoted/i;
+export function subProjectType(name, { profileType = null, capType = null } = {}) {
+  if (profileType && !isPackageLikeType(profileType)) return profileType;
+  if (capType && !isPackageLikeType(capType)) return capType;
+  return QUOTED_FOLDER_RE.test(String(name ?? "")) ? "quoted" : "hourly";
+}
+
+// A row's type for the month. `monthType` (the Clients module's typeForMonth, or
+// subProjectType for a sub-project) always wins over the ledger guess; Capacity Planning's
+// basis for this exact folder (`capType`) may only demote a package-like result, never
+// promote -- so a fixed-price type (digital, map, quoted, ...) can't be turned back into a
+// package by either fallback. `demoted`: the cap basis overrode a package-like type.
+export function resolveClientType({ name, matched = false, pkg = null, monthType = null, capType = null }) {
+  let type = matched && pkg != null ? "package" : /\(qld\)/i.test(String(name ?? "")) ? "queensland" : "hourly";
+  if (monthType) type = monthType;
+  if (capType && !isPackageLikeType(capType) && isPackageLikeType(type)) return { type: capType, demoted: true };
+  return { type, demoted: false };
+}
+
 // Whether an accrued client with NO ClickUp row this month (0 hours, or only non-billable
 // time) still needs a row: a package-like month always does -- the package is consumed
 // (or banked) whether or not anyone logged time, so dropping it hid the client from the
@@ -294,7 +330,14 @@ export function lastMonthAccruedClients(list) {
   return list.filter((c) => isPackageLikeType(c.type) && c.pkg != null && c.pkg > 0);
 }
 
-// ---------------------------------- Quoted ----------------------------------
+// ------------------------------ Quoted / MAP ------------------------------
+// Both are a single fixed hour budget for the whole engagement, not a monthly one: Quoted
+// is the quoted amount, a MAP (Marketing Action Plan) is quoted at a fixed total too ("any
+// MAP we do will be 80 hrs altogether, not just for the month"). Remaining = the budget minus
+// every billable hour logged from the engagement's start month through the viewed month;
+// no monthly package, carry or accrual (recomputeAccruals never accrues either).
+export const isLifetimeBudgetType = (t) => t === "quoted" || t === "map";
+
 const nextMonthKey = (key) => {
   const [y, m] = key.split("-").map(Number);
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
@@ -303,25 +346,28 @@ const nextMonthKey = (key) => {
 // month whose 1st is on/after the date).
 const firstMonthFrom = (date) => (date.slice(8, 10) === "01" ? date.slice(0, 7) : nextMonthKey(date.slice(0, 7)));
 
-// The quote in effect for monthKey, from typeTimelineFor's segments: { fromMonth, amount },
-// or null when the client isn't Quoted that month. The quote starts where the contiguous run
-// of quoted segments containing monthKey starts (fromMonth null = no known start). The amount
-// is that segment's agreed hours -- except for the client's current (last) segment, where the
-// live profile figure wins, since updateQuotedAmount edits it directly without an event.
-export function quotedBudgetFor(timeline, monthKey, { currentAgreedHours = null } = {}) {
+// The budget in effect for monthKey, from typeTimelineFor's segments: { fromMonth, amount },
+// or null when the client isn't on `type` that month. The budget starts where the contiguous
+// run of `type` segments containing monthKey starts (fromMonth null = no known start). The
+// amount is that segment's agreed hours -- except for the client's current (last) segment,
+// where the live profile figure wins, since updateQuotedAmount edits it directly without an
+// event. `startDate` (the profile's start_date) bounds a run that starts at the client's base
+// segment, which has no date of its own.
+export function lifetimeBudgetFor(timeline, monthKey, { type, currentAgreedHours = null, startDate = null } = {}) {
   if (!timeline?.length || !monthKey) return null;
   const monthStart = `${monthKey}-01`;
   let idx = 0;
   timeline.forEach((seg, i) => { if (seg.from === null || seg.from <= monthStart) idx = i; });
-  if (timeline[idx].type !== "quoted") return null;
+  if (timeline[idx].type !== type) return null;
   let start = idx;
-  while (start > 0 && timeline[start - 1].type === "quoted") start--;
-  const from = timeline[start].from;
+  while (start > 0 && timeline[start - 1].type === type) start--;
+  const from = timeline[start].from ?? startDate;
   const fromMonth = from ? firstMonthFrom(from) : null;
   const isCurrent = idx === timeline.length - 1;
   const amount = isCurrent ? (currentAgreedHours ?? timeline[idx].agreedHours ?? null) : (timeline[idx].agreedHours ?? null);
   return { fromMonth, amount };
 }
+export const quotedBudgetFor = (timeline, monthKey, opts = {}) => lifetimeBudgetFor(timeline, monthKey, { ...opts, type: "quoted" });
 
 // Sums a Map(monthKey -> minutes) over [fromMonth, toMonth] (either bound null = open).
 // Minutes with no month (key "") only count when there's no lower bound.

@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { ArrowLeft, MoreVertical, Copy, Printer, X, ChevronDown, Link2, AlertTriangle, Users, Check, BarChart3 } from "lucide-react";
 import { fmt, timeAgo, isPackageLikeType, clickupTaskUrl } from "./format.js";
-import { TYPE_LABELS_SHORT, findPersonMatch } from "./nameMatch.js";
+import { isLifetimeBudgetType } from "./reconcile.js";
+import { findPersonMatch } from "./nameMatch.js";
+import { typeLabelShort } from "./clientTypeLabels.js";
+import { costCentreInvoicesFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
 import { ClientAvatar, PersonAvatar } from "./avatar.jsx";
 import { useEscape } from "./useDismissable.js";
 import { ExportItem } from "./ExportItem.jsx";
@@ -35,8 +38,16 @@ function TaskUsersCell({ userMinutesMap, taskUrl }) {
 // a deeper single-client view: reconciliation bar, consultant contributions, tasks.
 export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthProgress, hasUser, consultantFilter, accruedNames, usedAccruedNames, syncMeta, capPeople, onClose, onSetMatch, onCopy, onPdf, onPdfLineItem, onViewProfile, copied }) {
   const isPackage = isPackageLikeType(c.type);
-  const isQuoted = c.type === "quoted";
+  // Quoted and MAP are both one fixed hour budget for the whole engagement (a MAP is quoted
+  // at e.g. 80 h in total) -- same figures, MAP wording.
+  const isQuoted = isLifetimeBudgetType(c.type);
+  const isMap = c.type === "map";
+  const budgetWord = isMap ? "MAP" : "quoted";
   const isQld = c.type === "queensland";
+  // Digital Package: fixed monthly price -- hours for reference, no package math at all.
+  const isDigital = c.type === "digital";
+  // Per-cost-centre invoices for a client with an invoice cap (null otherwise).
+  const invoices = costCentreInvoicesFor(c);
   const [drillConsultant, setDrillConsultant] = useState(null);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState(() => new Set());
@@ -92,10 +103,11 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
     return next;
   });
 
-  const statusLabel = !isPackage ? null : c.pkg == null || c.pkg <= 0 ? "No package on file"
+  const statusLabel = isDigital ? "Fixed price"
+    : !isPackage ? null : c.pkg == null || c.pkg <= 0 ? "No package on file"
     : c.status === "on_hold" ? "On hold (accrual paused)"
     : c.status === "over" ? "Over-serviced" : c.status === "under" ? "Under-serviced" : "On track";
-  const statusTone = !isPackage ? undefined : c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : c.status === "ok" ? "var(--status-ok)" : "var(--fg-tertiary)";
+  const statusTone = isDigital ? "var(--fg-secondary)" : !isPackage ? undefined : c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : c.status === "ok" ? "var(--status-ok)" : "var(--fg-tertiary)";
   const iconTone = isPackage
     ? (c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : "var(--status-ok)")
     : isQld ? "var(--status-info)" : "var(--accent)";
@@ -137,7 +149,7 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
               {c.isOffboarded && <span className="pg-tag pg-tag--muted pg-tag--pill" style={{ marginLeft: 6 }} title={c.offboardNote}>Offboarded</span>}
             </div>
             <div className="pg-drawer__sub">
-              {TYPE_LABELS_SHORT[c.type]}
+              {typeLabelShort(c.type)}
               {c.isMap && " · MAP"}
               {c.typeTransitioned && " · scheduled change"}
             </div>
@@ -158,7 +170,17 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
           </div>
         )}
 
-        {!isPackage && (
+        {(isMap || isDigital) && (
+          <div className="pg-alertbar" style={{ marginTop: 12, background: "var(--accent-soft)", color: "var(--accent)" }}>
+            <AlertTriangle size={13} />
+            <span className="pg-alertbar__text">
+              {isDigital
+                ? "Digital Package: fixed monthly price. Hours are shown for reference only, nothing accrues."
+                : "MAP: one fixed hour budget for the whole plan, spent down across its months. Nothing accrues."}
+            </span>
+          </div>
+        )}
+        {!isPackage && !isMap && !isDigital && (
           <div className="pg-alertbar" style={{ marginTop: 12, background: isQld ? "var(--status-info-soft)" : "var(--accent-soft)", color: isQld ? "var(--status-info)" : "var(--accent)" }}>
             <AlertTriangle size={13} />
             <span className="pg-alertbar__text">
@@ -223,11 +245,11 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
           ) : isQuoted ? (
             <div className="pg-metrics" style={{ marginTop: 14 }}>
               <Metric label="Worked this month" value={`${fmt(c.workedFiltered)} h`} big />
-              <Metric label="Quoted amount" value={c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—"} />
+              <Metric label={isMap ? "MAP hours" : "Quoted amount"} value={c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—"} />
               <Metric
-                label="Total worked on this quote"
+                label={`Total worked on this ${isMap ? "MAP" : "quote"}`}
                 value={`${fmt(c.lifetimeWorked ?? 0)} h`}
-                sub="from the quote's start month through this one"
+                sub={`from the ${isMap ? "MAP" : "quote"}'s start month through this one`}
               />
             </div>
           ) : (
@@ -265,11 +287,11 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
 
           {isQuoted && c.quotedRemaining != null && (
             <div className="pg-drawer__overunder">
-              <span className="pg-drawer__overunder-label">{c.quotedRemaining < 0 ? "Over the quoted amount by" : "Remaining of quoted amount"}</span>
+              <span className="pg-drawer__overunder-label">{c.quotedRemaining < 0 ? `Over the ${budgetWord} amount by` : `Remaining of ${budgetWord} amount`}</span>
               <span className="pg-drawer__overunder-value" style={{ color: c.quotedRemaining < 0 ? "var(--status-over)" : "var(--status-ok)" }}>
                 {fmt(Math.abs(c.quotedRemaining))} h
               </span>
-              <span className="pg-drawer__overunder-tag">{c.quotedRemaining < 0 ? "over quote" : "within budget"}</span>
+              <span className="pg-drawer__overunder-tag">{c.quotedRemaining < 0 ? (isMap ? "over MAP" : "over quote") : "within budget"}</span>
             </div>
           )}
         </div>
@@ -286,6 +308,36 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
               <span>{fmt(c.billableWorked ?? c.worked)} h</span>
             </div>
             <PackageBar pkg={c.pkg} worked={c.billableWorked ?? c.worked} prior={c.priorBalance ?? 0} status={c.status} monthProgress={monthProgress} />
+          </div>
+        )}
+
+        {invoices && (
+          <div className="pg-drawer__section">
+            <div className="pg-drawer__section-title">Invoices by cost centre</div>
+            <div className="pg-drawer__bubble">
+              <table className="pg-table">
+                <thead><tr><th>Cost centre</th><th className="right num" style={{ width: 80 }}>Hours</th><th className="right num" style={{ width: 110 }}>Amount</th></tr></thead>
+                <tbody>
+                  {invoices.map((inv) => (
+                    <React.Fragment key={inv.name}>
+                      <tr>
+                        <td>{inv.name}</td>
+                        <td className="right num">{fmt(inv.hours)}</td>
+                        <td className="right num">{fmtMoney(inv.amount)}</td>
+                      </tr>
+                      {inv.lines.length > 1 && inv.lines.map((line, i) => (
+                        <tr key={i}>
+                          <td colSpan={3} style={{ paddingLeft: 20, fontSize: 12, color: "var(--fg-tertiary)" }}>{invoiceLineLabel(line, i, inv.lines.length)}</td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+              <div className="pg-manual-note" style={{ marginTop: 8 }}>
+                <span>Billable hours at {fmtMoney(invoices[0].rule.rate)}/h. No invoice may exceed {fmtMoney(invoices[0].rule.cap)} per cost centre, so a cost centre over that is split across several invoices.</span>
+              </div>
+            </div>
           </div>
         )}
 

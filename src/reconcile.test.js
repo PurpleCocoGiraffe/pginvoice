@@ -3,8 +3,10 @@ import {
   folderKey, buildFolderCanonicalizer, aggregateMonthRows, billableMinutesByFolder,
   reconcileClientMonth, shouldSeedPackageMonth, sumCarry, lastMonthAccruedClients,
   quotedBudgetFor, sumMinutesInRange, unfilteredForExport,
-  seedBlockedBy, monthInEndPeriods, priorFolderKeysFor,
+  seedBlockedBy, monthInEndPeriods, priorFolderKeysFor, subProjectType, resolveClientType,
+  lifetimeBudgetFor, isLifetimeBudgetType,
 } from "./reconcile.js";
+import { typeLabelShort, typeTone } from "./clientTypeLabels.js";
 import { endPeriodsFor } from "./accrualsSync.js";
 import { multiFolderAccrualMatchesFor, setDynamicCostCentres } from "./nameMatch.js";
 import { runManualSync } from "./manualSync.js";
@@ -410,5 +412,171 @@ describe("QA 5: Sync now reloads data even when one month's sync failed", () => 
   it("no error on success", async () => {
     const out = await runManualSync({ trigger: async () => ({}), fetchLive: async () => null, fetchMeta: async () => null });
     expect(out.error).toBeNull();
+  });
+});
+
+// Live Sep 2026: "Majestic Plumbing Quoted Web Project (WA)" showed PACKAGE (its name
+// fuzzy-matched the parent's profile/ledger) and "Apex Comms Website (QP)" HOURLY.
+describe("unregistered sub-project folders are never package-like", () => {
+  it("a quoted-looking folder name is quoted, anything else hourly", () => {
+    expect(subProjectType("Majestic Plumbing Quoted Web Project (WA)")).toBe("quoted");
+    expect(subProjectType("Apex Comms Website (QP)")).toBe("quoted");
+    expect(subProjectType("Acme QP Brochure")).toBe("quoted");
+    expect(subProjectType("ARAS Website Optimisation Project")).toBe("hourly");
+    expect(subProjectType("BAMSS Childcare Security Services")).toBe("hourly");
+    expect(subProjectType("Aqpa Things")).toBe("hourly"); // "QP" only as its own word
+  });
+  it("its own registered profile's type wins, unless that's package-like", () => {
+    expect(subProjectType("Apex Comms Sales Presenter (QP)", { profileType: "quoted" })).toBe("quoted");
+    expect(subProjectType("Website (QP)", { profileType: "hourly" })).toBe("hourly");
+    expect(subProjectType("Website (QP)", { profileType: "package" })).toBe("quoted");
+    expect(subProjectType("Website", { profileType: "strategy" })).toBe("hourly");
+  });
+  it("Capacity Planning's basis for the exact folder is next, also never package-like", () => {
+    expect(subProjectType("Employee Guide", { capType: "quoted" })).toBe("quoted");
+    expect(subProjectType("Employee Guide", { capType: "package" })).toBe("hourly");
+  });
+  it("as the month type it keeps the parent's package off the row entirely", () => {
+    const parentLedger = accrued({ name: "Majestic Plumbing", agreedByMonth: { "2026-08": 16, "2026-09": 16 }, balances: { "2026-08": 6 } });
+    const r = reconcileClientMonth({
+      worked: 2.17, accruedClient: parentLedger, monthKey: "2026-09", priorKey: "2026-08", priorWorkedH: 3,
+      monthType: subProjectType("Majestic Plumbing Quoted Web Project (WA)"), priorType: "quoted",
+    });
+    expect(r.pkg).toBe(null);
+    expect(r.priorBalance).toBe(null);
+    expect(r.remaining).toBe(null);
+    expect(r.status).toBe("no-pkg");
+  });
+});
+
+describe("resolveClientType: a fixed-price type can't be turned back into a package", () => {
+  it("the Clients month type wins over the ledger guess", () => {
+    expect(resolveClientType({ name: "Rent Busters", matched: true, pkg: 8, monthType: "digital" }).type).toBe("digital");
+    expect(resolveClientType({ name: "Astill", matched: true, pkg: 80, monthType: "map" }).type).toBe("map");
+  });
+  it("the Capacity Planning basis only demotes, never promotes", () => {
+    expect(resolveClientType({ name: "Rent Busters", monthType: "digital", capType: "package" })).toEqual({ type: "digital", demoted: false });
+    expect(resolveClientType({ name: "Astill", monthType: "map", capType: "strategy" })).toEqual({ type: "map", demoted: false });
+    expect(resolveClientType({ name: "Warrina Guide", matched: true, pkg: 24, capType: "quoted" })).toEqual({ type: "quoted", demoted: true });
+  });
+  it("unregistered fallbacks: matched with a package -> package, (Qld) -> queensland, else hourly", () => {
+    expect(resolveClientType({ name: "Acme", matched: true, pkg: 20 }).type).toBe("package");
+    expect(resolveClientType({ name: "Acme (QLD)" }).type).toBe("queensland");
+    expect(resolveClientType({ name: "Acme", matched: true, pkg: null }).type).toBe("hourly");
+  });
+});
+
+// "Any MAP we do will be 80 hrs altogether, not just for the month. We quote 80 hrs to do a
+// MAP." -- a MAP is a lifetime budget exactly like Quoted, never a monthly package.
+describe("MAP: one fixed hour budget for the whole plan, no accrual", () => {
+  it("is a lifetime-budget type alongside Quoted; package/digital/hourly aren't", () => {
+    expect(isLifetimeBudgetType("map")).toBe(true);
+    expect(isLifetimeBudgetType("quoted")).toBe(true);
+    for (const t of ["package", "strategy", "hourly", "digital", null]) expect(isLifetimeBudgetType(t)).toBe(false);
+  });
+  // Astill Consultants: base type map, 80 h, start_date 2026-08-01.
+  const astill = [{ from: null, type: "map", agreedHours: 80 }];
+  it("the budget runs from the profile start date for a base-type MAP", () => {
+    expect(lifetimeBudgetFor(astill, "2026-09", { type: "map", currentAgreedHours: 80, startDate: "2026-08-01" })).toEqual({ fromMonth: "2026-08", amount: 80 });
+    expect(lifetimeBudgetFor(astill, "2026-09", { type: "map", startDate: "2026-08-15" }).fromMonth).toBe("2026-09");
+  });
+  it("Astill Sep 2026: remaining = 80 - (Aug + Sep billable), nothing before the start counted", () => {
+    const b = lifetimeBudgetFor(astill, "2026-09", { type: "map", currentAgreedHours: 80, startDate: "2026-08-01" });
+    const byMonth = new Map([["2026-07", 600], ["2026-08", 23.53 * 60], ["2026-09", 46.3 * 60], ["2026-10", 300]]);
+    const lifetime = sumMinutesInRange(byMonth, b.fromMonth, "2026-09") / 60;
+    expect(lifetime).toBeCloseTo(69.83, 6);
+    expect(b.amount - lifetime).toBeCloseTo(10.17, 6);
+  });
+  it("a MAP segment after another type starts at that segment, and a quoted run isn't a MAP", () => {
+    const t = [{ from: null, type: "package", agreedHours: 20 }, { from: "2026-05-01", type: "map", agreedHours: 80 }, { from: "2026-09-01", type: "quoted", agreedHours: 30 }];
+    expect(lifetimeBudgetFor(t, "2026-07", { type: "map" })).toEqual({ fromMonth: "2026-05", amount: 80 });
+    expect(lifetimeBudgetFor(t, "2026-09", { type: "map" })).toBeNull();
+    expect(quotedBudgetFor(t, "2026-09")).toEqual({ fromMonth: "2026-09", amount: 30 });
+  });
+  it("the reconciliation gives a MAP month no package, carry or balance, even with a ledger on file", () => {
+    const ledger = accrued({ name: "Astill Consultants", agreedByMonth: { "2026-08": 40, "2026-09": 40 }, balances: { "2026-08": -12 }, resets: { "2026-09": 3 } });
+    const r = reconcileClientMonth({
+      worked: 46.3, accruedClient: ledger, monthKey: "2026-09", priorKey: "2026-08", priorWorkedH: 30,
+      monthType: "map", priorType: "map", monthSegmentAgreed: 80, allowScalarPackage: true,
+    });
+    expect(r).toMatchObject({ pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, priorMismatch: null, priorRebaseline: null });
+  });
+  it("never counts toward the Carry KPI or the last-month accrued export, and is never seeded", () => {
+    const c = { type: "map", pkg: null, priorBalance: null, quotedAmount: 80 };
+    expect(sumCarry([c])).toBe(0);
+    expect(lastMonthAccruedClients([c])).toEqual([]);
+    expect(shouldSeedPackageMonth(accrued({ agreedByMonth: { "2026-09": 80 } }), "2026-09", "map", 80)).toBe(false);
+  });
+  it("a package month after a MAP month starts with no carry", () => {
+    const r = reconcileClientMonth({
+      worked: 10, accruedClient: accrued({ agreedByMonth: { "2026-09": 20 }, balances: { "2026-08": -40 } }),
+      monthKey: "2026-09", priorKey: "2026-08", priorWorkedH: 40, monthType: "package", priorType: "map",
+    });
+    expect(r.priorBalance).toBe(0);
+  });
+  it("the copy summary and PDF report the MAP budget like a quote, in MAP wording", () => {
+    const c = {
+      name: "Astill Consultants", displayName: "Astill Consultants", type: "map", pkg: null, worked: 46.3, billableWorked: 46.3,
+      quotedAmount: 80, lifetimeWorked: 69.83, quotedRemaining: 10.17,
+      tasksAll: new Map(), taskUsers: new Map(), userMinutes: new Map(),
+    };
+    const text = buildSummaryText(c, { invoiceMonth: "September 2026" });
+    expect(text).toContain("MAP hours: 80.00 h");
+    expect(text).toContain("Total time tracked on this MAP: 69.83 h");
+    expect(text).toContain("Remaining of MAP amount: 10.17 h");
+    expect(text).not.toContain("Carried in");
+    const html = buildPrintHtml(c, "September 2026", "August 2026");
+    expect(html).toContain("MAP summary");
+    expect(html).toContain("Remaining of MAP amount");
+    expect(html).not.toContain("Carried in from previous month");
+  });
+});
+
+// Rent Busters moves to "digital" (Digital Package): a fixed price, never accrues.
+describe("Digital Package: fixed price, no package math", () => {
+  const ledger = accrued({ name: "Rent Busters (Bunbury, WA)", package: 8, agreedByMonth: { "2026-08": 8, "2026-09": 8 }, balances: { "2026-08": -4 } });
+  it("no package, carry, remaining or balance even with a ledger on file; status is fixed price", () => {
+    const r = reconcileClientMonth({
+      worked: 7.08, accruedClient: ledger, monthKey: "2026-09", priorKey: "2026-08", priorWorkedH: 6,
+      monthType: "digital", priorType: "package", monthSegmentAgreed: 8, allowScalarPackage: true,
+    });
+    expect(r).toMatchObject({
+      pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null,
+      kpiPct: null, priorMismatch: null, balanceForward: null, remainingShown: null, status: "fixed_price",
+    });
+  });
+  it("is never seeded as a zero-hour package row", () => {
+    expect(shouldSeedPackageMonth(ledger, "2026-09", "digital", 8)).toBe(false);
+  });
+  it("never counts toward Carry or the last-month accrued export", () => {
+    const c = { type: "digital", pkg: null, priorBalance: null };
+    expect(sumCarry([c])).toBe(0);
+    expect(lastMonthAccruedClients([c])).toEqual([]);
+  });
+  it("a package month after a digital one carries nothing", () => {
+    const r = reconcileClientMonth({
+      worked: 4, accruedClient: ledger, monthKey: "2026-09", priorKey: "2026-08", priorWorkedH: 6,
+      monthType: "package", priorType: "digital",
+    });
+    expect(r.priorBalance).toBe(0);
+  });
+  it("labels: the Digital badge falls back when nameMatch has no entry yet", () => {
+    expect(["Digital", "Digital Package"]).toContain(typeLabelShort("digital"));
+    expect(typeLabelShort("package")).toBe("Package");
+    expect(typeTone("digital")).toMatch(/^var\(/);
+  });
+  it("the copy summary and PDF say fixed price with no package lines", () => {
+    const c = {
+      name: "Rent Busters (Bunbury, WA)", displayName: "Rent Busters (Bunbury, WA)", type: "digital", pkg: null, worked: 7.08, billableWorked: 7.08,
+      tasksAll: new Map(), taskUsers: new Map(), userMinutes: new Map(),
+    };
+    const text = buildSummaryText(c, { invoiceMonth: "September 2026" });
+    expect(text).toContain("fixed monthly price");
+    expect(text).not.toMatch(/^Package:/m);
+    expect(text).not.toContain("Carried in");
+    expect(text).not.toContain("Remaining");
+    expect(text).not.toContain("undefined");
+    const html = buildPrintHtml(c, "September 2026", "");
+    expect(html).toContain("Digital Package: fixed monthly price");
   });
 });

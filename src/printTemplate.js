@@ -1,7 +1,22 @@
 import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
 import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { fmt, esc, filenameSafe, isPackageLikeType } from "./format.js";
-import { unfilteredForExport } from "./reconcile.js";
+import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
+import { costCentreInvoicesFor, costCentreInvoice, invoiceCapRuleFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
+
+// "Invoices by cost centre" rows for a client with a per-cost-centre invoice cap
+// (invoiceSplit.js): each cost centre's billable hours/amount, then one row per invoice
+// when it has to be split to stay under the cap. "" for any other client.
+function invoiceRowsHtml(invoices) {
+  if (!invoices || !invoices.length) return "";
+  const { rate, cap } = invoices[0].rule;
+  const rows = invoices.map((inv) => `
+    <tr class="datarow"><td>${esc(inv.name)} <span class="label">(${fmt(inv.hours)} h)</span></td><td class="right">${esc(fmtMoney(inv.amount))}</td></tr>${inv.lines.length > 1 ? inv.lines.map((line, i) => `
+    <tr class="datarow"><td class="label" style="padding-left:24px">${esc(invoiceLineLabel(line, i, inv.lines.length))}</td><td class="right">${esc(fmtMoney(line.amount))}</td></tr>`).join("") : ""}`).join("");
+  return `
+    <tr class="noborder"><td colspan="2" class="section-heading">Invoices by cost centre</td></tr>${rows}
+    <tr class="noborder"><td colspan="2" class="note-cell">Billable hours at ${esc(fmtMoney(rate))}/h. No invoice may exceed ${esc(fmtMoney(cap))} per cost centre, so a cost centre over that is split across several invoices.</td></tr>`;
+}
 
 // ------------------------------- PDF (print) --------------------------------
 const PRINT = { ink: "#000000", inkSoft: "#000000", brand: "#3F008E", line: "#E7E1F0", brandSoft: "#F1EAFB" };
@@ -14,7 +29,12 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
   const type = c.type;
   const isPkg = isPackageLikeType(type) && !c.isLineItemExport;
   const hasPkg = c.pkg != null && c.pkg > 0;
-  const isQuoted = type === "quoted" && !c.isLineItemExport;
+  // Quoted and MAP share one lifetime-budget summary (a MAP is quoted at a fixed total too).
+  const isQuoted = isLifetimeBudgetType(type) && !c.isLineItemExport;
+  const isMap = type === "map";
+  const budgetWord = isMap ? "MAP" : "quoted";
+  // A line-item export carries its own one-cost-centre invoices (see printLineItemPdf).
+  const invoices = c.isLineItemExport ? (c.invoices || null) : costCentreInvoicesFor(c);
   const taskRows = [...c.tasksFiltered.entries()].sort((a, b) => b[1] - a[1])
     .map(([task, min]) => `<tr class="datarow"><td>${esc(task)}</td><td class="right">${fmt(min / 60)}</td></tr>`).join("");
   const workedRounded = Math.round(c.workedFiltered * 100) / 100;
@@ -55,15 +75,15 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
     <tr class="datarow"><td class="label">New balance going forward</td><td class="right">${fmt(balanceForward)} h ${balanceForward > 0 ? "over" : balanceForward < 0 ? "credit" : ""}</td></tr>
     <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${remainingShown >= 0 ? fmt(remainingShown) + " h left" : fmt(Math.abs(remainingShown)) + " h over"}</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = billable time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are re-baselined to the accrual sheet's closing figure." : ""}</td></tr>` : isQuoted ? `
-    <tr class="noborder"><td colspan="2" class="section-heading">Quoted project summary</td></tr>
-    <tr class="datarow"><td class="label">Quoted amount</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
+    <tr class="noborder"><td colspan="2" class="section-heading">${isMap ? "MAP summary" : "Quoted project summary"}</td></tr>
+    <tr class="datarow"><td class="label">${isMap ? "MAP hours" : "Quoted amount"}</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
-    <tr class="datarow"><td class="label">Total time tracked on this quote</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
-    <tr class="total"><td>${c.quotedRemaining != null && c.quotedRemaining < 0 ? "Over the quoted amount by" : "Remaining of quoted amount"}</td><td class="right">${c.quotedRemaining != null ? fmt(Math.abs(c.quotedRemaining)) + " h" : "—"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">Quoted is a single fixed budget for the whole project, not a monthly one -- the total/remaining figures are cumulative across every month of this quote, not just this one.</td></tr>` : `
+    <tr class="datarow"><td class="label">Total time tracked on this ${isMap ? "MAP" : "quote"}</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
+    <tr class="total"><td>${c.quotedRemaining != null && c.quotedRemaining < 0 ? `Over the ${budgetWord} amount by` : `Remaining of ${budgetWord} amount`}</td><td class="right">${c.quotedRemaining != null ? fmt(Math.abs(c.quotedRemaining)) + " h" : "—"}</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">${isMap ? "A MAP" : "Quoted"} is a single fixed budget for the whole ${isMap ? "plan" : "project"}, not a monthly one -- the total/remaining figures are cumulative across every month of it, not just this one.</td></tr>` : `
     <tr class="noborder"><td colspan="2" class="section-heading">Summary</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only -- part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package/reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;
+    <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only -- part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package/reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "digital" ? "Digital Package: fixed monthly price. Hours are shown for reference only." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -126,6 +146,7 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
       <tr class="total"><td>Total</td><td class="right">${fmt(workedRounded)} h</td></tr>
 
       ${reconciliation}
+      ${invoiceRowsHtml(invoices)}
 
       <tr class="noborder"><td colspan="2" class="generated-note-cell">Generated ${esc(new Date().toLocaleString())}</td></tr>
     </tbody>
@@ -159,10 +180,14 @@ export function printLineItemPdf(parent, lineItem, monthText, consultantFilter) 
     for (const [, tm] of lineItem.tasksByUser) for (const [task, min] of tm) tasks.set(task, (tasks.get(task) || 0) + min);
   }
   const workedFiltered = [...tasks.values()].reduce((a, min) => a + min, 0) / 60;
+  // A capped client's cost centre is invoiced on its own, so its slice carries its own split
+  // (always from the whole cost centre's billable hours, whatever the consultant filter).
+  const rule = invoiceCapRuleFor(parent);
+  const invoices = rule ? [costCentreInvoice(lineItem.name, lineItem.billableHours ?? lineItem.hours, rule)] : null;
   const synthetic = {
     displayName: `${parent.displayName} — ${lineItem.name}`,
     type: "project", tasksFiltered: tasks, workedFiltered,
-    isLineItemExport: true, rolledUpParentName: parent.displayName,
+    isLineItemExport: true, rolledUpParentName: parent.displayName, invoices,
   };
   printClientPdf(synthetic, monthText, null);
 }

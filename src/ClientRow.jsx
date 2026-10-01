@@ -1,7 +1,9 @@
 import React, { useState } from "react";
 import { Link2, MoreVertical, ChevronDown, Copy, Printer, Users } from "lucide-react";
 import { fmt, isPackageLikeType } from "./format.js";
-import { CLIENT_TYPE_TONES, TYPE_LABELS_SHORT } from "./nameMatch.js";
+import { isLifetimeBudgetType } from "./reconcile.js";
+import { typeLabelShort, typeTone } from "./clientTypeLabels.js";
+import { costCentreInvoicesFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
 import { ClientAvatar } from "./avatar.jsx";
 import { useDismissable } from "./useDismissable.js";
 import { ExportItem } from "./ExportItem.jsx";
@@ -17,25 +19,46 @@ import { ExportItem } from "./ExportItem.jsx";
 // the accrual (billed separately, e.g. a quoted one-off project) never appears here —
 // it stays its own ordinary row, nested underneath via the existing sub-project
 // mechanism (see the `nested` prop below), tagged "Sub project" rather than folded in.
+//
+// A client with a per-cost-centre invoice cap (invoiceSplit.js, e.g. Clarke Energy) also
+// gets each cost centre's billable $ amount, and one extra line per invoice when it has to
+// be split to stay under the cap.
 function CostCentreBreakdown({ client: c, divider, showReset }) {
   const { lineItems } = c.costCentre;
+  const invoicesByName = new Map((costCentreInvoicesFor(c) || []).map((inv) => [inv.name, inv]));
+  const rowClass = "pg-costcentre-mini__row pg-row-grid-cols" + (showReset ? " pg-row-grid-cols--reset" : "");
   return (
     <div className={"pg-costcentre-mini" + (divider ? " pg-costcentre-mini--divider" : "")}>
-      {lineItems.map((item) => (
-        // Reuses the row's own grid-column track list (pg-row-grid-cols) rather than an
-        // independent layout, so each line item's hours land in exactly the same column
-        // as the "Worked" figure on the row above -- a fixed left-padding/flex layout
-        // can't guarantee that once folder names vary in length.
-        <div className={"pg-costcentre-mini__row pg-row-grid-cols" + (showReset ? " pg-row-grid-cols--reset" : "")} key={item.name}>
-          <span />
-          <span className="pg-costcentre-mini__dotcell"><span className="pg-costcentre-mini__dot" /></span>
-          <span className="pg-costcentre-mini__name">{item.name}</span>
-          <span />
-          <span />
-          <span />
-          <span className="pg-costcentre-mini__hours">{fmt(item.hours)} h</span>
-        </div>
-      ))}
+      {lineItems.map((item) => {
+        const inv = invoicesByName.get(item.name);
+        return (
+          <React.Fragment key={item.name}>
+            {/* Reuses the row's own grid-column track list (pg-row-grid-cols) rather than an
+                independent layout, so each line item's hours land in exactly the same column
+                as the "Worked" figure on the row above -- a fixed left-padding/flex layout
+                can't guarantee that once folder names vary in length. */}
+            <div className={rowClass}>
+              <span />
+              <span className="pg-costcentre-mini__dotcell"><span className="pg-costcentre-mini__dot" /></span>
+              <span className="pg-costcentre-mini__name">
+                {item.name}
+                {inv && <span style={{ color: "var(--fg-tertiary)" }} title={`Billable ${fmt(inv.hours)} h at ${fmtMoney(inv.rule.rate)}/h${inv.lines.length > 1 ? `, over the ${fmtMoney(inv.rule.cap)} per-invoice cap` : ""}`}> · {fmtMoney(inv.amount)}{inv.lines.length > 1 ? ` · ${inv.lines.length} invoices` : ""}</span>}
+              </span>
+              <span />
+              <span />
+              <span />
+              <span className="pg-costcentre-mini__hours">{fmt(item.hours)} h</span>
+            </div>
+            {inv && inv.lines.length > 1 && inv.lines.map((line, i) => (
+              <div className={rowClass} key={`${item.name}-inv${i}`} style={{ paddingTop: 0 }}>
+                <span />
+                <span className="pg-costcentre-mini__dotcell" />
+                <span className="pg-costcentre-mini__name" style={{ paddingLeft: 12, fontSize: 12, color: "var(--fg-tertiary)" }}>{invoiceLineLabel(line, i, inv.lines.length)}</span>
+              </div>
+            ))}
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -77,8 +100,13 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // type -- that's what the row is scanned for) with the lifetime total shown in the
   // otherwise-unused Carry slot instead, rather than replacing the month figure with it
   // (see quotedAmount/lifetimeWorked/quotedRemaining computed in App.jsx's
-  // buildClientsForMonth).
-  const isQuoted = c.type === "quoted";
+  // buildClientsForMonth). A MAP is the same shape -- a fixed total (e.g. 80 h) for the
+  // whole plan -- so it reuses every Quoted figure here, with MAP wording.
+  const isQuoted = isLifetimeBudgetType(c.type);
+  const isMap = c.type === "map";
+  const budgetWord = isMap ? "MAP" : "quoted";
+  // Digital Package: fixed price, hours shown for reference only (no package/remaining).
+  const isDigital = c.type === "digital";
   const statusTone = isPackage
     ? (c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : "var(--status-ok)")
     : isQuoted && c.quotedRemaining != null
@@ -89,7 +117,8 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
     : isPackage && c.status !== "no-pkg"
     ? (c.status === "over" ? `${fmt(Math.abs(c.newBalance))} h over-served` : c.status === "under" ? `${fmt(Math.abs(c.newBalance))} h under-served` : "on track")
     : isQuoted && c.quotedRemaining != null
-      ? (c.quotedRemaining < 0 ? `${fmt(Math.abs(c.quotedRemaining))} h over the quoted amount` : `${fmt(c.quotedRemaining)} h left of the quoted amount`)
+      ? (c.quotedRemaining < 0 ? `${fmt(Math.abs(c.quotedRemaining))} h over the ${budgetWord} amount` : `${fmt(c.quotedRemaining)} h left of the ${budgetWord} amount`)
+    : isDigital ? "Digital Package: fixed monthly price, hours shown for reference only"
       : null;
 
   // worked is always THIS MONTH's hours, same meaning for every type -- quoted's lifetime
@@ -155,10 +184,12 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
       // -- "Over quoted amount" was long enough to wrap and spill out of the pill's
       // fixed-width box instead of staying on one line.
       ? (c.quotedAmount == null
-        ? { label: "No quote set", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
+        ? { label: isMap ? "No MAP hours" : "No quote set", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
         : c.quotedRemaining < 0
-          ? { label: "Over quote", tone: "var(--status-over)", bg: "var(--status-over-soft)" }
+          ? { label: isMap ? "Over MAP" : "Over quote", tone: "var(--status-over)", bg: "var(--status-over-soft)" }
           : { label: "Within budget", tone: "var(--status-ok)", bg: "var(--status-ok-soft)" })
+    : isDigital
+      ? { label: "Fixed price", tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
       : null;
 
   const consultantEntries = [...c.userMinutes.entries()].sort((a, b) => b[1] - a[1]);
@@ -212,13 +243,13 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
             </span>
           )}
         </span>
-        <span className="pg-tag pg-tag--pill" style={{ color: CLIENT_TYPE_TONES[c.type] }}>{TYPE_LABELS_SHORT[c.type]}</span>
-        <span className="pg-row__num" style={carryTone ? { color: carryTone } : undefined} title={isQuoted ? "Total billed against this quote so far, from the quote's start month through this one." : carryTitle}>
+        <span className="pg-tag pg-tag--pill" style={{ color: typeTone(c.type) }}>{typeLabelShort(c.type)}</span>
+        <span className="pg-row__num" style={carryTone ? { color: carryTone } : undefined} title={isQuoted ? `Total billed against this ${isMap ? "MAP" : "quote"} so far, from its start month through this one.` : carryTitle}>
           <span className="pg-row__num-label">{isQuoted ? "Total worked" : carryLabel}</span>
           {isQuoted ? `${fmt(lifetimeWorked)} h` : priorBalance != null ? `${fmt(carry)} h` : isPackage ? "—" : ""}
         </span>
         <span className="pg-row__num">
-          <span className="pg-row__num-label">{isQuoted ? "Quoted" : "Package"}</span>
+          <span className="pg-row__num-label">{isQuoted ? (isMap ? "MAP" : "Quoted") : "Package"}</span>
           {isQuoted ? (c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—") : c.pkg != null ? `${fmt(c.pkg)} h` : isPackage ? "—" : ""}
         </span>
         <span className="pg-row__num">
@@ -311,12 +342,12 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
                   <div className="pg-bar-mark" style={{ left: `${pkgPct}%` }} />
                 </div>
                 <div className="pg-bar-caption" style={{ marginTop: 6 }}>
-                  <span>quoted {fmt(pkg)} h</span>
+                  <span>{budgetWord} {fmt(pkg)} h</span>
                   <span>bar is cumulative across every month, not just this one</span>
                 </div>
               </>
             ) : (
-              <div className="pg-row-inline__empty">{isQuoted ? "No quoted amount on file for this client." : "No package on file for this client."}</div>
+              <div className="pg-row-inline__empty">{isQuoted ? `No ${budgetWord} amount on file for this client.` : isDigital ? "Digital Package: fixed monthly price, no package hours tracked." : "No package on file for this client."}</div>
             )}
           </div>
 
