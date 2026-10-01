@@ -174,6 +174,11 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             </select>
           </div>
         )}
+        {c.seeded && (
+          <div className="pg-manual-note">
+            <span>No billable ClickUp hours matched to this client this month -- shown because its package still runs. If its hours sit under a differently named folder, match that folder to this client.</span>
+          </div>
+        )}
         {isPackage && c.matchInfo?.method === "manual" && (
           <div className="pg-manual-note">
             <span>Manual match set.</span>

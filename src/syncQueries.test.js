@@ -5,6 +5,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // `.order()` calls were made, so a missing unique tie-breaker shows up in the recorded calls).
 const tables = {};
 const queries = [];
+const writes = [];
+let failWrite = null;
 function builder(table) {
   const q = { table, calls: [] };
   queries.push(q);
@@ -12,6 +14,23 @@ function builder(table) {
   for (const m of ["select", "order", "eq", "gte", "lt", "in", "lte", "ilike", "not"]) {
     api[m] = (...args) => { q.calls.push([m, ...args]); return api; };
   }
+  api.update = (patch) => { q.calls.push(["update", patch]); q.op = "update"; return api; };
+  // Awaiting a non-range query: apply eq/in/lte filters naively; updates go to the `writes`
+  // log (and can be made to fail via `failWrite`).
+  api.then = (resolve, reject) => {
+    if (q.op === "update") {
+      writes.push(q);
+      const err = failWrite && failWrite(q) ? { message: "write failed" } : null;
+      return Promise.resolve({ data: null, error: err }).then(resolve, reject);
+    }
+    let rows = tables[table] || [];
+    for (const [m, col, val] of q.calls) {
+      if (m === "eq") rows = rows.filter((r) => r[col] === val);
+      if (m === "in") rows = rows.filter((r) => val.includes(r[col]));
+      if (m === "lte") rows = rows.filter((r) => r[col] <= val);
+    }
+    return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
+  };
   api.range = (from, to) => {
     q.calls.push(["range", from, to]);
     const rows = tables[table] || [];
@@ -26,12 +45,14 @@ vi.mock("./supabaseClient.js", () => ({
 
 const { fetchClickupFromSupabase, triggerManualSync, functionErrorMessage } = await import("./clickupSync.js");
 const { fetchAccrualsFromSupabase } = await import("./accrualsSync.js");
-const { fetchClientEvents } = await import("./clientsSync.js");
+const { fetchClientEvents, applyDueClientEvents } = await import("./clientsSync.js");
 
 const ordersOf = (q) => q.calls.filter((c) => c[0] === "order").map((c) => c[1]);
 
 beforeEach(() => {
   queries.length = 0;
+  writes.length = 0;
+  failWrite = null;
   for (const k of Object.keys(tables)) delete tables[k];
   invoke.mockReset();
 });
@@ -84,5 +105,39 @@ describe("triggerManualSync (Sync now)", () => {
     const err = { message: "generic", context: new Response("not json", { status: 502 }) };
     expect(await functionErrorMessage(err)).toBe("generic");
     expect(await functionErrorMessage(new Error("plain"))).toBe("plain");
+  });
+});
+
+describe("applyDueClientEvents -- patch the client row first, then mark events applied", () => {
+  const seed = () => {
+    tables.pginvoice_clients = [{ client: "A", base_type: "package", base_agreed_hours: 10, type: "package", agreed_hours: 10, consultant: "X", status: "active", end_date: null }];
+    tables.pginvoice_client_events = [{ id: 1, client: "A", kind: "offboarding", effective_date: "2026-01-31", applied: false }];
+  };
+  const tableOf = (q) => q.table;
+
+  it("writes the row patch before marking the event applied", async () => {
+    seed();
+    expect(await applyDueClientEvents()).toBe(1);
+    expect(writes.map(tableOf)).toEqual(["pginvoice_clients", "pginvoice_client_events"]);
+    expect(writes[0].calls.find((c) => c[0] === "update")[1]).toMatchObject({ status: "offboarded", end_date: "2026-01-31" });
+  });
+
+  it("a failed row patch leaves the events unapplied (so the next run retries)", async () => {
+    seed();
+    failWrite = (q) => q.table === "pginvoice_clients";
+    await expect(applyDueClientEvents()).rejects.toBeTruthy();
+    expect(writes.map(tableOf)).toEqual(["pginvoice_clients"]);
+  });
+
+  it("if marking fails, re-running writes the identical patch (idempotent)", async () => {
+    seed();
+    failWrite = (q) => q.table === "pginvoice_client_events";
+    await expect(applyDueClientEvents()).rejects.toBeTruthy();
+    const first = writes[0].calls.find((c) => c[0] === "update")[1];
+    Object.assign(tables.pginvoice_clients[0], first); // the row patch did land
+    writes.length = 0;
+    failWrite = null;
+    await applyDueClientEvents();
+    expect(writes[0].calls.find((c) => c[0] === "update")[1]).toEqual(first);
   });
 });

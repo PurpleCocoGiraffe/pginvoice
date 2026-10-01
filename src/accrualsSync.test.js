@@ -496,23 +496,72 @@ describe("endPeriodsFor -- stale stored profile state and holds (QA)", () => {
   });
 });
 
-describe("replayClientAccruals -- hours_flagged clears once worked hours stop changing", () => {
+describe("replayClientAccruals -- hours_flagged is sticky until hours return to flagged_from_hours", () => {
   const PKG = { type: "package", agreedHours: 10 };
-  it("a previously-flagged closed month whose hours now match writes hours_flagged: false", () => {
-    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": { accrualValue: 2, workedHours: 12, accrualNote: null, isOverride: false, hoursFlagged: true } } };
-    const rows = replayClientAccruals(c, { startMonth: "2026-08", cur: "2026-08", segFor: () => PKG, statusFor: () => "active", workedMinutesFor: () => 12 * 60 });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].hours_flagged).toBe(false);
-    const c2 = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": { accrualValue: 2, workedHours: 12, accrualNote: null, isOverride: false, hoursFlagged: true }, "2026-09": { accrualValue: -8, workedHours: 0, accrualNote: null, isOverride: false, hoursFlagged: false } } };
-    const rows2 = replayClientAccruals(c2, { startMonth: "2026-08", cur: "2026-09", segFor: () => PKG, statusFor: () => "active", workedMinutesFor: (mk) => (mk === "2026-08" ? 12 * 60 : 0) });
-    expect(rows2.map((r) => [r.month_key, r.hours_flagged])).toEqual([["2026-08", false]]);
-    expect(c2.months["2026-08"].hoursFlagged).toBe(false);
+  const run = (c, workedAug) => replayClientAccruals(c, { startMonth: "2026-08", cur: "2026-09", segFor: () => PKG, statusFor: () => "active", workedMinutesFor: (mk) => (mk === "2026-08" ? workedAug * 60 : 0) });
+  const fresh = () => ({ client: "A", manager: null, agreedHpm: "10", months: { "2026-08": { accrualValue: 2, workedHours: 12, accrualNote: null, isOverride: false, hoursFlagged: false, flaggedFromHours: null } } });
+  // Simulates the DB round-trip: what the next recompute reads back is what this one wrote.
+  const persist = (c, rows) => {
+    for (const r of rows) c.months[r.month_key] = { ...c.months[r.month_key], workedHours: r.worked_hours, hoursFlagged: r.hours_flagged, flaggedFromHours: r.flagged_from_hours };
+  };
+
+  it("a closed month's hours changing raises the flag and records the hours it was flagged against", () => {
+    const c = fresh();
+    const rows = run(c, 15);
+    expect(rows.find((r) => r.month_key === "2026-08")).toMatchObject({ worked_hours: 15, hours_flagged: true, flagged_from_hours: 12 });
   });
 
-  it("an on-hold month carrying a stale flag gets it cleared too", () => {
-    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": { accrualValue: 0, workedHours: null, accrualNote: "On hold — accrual paused", isOverride: false, hoursFlagged: true } } };
-    const rows = replayClientAccruals(c, { startMonth: "2026-08", cur: "2026-09", segFor: () => PKG, statusFor: () => "on_hold", workedMinutesFor: () => 0 });
-    expect(rows.find((r) => r.month_key === "2026-08").hours_flagged).toBe(false);
+  it("the flag survives later recomputes (previously cleared on the very next run)", () => {
+    const c = fresh();
+    persist(c, run(c, 15));
+    const second = run(c, 15);
+    expect(second.find((r) => r.month_key === "2026-08")).toBeUndefined(); // nothing changed, nothing written
+    expect(c.months["2026-08"]).toMatchObject({ hoursFlagged: true, flaggedFromHours: 12 });
+    // A further change keeps the ORIGINAL flagged-against figure.
+    persist(c, run(c, 16));
+    expect(c.months["2026-08"]).toMatchObject({ workedHours: 16, hoursFlagged: true, flaggedFromHours: 12 });
+  });
+
+  it("clears (false + null) once the hours return to the flagged-against figure", () => {
+    const c = fresh();
+    persist(c, run(c, 15));
+    const rows = run(c, 12.005);
+    expect(rows.find((r) => r.month_key === "2026-08")).toMatchObject({ hours_flagged: false, flagged_from_hours: null });
+  });
+
+  it("a human-cleared flag stays cleared while the hours don't change again", () => {
+    const c = fresh();
+    persist(c, run(c, 15));
+    c.months["2026-08"].hoursFlagged = false; // cleared by hand in the DB
+    const row = run(c, 15).find((r) => r.month_key === "2026-08");
+    // At most a tidy-up of the leftover flagged_from_hours -- never re-raised.
+    if (row) expect(row).toMatchObject({ hours_flagged: false, flagged_from_hours: null });
+    expect(c.months["2026-08"].hoursFlagged).toBe(false);
+    expect(run(c, 15).find((r) => r.month_key === "2026-08")).toBeUndefined();
+  });
+
+  it("an on-hold month carries an existing flag over unchanged", () => {
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": { accrualValue: 0, workedHours: 9, accrualNote: "On hold — accrual paused", isOverride: false, hoursFlagged: true, flaggedFromHours: 7 } } };
+    replayClientAccruals(c, { startMonth: "2026-08", cur: "2026-09", segFor: () => PKG, statusFor: () => "on_hold", workedMinutesFor: () => 0 });
+    expect(c.months["2026-08"]).toMatchObject({ hoursFlagged: true, flaggedFromHours: 7 });
+  });
+
+  it("every recompute payload branch has the identical key set (incl. flagged_from_hours, never reset_value)", () => {
+    const HOURLY = { type: "hourly", agreedHours: null };
+    const months = { "2026-06": { accrualValue: 5, workedHours: 5 }, "2026-07": { accrualValue: 1, workedHours: 1 }, "2026-08": { accrualValue: 1, workedHours: 1 }, "2026-09": { accrualValue: 1, workedHours: 1 } };
+    const rows = replayClientAccruals({ client: "A", manager: null, agreedHpm: "10", months }, {
+      startMonth: "2026-06", cur: "2026-10",
+      segFor: (mk) => (mk === "2026-07" ? HOURLY : PKG),
+      statusFor: (mk) => (mk === "2026-08" ? "on_hold" : "active"),
+      workedMinutesFor: () => 60,
+      endPeriods: [{ from: "2026-09", until: "2026-10", after: null, note: "Client offboarded" }],
+    });
+    const notes = new Set(rows.map((r) => r.accrual_note));
+    expect(notes).toEqual(new Set([null, "Not on a package this month", "On hold — accrual paused", "Client offboarded"]));
+    const keySets = new Set(rows.map((r) => Object.keys(r).sort().join(",")));
+    expect(keySets.size).toBe(1);
+    expect([...keySets][0].split(",")).toContain("flagged_from_hours");
+    expect([...keySets][0].split(",")).not.toContain("reset_value");
   });
 });
 

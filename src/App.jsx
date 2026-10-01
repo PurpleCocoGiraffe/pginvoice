@@ -10,7 +10,7 @@ import {
 import { idbGet, idbSet, PG_DATA_EVENT } from "./idbStore.js";
 import { findMatch, multiFolderMatchesFor, multiFolderAccrualMatchesFor, isInternalFolder, CLIENT_TYPE_LABELS, CLIENT_TYPE_TONES, TYPE_LABELS_SHORT, dominantClientType, basisToClientType } from "./nameMatch.js";
 import { fetchClickupFromSupabase, fetchSyncMeta, triggerManualSync, LIVE_SYNC_LABEL } from "./clickupSync.js";
-import { fetchAccruedForReconciliation, ACCRUALS_LIVE_SYNC_LABEL } from "./accrualsSync.js";
+import { fetchAccruedForReconciliation, ACCRUALS_LIVE_SYNC_LABEL, endPeriodsFor } from "./accrualsSync.js";
 import { SEED_CLIENTS as CAP_SEED_CLIENTS, SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
 import { fetchClients as fetchPgClients, fetchClientEvents, applyDueClientEvents, typeForMonth, statusForMonth, typeTimelineFor } from "./clientsSync.js";
 import { ClientAvatar } from "./avatar.jsx";
@@ -29,9 +29,10 @@ import { filterClientList } from "./clientListFilter.js";
 import {
   folderKey, buildFolderCanonicalizer, newFolderEntry, aggregateMonthRows, billableMinutesByFolder,
   reconcileClientMonth, shouldSeedPackageMonth, sumCarry, lastMonthAccruedClients, quotedBudgetFor,
-  sumMinutesInRange,
+  sumMinutesInRange, seedBlockedBy, monthInEndPeriods, priorFolderKeysFor,
 } from "./reconcile.js";
 import { buildSummaryText } from "./clientSummary.js";
+import { runManualSync } from "./manualSync.js";
 // A <label> wrapping a <select> only focuses it on click in most browsers -- opening
 // the dropdown itself needs a second click directly on the control. Used as the
 // onClick for every pill-style filter label so one click anywhere on the pill
@@ -339,12 +340,11 @@ export default function PGReconciliation({ onNavigateClients }) {
     setSyncing(true);
     manualOverrideRef.current = false; // an explicit "Sync now" click means: give me live data
     try {
-      await triggerManualSync();
-      const live = await fetchClickupFromSupabase();
+      // Reloads even when one month's sync failed (the other may have changed the data).
+      const { live, meta, error } = await runManualSync({ trigger: triggerManualSync, fetchLive: fetchClickupFromSupabase, fetchMeta: fetchSyncMeta });
       if (live) { setClickup(live); setClickupSource("supabase"); }
-      setSyncMeta(await fetchSyncMeta());
-    } catch (e) {
-      setClickupErr("Sync failed: " + (e && e.message ? e.message : String(e)));
+      if (meta) setSyncMeta(meta);
+      setClickupErr(error ? "Sync failed: " + (error.message ? error.message : String(error)) : null);
     } finally {
       setSyncing(false);
     }
@@ -487,6 +487,10 @@ export default function PGReconciliation({ onNavigateClients }) {
   // billable regardless of the "Billable only" toggle: that toggle is display-only, and the
   // accrual math must not move with it. Returns null when the export doesn't cover that
   // month at all (nothing to check).
+  // Every raw folder name in the data (all months, every spelling) -- what the prior-month
+  // accrual-folder resolution matches against (see priorFolderKeysFor).
+  const allRawFolders = useMemo(() => (clickup ? [...new Set(clickup.rows.map((r) => r.folder))] : []), [clickup]);
+
   const computeMonthWorked = useCallback(
     (monthKey) => (clickup ? billableMinutesByFolder(clickup.rows, monthKey, clickup.hasBillable) : null),
     [clickup]
@@ -700,7 +704,7 @@ export default function PGReconciliation({ onNavigateClients }) {
     // the client-level `package` scalar -- on live data it's a stale last-write-wins value.
     const allowScalarPackage = !!accrued && accrued.fileName !== ACCRUALS_LIVE_SYNC_LABEL;
     const nameMapByKey = new Map(Object.entries(nameMap).map(([k, v]) => [folderKey(k), v]));
-    const resolveProfile = (c) => pgProfileByFolder.get(folderKey(c.name)) || pgClientByName.get(c.name) || (() => {
+    const resolveProfile = (c) => (c.seeded ? pgClientByName.get(c.name) || null : null) || pgProfileByFolder.get(folderKey(c.name)) || pgClientByName.get(c.name) || (() => {
       const m = findMatch(c.name, pgClientNames);
       return m ? pgClientByName.get(m.name) : null;
     })();
@@ -756,9 +760,25 @@ export default function PGReconciliation({ onNavigateClients }) {
       // monthWorked is keyed by folderKey, one entry per real folder -- a cost-centre
       // client's identity (c.name) is the accrued client name, not a real folder, so sum
       // across every folder this client's roll-up actually draws from instead.
-      const priorMonthWorkedMin = c.costCentre
-        ? c.costCentre.accrualFolderNames.reduce((a, f) => a + (monthWorked?.get(folderKey(f)) || 0), 0)
-        : (monthWorked?.get(folderKey(c.name)) || 0);
+      // A seeded or renamed row's c.name is the client/ledger name, not a folder, so resolve
+      // the client's real accrual folders (see priorFolderKeysFor).
+      const ledgerName = c.costCentreAccruedName ?? accruedClient?.name ?? null;
+      const priorKeys = accruedClient ? priorFolderKeysFor({
+        name: c.name,
+        costCentreFolders: c.costCentre?.accrualFolderNames,
+        clientName: ledgerName,
+        ownFolder: (ledgerName && pgClientByName.get(ledgerName)?.clickupFolder) || null,
+        isSubProject: !!c.costCentreParentAccName,
+        allFolders: allRawFolders,
+        accrualMatchesFor: multiFolderAccrualMatchesFor,
+      }) : [folderKey(c.name)];
+      const priorMonthWorkedMin = priorKeys.reduce((a, k) => a + (monthWorked?.get(k) || 0), 0);
+      // An offboarded/archived stretch accrues nothing (recomputeAccruals' end periods), so
+      // a prior month inside one carries nothing -- never an estimate from the old package.
+      const priorEnded = !!(pgProfile && priorKey && accruedClient) && monthInEndPeriods(
+        endPeriodsFor(pgProfile, pgClientEvents), priorKey,
+        { hasEvidence: accruedClient.balances?.[priorKey] != null || priorMonthWorkedMin > 0 },
+      );
       const recon = reconcileClientMonth({
         worked: billableWorked, accruedClient, monthKey, priorKey,
         priorWorkedH: monthWorked ? priorMonthWorkedMin / 60 : null,
@@ -768,6 +788,7 @@ export default function PGReconciliation({ onNavigateClients }) {
         priorStatus: pgProfile && priorKey ? statusForMonth(pgProfile, pgClientEvents, priorKey) : null,
         monthSegmentAgreed: seg?.agreedHours ?? null,
         allowScalarPackage,
+        priorEnded,
       });
       const clientObj = {
         ...c, worked, billableWorked, accruedClient, matchInfo,
@@ -857,19 +878,27 @@ export default function PGReconciliation({ onNavigateClients }) {
     // with 0 hours (or only non-billable hours with Billable only on) used to vanish from
     // the list, the KPIs, the Pending-hours export and the last-month accrued export.
     // Seed a zero-hour row for every such accrued client not already represented.
+    // Seeded rows are tagged `seeded` and never count as "taken" for manual matching.
     if (accrued && monthKey) {
-      const represented = new Set(out.filter((x) => x.accruedClient).map((x) => x.accruedClient.name));
+      const matchedLedgerNames = new Set(out.filter((x) => x.accruedClient).map((x) => x.accruedClient.name));
       const takenNames = new Set(out.map((x) => folderKey(x.name)));
+      const monthFolderKeys = new Set(folderNames.map(folderKey)); // pre-merge: every folder with rows this month
       for (const a of accrued.clients) {
-        if (represented.has(a.name) || takenNames.has(folderKey(a.name))) continue;
+        if (takenNames.has(folderKey(a.name))) continue;
         const profile = pgClientByName.get(a.name);
-        const monthType = profile ? (typeForMonth(profile, pgClientEvents, monthKey)?.type ?? null) : null;
-        if (!shouldSeedPackageMonth(a, monthKey, monthType)) continue;
-        out.push(buildClientObj({ ...newFolderEntry(a.name), costCentreAccruedName: a.name }));
+        const ownFolder = profile?.clickupFolder || null;
+        if (seedBlockedBy({
+          ledgerName: a.name, matchedLedgerNames, ownFolder, monthFolderKeys,
+          clientFolders: multiFolderMatchesFor(a.name, folderVariantNames, ownFolder || undefined),
+        })) continue;
+        const seg = profile ? typeForMonth(profile, pgClientEvents, monthKey) : null;
+        if (!shouldSeedPackageMonth(a, monthKey, seg?.type ?? null, seg?.agreedHours ?? null)) continue;
+        if (profile && monthInEndPeriods(endPeriodsFor(profile, pgClientEvents), monthKey)) continue;
+        out.push(buildClientObj({ ...newFolderEntry(a.name), costCentreAccruedName: a.name, seeded: true }));
       }
     }
     return out;
-  }, [clickup, accrued, accruedNames, nameMap, billableOnly, folderCanon, computeMonthWorked, workedByFolderMonth, capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents]);
+  }, [clickup, accrued, accruedNames, nameMap, billableOnly, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth, capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents]);
 
   const clients = useMemo(() => buildClientsForMonth(dataMonthKey, priorMonthKey), [buildClientsForMonth, dataMonthKey, priorMonthKey]);
 
@@ -1121,7 +1150,9 @@ export default function PGReconciliation({ onNavigateClients }) {
     const upto = dataMonthKey ? keys.filter((k) => k <= dataMonthKey) : keys;
     return upto.slice(-6).map((k) => byMonth.get(k) / 60);
   }, [clickup, billableOnly, consultantFilter, dataMonthKey, kpiScopeFolders, folderCanon]);
-  const usedAccruedNames = useMemo(() => new Set(clients.filter((x) => x.matched).map((x) => x.accruedClient.name)), [clients]);
+  // Seeded zero-hour rows don't "take" a ledger name -- otherwise the real folder for that
+  // client could never be matched to it by hand (see seedBlockedBy in reconcile.js).
+  const usedAccruedNames = useMemo(() => new Set(clients.filter((x) => x.matched && !x.seeded).map((x) => x.accruedClient.name)), [clients]);
 
   // Only meaningful when the reporting period IS the current real-world month — a mid-month
   // check on a still-open month, e.g. "accrued sheet stops at June, it's July 17th, how's the

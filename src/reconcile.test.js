@@ -3,7 +3,12 @@ import {
   folderKey, buildFolderCanonicalizer, aggregateMonthRows, billableMinutesByFolder,
   reconcileClientMonth, shouldSeedPackageMonth, sumCarry, lastMonthAccruedClients,
   quotedBudgetFor, sumMinutesInRange, unfilteredForExport,
+  seedBlockedBy, monthInEndPeriods, priorFolderKeysFor,
 } from "./reconcile.js";
+import { endPeriodsFor } from "./accrualsSync.js";
+import { multiFolderAccrualMatchesFor, setDynamicCostCentres } from "./nameMatch.js";
+import { runManualSync } from "./manualSync.js";
+import { afterEach } from "vitest";
 import { buildPrintHtml } from "./printTemplate.js";
 import { buildSummaryText } from "./clientSummary.js";
 
@@ -293,5 +298,117 @@ describe("fix 6: quoted budget counts only the current quote's months", () => {
     const byMonth = new Map([["2026-02", 600], ["2026-03", 60], ["2026-05", 120], ["2026-06", 999], ["", 7]]);
     expect(sumMinutesInRange(byMonth, "2026-03", "2026-05")).toBe(180);
     expect(sumMinutesInRange(byMonth, null, null)).toBe(600 + 60 + 120 + 999 + 7);
+  });
+});
+
+// ------------------------------ QA follow-up round ------------------------------
+
+describe("QA 1: seeded zero-hour rows never shadow real data", () => {
+  const monthFolderKeys = new Set(["coonawarra grape and wine inc", "bamss childcare security services", "other"].map(folderKey));
+  it("not seeded when the ledger name is already matched by a real row", () => {
+    expect(seedBlockedBy({ ledgerName: "Acme", matchedLedgerNames: new Set(["Acme"]), monthFolderKeys })).toBe(true);
+  });
+  it("not seeded when its registered folder (any case/whitespace variant) has rows -- e.g. an unmatched hourly row awaiting a manual match", () => {
+    expect(seedBlockedBy({ ledgerName: "Coonwarra", matchedLedgerNames: new Set(), ownFolder: "COONAWARRA Grape and Wine Inc ", monthFolderKeys })).toBe(true);
+  });
+  it("not seeded when one of its multi-folder/cost-centre folders has rows (claimed by another client's roll-up)", () => {
+    expect(seedBlockedBy({ ledgerName: "BAMSS", matchedLedgerNames: new Set(), ownFolder: "BAMSS Folder Elsewhere", clientFolders: ["BAMSS Childcare Security Services"], monthFolderKeys })).toBe(true);
+  });
+  it("seeded when nothing of the client's has rows this month", () => {
+    expect(seedBlockedBy({ ledgerName: "Quiet Co", matchedLedgerNames: new Set(["Acme"]), ownFolder: "Quiet Co", clientFolders: [], monthFolderKeys })).toBe(false);
+  });
+});
+
+describe("QA 2: prior-month hours resolve the client's real folders, not its display name", () => {
+  afterEach(() => setDynamicCostCentres([]));
+  const allFolders = ["Aged Rights Advocacy Services", "ARAS Website Optimisation Project", "Unrelated"];
+  it("a renamed row (c.name = client name) uses the registered folder", () => {
+    const keys = priorFolderKeysFor({ name: "ARAS", clientName: "ARAS", ownFolder: "Aged Rights Advocacy Services", allFolders, accrualMatchesFor: multiFolderAccrualMatchesFor });
+    expect(keys).toEqual([folderKey("Aged Rights Advocacy Services")]);
+  });
+  it("a seeded row whose client has a dynamic cost centre sums every accrual folder (own folder folded in)", () => {
+    setDynamicCostCentres([
+      { client: "Majestic Plumbing", folder: "MP - Commercial Leak Tech", kind: "cost_centre" },
+      { client: "Majestic Plumbing", folder: "MP Quoted Web Project", kind: "sub_project" },
+    ]);
+    const keys = priorFolderKeysFor({
+      name: "Majestic Plumbing", clientName: "Majestic Plumbing", ownFolder: "Majestic Plumbing (WA)",
+      allFolders: ["Majestic Plumbing (WA)", "MP - Commercial Leak Tech", "MP Quoted Web Project"], accrualMatchesFor: multiFolderAccrualMatchesFor,
+    });
+    expect(keys.sort()).toEqual([folderKey("MP - Commercial Leak Tech"), folderKey("Majestic Plumbing (WA)")].sort());
+  });
+  it("a sub-project and an unregistered folder row keep their own folder", () => {
+    expect(priorFolderKeysFor({ name: "ARAS Website Optimisation Project", clientName: "ARAS", isSubProject: true, allFolders })).toEqual([folderKey("ARAS Website Optimisation Project")]);
+    expect(priorFolderKeysFor({ name: "Some Folder ", clientName: null, allFolders })).toEqual(["some folder"]);
+  });
+  it("with the real folder's hours the ledger balance is not a false mismatch (sheet -2 vs recomputed -32 before)", () => {
+    const a = accrued({ name: "ARAS", agreedByMonth: { "2026-08": 32, "2026-09": 32 }, balances: { "2026-08": -2, "2026-07": 0 } });
+    const priorWorked = new Map([[folderKey("Aged Rights Advocacy Services"), 30 * 60]]);
+    const keys = priorFolderKeysFor({ name: "ARAS", clientName: "ARAS", ownFolder: "Aged Rights Advocacy Services", allFolders, accrualMatchesFor: multiFolderAccrualMatchesFor });
+    const priorWorkedH = keys.reduce((s, k) => s + (priorWorked.get(k) || 0), 0) / 60;
+    const r = reconcileClientMonth({ worked: 0, accruedClient: a, monthKey: "2026-09", priorKey: "2026-08", priorWorkedH, monthType: "package", priorType: "package" });
+    expect(priorWorkedH).toBe(30);
+    expect(r.priorMismatch).toBeNull();
+  });
+});
+
+describe("QA 3: prior month inside an end period carries nothing", () => {
+  // Equippers: offboarded 2026-06-01, re-signed as a 24h package from 2026-08-01 via a type event.
+  const profile = { client: "Equippers", status: "active", endDate: null, baseType: "package", baseAgreedHours: 24 };
+  const events = [
+    { id: 1, client: "Equippers", kind: "offboarding", applied: true, effective_date: "2026-06-01" },
+    { id: 2, client: "Equippers", kind: "type", applied: true, effective_date: "2026-08-01", new_type: "package", new_agreed_hours: 24 },
+  ];
+  const periods = endPeriodsFor(profile, events);
+  it("finds July inside the end period and August outside it", () => {
+    expect(monthInEndPeriods(periods, "2026-07")).toBe(true);
+    expect(monthInEndPeriods(periods, "2026-06")).toBe(true);
+    expect(monthInEndPeriods(periods, "2026-08")).toBe(false);
+    expect(monthInEndPeriods(periods, "2026-05")).toBe(false);
+  });
+  it("re-engagement month starts from 0, not an estimated 24h carry", () => {
+    const a = accrued({ name: "Equippers", agreedByMonth: { "2026-08": 24 }, balances: {} });
+    const r = reconcileClientMonth({
+      worked: 10, accruedClient: a, monthKey: "2026-08", priorKey: "2026-07", priorWorkedH: 0,
+      monthType: "package", priorType: "package", priorStatus: "offboarded", priorEnded: true,
+    });
+    expect(r.priorBalance).toBe(0);
+    expect(r.priorBalanceEstimated).toBe(false);
+    expect(r.priorMismatch).toBeNull();
+    expect(r.newBalance).toBe(-14);
+  });
+  it("an undated end period counts a month as ended only without evidence of its own", () => {
+    const undated = [{ from: null, until: null, after: "2026-03", note: "Client offboarded" }];
+    expect(monthInEndPeriods(undated, "2026-07")).toBe(true);
+    expect(monthInEndPeriods(undated, "2026-07", { hasEvidence: true })).toBe(false);
+    expect(monthInEndPeriods(undated, "2026-02")).toBe(false);
+  });
+});
+
+describe("QA 4: current month seeded before recompute has written its ledger row", () => {
+  it("falls back to the month's own agreed hours for a registered package-like client", () => {
+    const a = accrued({ agreedByMonth: { "2026-08": 20 } });
+    expect(shouldSeedPackageMonth(a, "2026-10", "package", 20)).toBe(true);
+    expect(shouldSeedPackageMonth(a, "2026-10", "package", null)).toBe(false);
+    expect(shouldSeedPackageMonth(a, "2026-10", null, 20)).toBe(false); // unregistered: ledger only
+    expect(shouldSeedPackageMonth(accrued({ agreedByMonth: { "2026-10": null } }), "2026-10", "package", 20)).toBe(false); // ledger says no package
+  });
+});
+
+describe("QA 5: Sync now reloads data even when one month's sync failed", () => {
+  it("returns the fresh data and the error together", async () => {
+    const live = { rows: [] };
+    const out = await runManualSync({
+      trigger: async () => { throw new Error("Current month: boom"); },
+      fetchLive: async () => live,
+      fetchMeta: async () => ({ last_sync_status: "error" }),
+    });
+    expect(out.live).toBe(live);
+    expect(out.meta).toEqual({ last_sync_status: "error" });
+    expect(out.error.message).toBe("Current month: boom");
+  });
+  it("no error on success", async () => {
+    const out = await runManualSync({ trigger: async () => ({}), fetchLive: async () => null, fetchMeta: async () => null });
+    expect(out.error).toBeNull();
   });
 });

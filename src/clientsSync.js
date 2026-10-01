@@ -289,25 +289,76 @@ function latestByEffectiveDate(events) {
   }, null);
 }
 
+// ---- Lifecycle rule shared with accrualsSync's endPeriodsFor ----
+// The ordering both recomputeClientCurrentState (a client's current status) and
+// endPeriodsFor (which months an offboarded client stops accruing) replay events in. By
+// effective_date, then -- on the SAME date -- a type event sorts before any status event,
+// so an offboarding dated the same day as a type change wins (a type change doesn't
+// re-engage on the day you offboard), then by id. Before this the two disagreed: a
+// same-date type event with a higher id brought the client back "active" here while
+// endPeriodsFor produced an empty period, so the client never ended at all.
+export const LIFECYCLE_STATUS_KINDS = ["offboarding", "reactivation", "hold", "resume"];
+export function compareLifecycleEvents(a, b) {
+  return a.effective_date.localeCompare(b.effective_date)
+    || (a.kind === "type" ? 0 : 1) - (b.kind === "type" ? 0 : 1)
+    || a.id - b.id;
+}
+export function lifecycleTimeline(events, client) {
+  return events
+    .filter((e) => (client == null || e.client === client) && (LIFECYCLE_STATUS_KINDS.includes(e.kind) || e.kind === "type"))
+    .sort(compareLifecycleEvents);
+}
+// Whether a type event re-engages a client currently ended (offboarded, or archived
+// directly) since `endDate`: strictly after it -- same day, the end wins. An ended client
+// with no end date on file can only be re-engaged by a type event being applied now.
+export function typeEventReengages(typeEvent, endDate, isNewlyApplied) {
+  if (!typeEvent) return false;
+  if (endDate) return typeEvent.effective_date > endDate;
+  return !!isNewlyApplied;
+}
+const isEndedStatus = (status) => status === "offboarded" || status === "archived";
+
+// Folds the event-driven status history (status kinds + re-engaging type events) from
+// "active". Never yields "archived" -- that status is only ever set directly.
+// `ended` mirrors endPeriodsFor's open period: a hold after an offboarding leaves the client
+// ended (shown on hold), and a later type/resume/reactivation re-engages it either way.
+function replayStatus(timeline) {
+  let status = "active";
+  let endDate = null;
+  let ended = false;
+  for (const e of timeline) {
+    if (e.kind === "offboarding") { status = "offboarded"; endDate = e.effective_date; ended = true; }
+    else if (e.kind === "reactivation" || e.kind === "resume") { status = "active"; endDate = null; ended = false; }
+    else if (e.kind === "hold") { status = "on_hold"; endDate = null; }
+    else if (e.kind === "type" && ended) { status = "active"; endDate = null; ended = false; }
+  }
+  return { status, endDate };
+}
+
 // Derives the client's current type/agreed_hours/consultant/status/end_date from its
-// current row plus its FULL history of applied events -- each field is decided
-// independently by that field's own chronologically-latest applied event, so insertion
-// order (which event got added to the DB last) can never override effective-date order
-// (which event actually happened most recently). This is what applyDueClientEvents below
-// writes, instead of a raw per-event patch.
+// current row plus its FULL event history (already-applied plus the ones being applied
+// now) -- each field is decided independently by that field's own chronologically-latest
+// event, so insertion order (which event got added to the DB last) can never override
+// effective-date order (which event actually happened most recently). This is what
+// applyDueClientEvents below writes, instead of a raw per-event patch.
 //
 // `baseRow` is the client's current row (client, base_type, base_agreed_hours, type,
 // agreed_hours, consultant, status, end_date). A field with no event of its kind keeps the
 // row's current value -- starting from defaults (status "active", base hours) meant applying
 // ANY event (say a consultant change) silently wiped a status set without an event (e.g.
 // "archived") or a quoted amount edited directly via updateQuotedAmount.
-// `dueIds` (optional Set): ids of the events being applied in this run. Status is only
-// re-derived when a status-kind or type event is among them (otherwise a status set outside
-// the event log would be overwritten by an unrelated event), and a quoted client's amount
-// is kept unless the type event that set it is itself being applied now. Omitted = treat
-// every event as due (full replay).
-export function recomputeClientCurrentState(baseRow, appliedEvents, dueIds = null) {
-  const own = appliedEvents.filter((e) => e.client === baseRow.client);
+// `dueIds` (optional Set): ids of the events being applied in this run; omitted = treat
+// every event as due (full replay). Status:
+//   - a status-kind event is due -> the full replay (replayStatus) decides;
+//   - else a type event is due and the client is ended (offboarded, or archived directly)
+//     -> re-engaged (active) if typeEventReengages;
+//   - else the stored status is repaired to the replay whenever they disagree -- so a patch
+//     lost after its events were marked applied, or stale state written by older code, heals
+//     on the next run. Not when there are no status events at all (a status set directly
+//     with nothing to replay), and never for "archived", which the replay can't produce.
+// A quoted client's amount is kept unless the type event that set it is itself due now.
+export function recomputeClientCurrentState(baseRow, events, dueIds = null) {
+  const own = events.filter((e) => e.client === baseRow.client);
   const isDue = (e) => !dueIds || dueIds.has(e.id);
   const patch = {
     type: baseRow.type ?? baseRow.base_type,
@@ -329,36 +380,33 @@ export function recomputeClientCurrentState(baseRow, appliedEvents, dueIds = nul
   const lc = latestByEffectiveDate(own.filter((e) => e.kind === "consultant"));
   if (lc) patch.consultant = lc.new_consultant;
 
-  const STATUS_KINDS = ["offboarding", "reactivation", "hold", "resume"];
-  const statusDue = own.some((e) => STATUS_KINDS.includes(e.kind) && isDue(e));
+  const hasStatusEvents = own.some((e) => LIFECYCLE_STATUS_KINDS.includes(e.kind));
+  const statusDue = own.some((e) => LIFECYCLE_STATUS_KINDS.includes(e.kind) && isDue(e));
   const typeDue = own.some((e) => e.kind === "type" && isDue(e));
+  const replay = replayStatus(lifecycleTimeline(own));
   if (statusDue) {
-    // Replays status-kind events in effective_date order (id tie-break). A type event later
-    // than an offboarding re-engages the client, exactly as accrualsSync's endPeriodsFor
-    // treats it (Equippers: offboarded, then re-signed via a package type event).
-    const timeline = own
-      .filter((e) => STATUS_KINDS.includes(e.kind) || e.kind === "type")
-      .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || a.id - b.id);
-    let status = "active";
-    let endDate = null;
-    for (const e of timeline) {
-      if (e.kind === "offboarding") { status = "offboarded"; endDate = e.effective_date; }
-      else if (e.kind === "reactivation" || e.kind === "resume") { status = "active"; endDate = null; }
-      else if (e.kind === "hold") { status = "on_hold"; endDate = null; }
-      else if (e.kind === "type" && status === "offboarded") { status = "active"; endDate = null; }
-    }
-    patch.status = status;
-    patch.end_date = endDate;
-  } else if (typeDue && patch.status === "offboarded" && patch.end_date && lt && lt.effective_date > patch.end_date) {
+    patch.status = replay.status;
+    patch.end_date = replay.endDate;
+  } else if (typeDue && isEndedStatus(patch.status) && typeEventReengages(lt, patch.end_date, isDue(lt))) {
     patch.status = "active";
     patch.end_date = null;
+  } else if (hasStatusEvents && patch.status !== "archived" && patch.status !== replay.status) {
+    patch.status = replay.status;
+    patch.end_date = replay.endDate;
   }
   return patch;
 }
 
 // Applies any event whose effective date has arrived (<= today) and isn't applied
 // yet, mutating the client's current profile row. Safe to call on every module
-// load — already-applied events are a no-op via the `applied` guard.
+// load -- already-applied events are a no-op via the `applied` guard.
+//
+// Order matters: client rows are patched FIRST, events marked applied only after every
+// patch succeeded. The reverse order (mark, then patch) meant a failed patch left events
+// marked applied but never reflected on the row, and with status re-derivation gated on
+// due events nothing would ever repair it. If marking fails after the patches, the next
+// run re-applies the same events -- recomputeClientCurrentState is a pure function of the
+// row + full event list, so that's the same patch again (idempotent).
 export async function applyDueClientEvents() {
   const todayKey = new Date().toISOString().slice(0, 10);
   const { data: due, error } = await supabase
@@ -372,24 +420,24 @@ export async function applyDueClientEvents() {
   if (!due || !due.length) return 0;
 
   const clientNames = [...new Set(due.map((e) => e.client))];
-  const { error: markErr } = await supabase.from("pginvoice_client_events").update({ applied: true }).in("id", due.map((e) => e.id));
-  if (markErr) throw markErr;
-
-  // Now that the due events are marked applied, re-derive each affected client's current
-  // state from its COMPLETE applied-event history (not just the events that were due this
-  // run) -- a previously-applied event with a later effective_date than one applied just now
-  // must still win, and only a full replay in effective_date order guarantees that.
+  // Re-derive each affected client's current state from its COMPLETE history (already-
+  // applied events plus the ones due now) -- a previously-applied event with a later
+  // effective_date than one applied just now must still win, and only a full replay in
+  // effective_date order guarantees that.
   const { data: baseRows, error: baseErr } = await supabase.from("pginvoice_clients").select("client, base_type, base_agreed_hours, type, agreed_hours, consultant, status, end_date").in("client", clientNames);
   if (baseErr) throw baseErr;
-  const { data: allApplied, error: appliedErr } = await supabase.from("pginvoice_client_events").select("*").eq("applied", true).in("client", clientNames);
+  const { data: alreadyApplied, error: appliedErr } = await supabase.from("pginvoice_client_events").select("*").eq("applied", true).in("client", clientNames);
   if (appliedErr) throw appliedErr;
-
   const dueIds = new Set(due.map((e) => e.id));
+  const history = [...(alreadyApplied || []).filter((e) => !dueIds.has(e.id)), ...due];
+
   for (const baseRow of baseRows || []) {
-    const patch = recomputeClientCurrentState(baseRow, allApplied || [], dueIds);
+    const patch = recomputeClientCurrentState(baseRow, history, dueIds);
     const { error: updErr } = await supabase.from("pginvoice_clients").update(patch).eq("client", baseRow.client);
     if (updErr) throw updErr;
   }
+  const { error: markErr } = await supabase.from("pginvoice_client_events").update({ applied: true }).in("id", due.map((e) => e.id));
+  if (markErr) throw markErr;
   notifyClientsChanged();
   return due.length;
 }

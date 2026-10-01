@@ -407,11 +407,14 @@ Deno.serve(async (req: Request) => {
           const desiredSet = new Set(clients);
           const toDelete = [...existingSet].filter((c) => !desiredSet.has(c));
           const toInsert = clients.filter((c) => !existingSet.has(c));
-          if (toDelete.length) {
-            await supabase.from("pginvoice_user_clients").delete().eq("user_id", p.user_id).eq("source", "clickup").in("client", toDelete);
-          }
+          // Grant before revoke: if the insert fails, nothing has been taken away yet.
           if (toInsert.length) {
-            await supabase.from("pginvoice_user_clients").insert(toInsert.map((client) => ({ user_id: p.user_id, client, source: "clickup" })));
+            const { error: insertError } = await supabase.from("pginvoice_user_clients").insert(toInsert.map((client) => ({ user_id: p.user_id, client, source: "clickup" })));
+            if (insertError) throw insertError;
+          }
+          if (toDelete.length) {
+            const { error: deleteError } = await supabase.from("pginvoice_user_clients").delete().eq("user_id", p.user_id).eq("source", "clickup").in("client", toDelete);
+            if (deleteError) throw deleteError;
           }
         } catch (userErr) {
           console.error(`clickup-derived client reconciliation skipped for user ${p.user_id}:`, userErr);

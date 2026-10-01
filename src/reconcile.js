@@ -121,16 +121,21 @@ export function billableMinutesByFolder(rows, monthKey, hasBillable) {
 //                  keeps the ledger-only behaviour.
 // monthSegmentAgreed -- typeForMonth's agreedHours for the viewed month (registered clients
 //                  only): used when the ledger has no row for the month yet.
+// priorEnded    -- the prior month sits inside one of the client's end periods (offboarded/
+//                  archived, see endPeriodsFor + monthInEndPeriods): it accrued nothing.
 // allowScalarPackage -- only a manually uploaded workbook (no per-month agreed hours at all)
 //                  may fall back to the client-level `package` scalar; on live data that
 //                  scalar is a stale last-write-wins value (see accrualsSync.js).
 export function reconcileClientMonth({
   worked, accruedClient: a, monthKey, priorKey, priorWorkedH = null,
   monthType = null, priorType = null, monthStatus = null, priorStatus = null,
-  monthSegmentAgreed = null, allowScalarPackage = false,
+  monthSegmentAgreed = null, allowScalarPackage = false, priorEnded = false,
 }) {
   const monthOffPackage = monthType != null && !isPackageLikeType(monthType);
-  const priorOffPackage = priorType != null && !isPackageLikeType(priorType);
+  // An ended prior month is treated like an off-package one: recomputeAccruals restarts
+  // prior at (reset ?? 0) after an end period, so estimating a carry from the old package
+  // invented one (Equippers: offboarded 2026-06, re-signed from 2026-08 -> "Carried in 24h").
+  const priorOffPackage = priorEnded || (priorType != null && !isPackageLikeType(priorType));
   const onHold = monthStatus === "on_hold";
   const priorOnHold = priorStatus === "on_hold";
 
@@ -223,11 +228,60 @@ export function reconcileClientMonth({
 // time) still needs a row: a package-like month always does -- the package is consumed
 // (or banked) whether or not anyone logged time, so dropping it hid the client from the
 // list, KPIs and both accrual exports.
-export function shouldSeedPackageMonth(accruedClient, monthKey, monthType = null) {
+// `monthSegmentAgreed` (typeForMonth's agreedHours, registered clients only) covers a month
+// the ledger has no row for yet -- e.g. the current month before a recompute has run.
+export function shouldSeedPackageMonth(accruedClient, monthKey, monthType = null, monthSegmentAgreed = null) {
   if (!accruedClient || !monthKey) return false;
   if (monthType != null && !isPackageLikeType(monthType)) return false;
   const agreed = accruedClient.agreedByMonth?.[monthKey];
+  if (agreed === undefined && monthType != null) return monthSegmentAgreed != null && monthSegmentAgreed > 0;
   return agreed != null && agreed > 0;
+}
+
+// Whether a seeded zero-hour row would duplicate or shadow real data. Never seed when the
+// ledger name is already matched by a real row, or when the client's own registered folder
+// (any case/whitespace variant) or any of its cost-centre/multi-folder folders has rows this
+// month -- those hours are on screen already, just matched elsewhere (an unmatched hourly
+// row awaiting a manual match, or a folder claimed by another client's roll-up), and a
+// phantom 0h row beside them would consume the whole package in the exports and KPIs.
+// `monthFolderKeys`: folderKey of every folder with rows this month (pre-merge).
+export function seedBlockedBy({ ledgerName, matchedLedgerNames, ownFolder = null, clientFolders = [], monthFolderKeys }) {
+  if (matchedLedgerNames.has(ledgerName)) return true;
+  if (ownFolder && monthFolderKeys.has(folderKey(ownFolder))) return true;
+  return (clientFolders || []).some((f) => monthFolderKeys.has(folderKey(f)));
+}
+
+// Whether monthKey falls inside one of endPeriodsFor()'s periods ({ from, until, after }:
+// ended from `from` inclusive to `until` exclusive). An undated period (from null) is
+// resolved by replayClientAccruals from the client's last evidence month; here a month
+// within its window counts as ended unless it has evidence of its own (`hasEvidence`: a
+// ledger balance or worked hours), the same signal the replay uses.
+export function monthInEndPeriods(periods, monthKey, { hasEvidence = false } = {}) {
+  if (!monthKey) return false;
+  return (periods || []).some((p) => {
+    if (p.until != null && monthKey >= p.until) return false;
+    if (p.from != null) return monthKey >= p.from;
+    if (p.after != null && monthKey < p.after) return false;
+    return !hasEvidence;
+  });
+}
+
+// folderKeys whose hours count toward a client's package in the PRIOR month (estimate and
+// mismatch cross-check). A row's own name isn't always a folder: a seeded row and a row
+// renamed to its client/ledger name (ARAS, whose folder is "Aged Rights Advocacy
+// Services") are keyed by the client name, so looking up c.name found 0 hours and flagged a
+// false mismatch. Resolved like accrualFolderMinutesFor: the client's accrual multi-folder
+// match (with its registered folder folded in, across every folder in the data, not just
+// this month's), else this month's roll-up folders, else its registered folder, else c.name.
+// `accrualMatchesFor` is nameMatch's multiFolderAccrualMatchesFor (injected for testing);
+// `allFolders` is every raw folder name in the data.
+export function priorFolderKeysFor({ name, costCentreFolders = null, clientName = null, ownFolder = null, isSubProject = false, allFolders = [], accrualMatchesFor }) {
+  const keys = (list) => [...new Set(list.map(folderKey))];
+  if (isSubProject) return [folderKey(name)];
+  const multi = clientName && accrualMatchesFor ? accrualMatchesFor(clientName, allFolders, ownFolder || undefined) : null;
+  if (multi && multi.length) return keys(multi);
+  if (costCentreFolders && costCentreFolders.length) return keys(costCentreFolders);
+  return [folderKey(ownFolder || name)];
 }
 
 // Carry-over KPI: absolute prior balance, only for rows that are actually package-like.

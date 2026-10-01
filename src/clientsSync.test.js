@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { recomputeClientCurrentState, typeTimelineFor, typeForMonth } from "./clientsSync.js";
+import { endPeriodsFor } from "./accrualsSync.js";
 
 const ev = (id, kind, effective_date, fields = {}) => ({ id, client: "A", kind, effective_date, applied: true, ...fields });
 const row = (over = {}) => ({
@@ -68,5 +69,62 @@ describe("typeTimelineFor -- same-date type events tie-break by id", () => {
     ];
     expect(typeTimelineFor(client, events).map((s) => s.type)).toEqual(["package", "hourly", "package"]);
     expect(typeForMonth(client, events, "2026-08")).toMatchObject({ type: "package", agreedHours: 20 });
+  });
+});
+
+describe("one lifecycle rule: same-date offboarding beats a type event (recompute and endPeriodsFor agree)", () => {
+  const offAndType = (offId, typeId) => [ev(offId, "offboarding", "2026-06-30"), ev(typeId, "type", "2026-06-30", { new_type: "package", new_agreed_hours: 24 })];
+
+  it("offboarding + same-date type event with a HIGHER id -> still offboarded", () => {
+    expect(recomputeClientCurrentState(row(), offAndType(1, 2))).toMatchObject({ status: "offboarded", end_date: "2026-06-30" });
+    expect(recomputeClientCurrentState(row(), offAndType(2, 1))).toMatchObject({ status: "offboarded", end_date: "2026-06-30" });
+  });
+
+  it("endPeriodsFor ends the client from the next month, regardless of id order", () => {
+    for (const events of [offAndType(1, 2), offAndType(2, 1)]) {
+      const patch = recomputeClientCurrentState(row(), events);
+      expect(endPeriodsFor({ client: "A", status: patch.status, endDate: patch.end_date }, events)).toEqual([{ from: "2026-07", until: null, after: null, note: "Client offboarded" }]);
+    }
+  });
+
+  it("the type-only-due path applies the same rule (same date does not re-engage, later date does)", () => {
+    const stored = row({ status: "offboarded", end_date: "2026-06-30" });
+    const sameDay = [ev(1, "offboarding", "2026-06-30", { applied: true }), ev(2, "type", "2026-06-30", { new_type: "package", new_agreed_hours: 24 })];
+    expect(recomputeClientCurrentState(stored, sameDay, new Set([2])).status).toBe("offboarded");
+    const later = [ev(1, "offboarding", "2026-06-30"), ev(2, "type", "2026-07-01", { new_type: "package", new_agreed_hours: 24 })];
+    expect(recomputeClientCurrentState(stored, later, new Set([2])).status).toBe("active");
+  });
+
+  it("offboarding -> hold -> type: re-engaged in both (hold doesn't end the 'ended' state)", () => {
+    const events = [ev(1, "offboarding", "2026-06-30"), ev(2, "hold", "2026-07-15"), ev(3, "type", "2026-09-01", { new_type: "package", new_agreed_hours: 24 })];
+    const patch = recomputeClientCurrentState(row(), events);
+    expect(patch.status).toBe("active");
+    expect(endPeriodsFor({ client: "A", status: patch.status, endDate: patch.end_date }, events)).toEqual([{ from: "2026-07", until: "2026-09", after: null, note: "Client offboarded" }]);
+  });
+});
+
+describe("recomputeClientCurrentState -- archived is re-engaged by a type event like offboarded", () => {
+  it("a directly archived client re-signed via a newly-applied type event becomes active", () => {
+    const events = [ev(1, "type", "2026-09-01", { new_type: "package", new_agreed_hours: 20 })];
+    expect(recomputeClientCurrentState(row({ status: "archived", end_date: null }), events, new Set([1]))).toMatchObject({ status: "active", end_date: null, agreed_hours: 20 });
+  });
+  it("an archived client with an end_date is only re-engaged by a type event dated after it", () => {
+    const events = [ev(1, "type", "2026-03-31", { new_type: "package", new_agreed_hours: 20 })];
+    expect(recomputeClientCurrentState(row({ status: "archived", end_date: "2026-03-31" }), events, new Set([1])).status).toBe("archived");
+  });
+});
+
+describe("recomputeClientCurrentState -- stored status repaired when it disagrees with the event replay", () => {
+  it("a lost patch (events applied, row still active) is repaired by the next unrelated event", () => {
+    const events = [ev(1, "offboarding", "2026-06-30"), ev(2, "consultant", "2026-09-01", { new_consultant: "Y" })];
+    expect(recomputeClientCurrentState(row({ status: "active" }), events, new Set([2]))).toMatchObject({ status: "offboarded", end_date: "2026-06-30" });
+  });
+  it("stale 'offboarded' left by older code after a type re-engagement is repaired", () => {
+    const events = [ev(1, "offboarding", "2026-06-01"), ev(2, "type", "2026-08-01", { new_type: "package", new_agreed_hours: 24 }), ev(3, "consultant", "2026-09-01", { new_consultant: "Y" })];
+    expect(recomputeClientCurrentState(row({ status: "offboarded", end_date: "2026-06-01" }), events, new Set([3]))).toMatchObject({ status: "active", end_date: null });
+  });
+  it("a status set directly with no status events at all is kept", () => {
+    const events = [ev(1, "consultant", "2026-09-01", { new_consultant: "Y" })];
+    expect(recomputeClientCurrentState(row({ status: "offboarded", end_date: "2026-05-31" }), events, new Set([1]))).toMatchObject({ status: "offboarded", end_date: "2026-05-31" });
   });
 });

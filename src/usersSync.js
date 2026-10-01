@@ -106,6 +106,8 @@ export async function fetchClickupUserNames() {
     const { data, error } = await supabase
       .from("pginvoice_clickup_entries")
       .select("user_name")
+      // Unique order -- without one, pages can skip/duplicate rows between requests.
+      .order("entry_id", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
     if (!data || !data.length) break;
