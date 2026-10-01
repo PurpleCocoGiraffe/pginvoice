@@ -79,12 +79,14 @@ export const CLIENT_TYPE_LABELS = {
   project: "Project",
   strategy: "Strategy",
   ad_hoc: "Ad hoc",
+  // Fixed-price package with no hours component -- never accrues (not isPackageLikeType).
+  digital: "Digital Package",
   queensland: "Queensland (prv)",
 };
 // Short canonical name for each client type, plus "all" -- shared by Client
 // Invoicing's row/drawer/export code and anywhere else that needs the same
 // short phrasing (as opposed to CLIENT_TYPE_LABELS' longer filter-menu wording).
-export const TYPE_LABELS_SHORT = { all: "All", ...CLIENT_TYPE_LABELS };
+export const TYPE_LABELS_SHORT = { all: "All", ...CLIENT_TYPE_LABELS, digital: "Digital" };
 export const CLIENT_TYPE_TONES = {
   package: "var(--accent)",
   hourly: "var(--accent-orchid)",
@@ -93,6 +95,7 @@ export const CLIENT_TYPE_TONES = {
   project: "var(--fg-tertiary)",
   strategy: "var(--accent)",
   ad_hoc: "var(--accent-orchid)",
+  digital: "var(--status-ok)",
   queensland: "var(--status-info)",
 };
 // CLIENT_TYPE_TONES above reuses the same accent for several types (package/strategy
@@ -104,6 +107,7 @@ export const CLIENT_TYPE_TONES = {
 export const CHART_TYPE_TONES = {
   hourly: "var(--chart-hourly)", package: "var(--chart-package)", quoted: "var(--chart-quoted)",
   map: "var(--chart-map)", strategy: "var(--chart-strategy)", project: "var(--chart-project)", ad_hoc: "var(--chart-ad-hoc)",
+  digital: "var(--chart-digital)",
 };
 export function basisToClientType(basis) {
   const b = String(basis || "").trim();
@@ -113,6 +117,7 @@ export function basisToClientType(basis) {
   if (b === "Quoted") return "quoted";
   if (b === "Project") return "project";
   if (b === "Ad hoc") return "ad_hoc";
+  if (b === "Digital") return "digital";
   if (b !== "" && b !== "Hourly") {
     console.warn(`basisToClientType: unrecognized basis "${basis}", defaulting to "hourly"`);
   }
@@ -126,8 +131,9 @@ export function basisToClientType(basis) {
 // carries the most agreed hours, since actual hours can't be split back out
 // between the sub-rows once matched to a single ClickUp folder. "Fixed" here
 // mirrors capacityData.js's FIXED_BASES (Package/Project/Quoted/MAP/Strategy) vs
-// VARIABLE_BASES (Hourly/Ad hoc) grouping, not just "not Hourly".
-const VARIABLE_BASIS_NAMES = new Set(["Hourly", "Ad hoc"]);
+// VARIABLE_BASES (Hourly/Ad hoc) grouping, not just "not Hourly". Digital is fixed-PRICE
+// but carries no agreed hours, so it never wins the "most agreed hours" contest either.
+const VARIABLE_BASIS_NAMES = new Set(["Hourly", "Ad hoc", "Digital"]);
 export function dominantClientType(rows) {
   const types = rows.map((r) => basisToClientType(r.basis));
   const uniq = [...new Set(types)];

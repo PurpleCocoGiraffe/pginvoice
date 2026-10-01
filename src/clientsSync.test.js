@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { recomputeClientCurrentState, typeTimelineFor, typeForMonth } from "./clientsSync.js";
+import { recomputeClientCurrentState, typeTimelineFor, typeForMonth, validateNewClient, newClientRow, storesAgreedHours } from "./clientsSync.js";
 import { endPeriodsFor } from "./accrualsSync.js";
 
 const ev = (id, kind, effective_date, fields = {}) => ({ id, client: "A", kind, effective_date, applied: true, ...fields });
@@ -126,5 +126,44 @@ describe("recomputeClientCurrentState -- stored status repaired when it disagree
   it("a status set directly with no status events at all is kept", () => {
     const events = [ev(1, "consultant", "2026-09-01", { new_consultant: "Y" })];
     expect(recomputeClientCurrentState(row({ status: "offboarded", end_date: "2026-05-31" }), events, new Set([1]))).toMatchObject({ status: "offboarded", end_date: "2026-05-31" });
+  });
+});
+
+describe("Add client -- validateNewClient / newClientRow", () => {
+  const roster = [{ client: "Rent Busters (Bunbury, WA)", clickupFolder: "Rent Busters Bunbury (WA)" }];
+  const form = (over = {}) => ({ name: "Russell and Suitor", type: "package", hours: "16", consultant: "", clickupFolder: "", startDate: "", ...over });
+
+  it("trims the name and rejects blanks and case-insensitive duplicates", () => {
+    expect(validateNewClient(form({ name: "   " }), roster).error).toMatch(/client name/);
+    expect(validateNewClient(form({ name: "  rent busters (bunbury, wa) " }), roster).error).toMatch(/already exists/);
+    expect(validateNewClient(form({ name: "  Russell and Suitor  " }), roster).name).toBe("Russell and Suitor");
+  });
+
+  it("requires hours for package/strategy/map, optional for quoted, ignored for the rest", () => {
+    for (const type of ["package", "strategy", "map"]) {
+      expect(validateNewClient(form({ type, hours: "" }), roster).error).toMatch(/hours/);
+      expect(validateNewClient(form({ type, hours: "12" }), roster).fields.agreedHours).toBe(12);
+    }
+    expect(validateNewClient(form({ type: "quoted", hours: "" }), roster).fields.agreedHours).toBeNull();
+    expect(validateNewClient(form({ type: "quoted", hours: "40" }), roster).fields.agreedHours).toBe(40);
+    expect(validateNewClient(form({ type: "package", hours: "-1" }), roster).error).toMatch(/valid number/);
+    for (const type of ["hourly", "project", "ad_hoc", "digital"]) {
+      expect(validateNewClient(form({ type, hours: "12" }), roster).fields.agreedHours).toBeNull();
+    }
+  });
+
+  it("0 hours is a real value, not blank", () => {
+    expect(validateNewClient(form({ hours: "0" }), roster).fields.agreedHours).toBe(0);
+  });
+
+  it("builds the insert row: base snapshot = current, folder/consultant/start date carried, digital stores no hours", () => {
+    const { fields } = validateNewClient(form({ consultant: " Amanda S ", clickupFolder: " Russell & Suitor ", startDate: "2026-10-01" }), roster);
+    expect(newClientRow("Russell and Suitor", fields)).toEqual({
+      client: "Russell and Suitor", type: "package", agreed_hours: 16, base_type: "package", base_agreed_hours: 16,
+      consultant: "Amanda S", start_date: "2026-10-01", status: "active", clickup_folder: "Russell & Suitor",
+    });
+    expect(newClientRow("X", { type: "digital", agreedHours: 10 })).toMatchObject({ type: "digital", agreed_hours: null, base_agreed_hours: null, clickup_folder: null });
+    expect(newClientRow("X", { type: "map", agreedHours: 6 })).toMatchObject({ agreed_hours: 6, base_agreed_hours: 6 });
+    expect(storesAgreedHours("digital")).toBe(false);
   });
 });

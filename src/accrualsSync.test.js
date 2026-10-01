@@ -3,7 +3,7 @@ import {
   rowsToClients, buildReconciliationClients, parseAgreedHours,
   carryOutOf, replayClientAccruals, accrualFolderMinutesFor, endPeriodsFor, mergeLatestComments,
 } from "./accrualsSync.js";
-import { statusForMonth } from "./clientsSync.js";
+import { statusForMonth, typeForMonth } from "./clientsSync.js";
 import { setDynamicCostCentres } from "./nameMatch.js";
 
 // Regression coverage for two real production bugs found and fixed in this codebase's
@@ -213,6 +213,67 @@ describe("replayClientAccruals -- chaining through a reset", () => {
     const c = client({ "2026-07": {} });
     run(c, { worked: WORKED, segFor: (mk) => (mk === "2026-08" ? HOURLY : PKG) });
     expect(c.months["2026-09"].accrualValue).toBe(3);
+  });
+});
+
+describe("replayClientAccruals -- Digital Package (fixed price) never accrues", () => {
+  const minutes = (byMonth) => (mk) => (byMonth[mk] || 0) * 60;
+  // segFor driven by the real typeForMonth replay, as recomputeAccruals does.
+  const run = (c, profile, events, worked) => replayClientAccruals(c, {
+    startMonth: "2026-06", cur: "2026-10",
+    segFor: (mk) => typeForMonth(profile, events, mk), statusFor: () => "active", workedMinutesFor: minutes(worked),
+  });
+  const WORKED = { "2026-06": 12, "2026-07": 7, "2026-08": 15, "2026-09": 13, "2026-10": 6 };
+  const typeEv = (id, effective_date, new_type, new_agreed_hours) => ({ id, client: "RB", kind: "type", effective_date, applied: true, new_type, new_agreed_hours });
+
+  it("a client that's been digital for its whole history accrues nothing in any month", () => {
+    const c = { client: "RB", manager: null, agreedHpm: null, months: {} };
+    const rows = run(c, { client: "RB", baseType: "digital", baseAgreedHours: null }, [], WORKED);
+    expect(rows).toEqual([]);
+    expect(Object.values(c.months).filter((m) => m.accrualValue != null)).toEqual([]);
+  });
+
+  it("digital with stray agreed hours on file still accrues nothing (type gates it, not hours)", () => {
+    const c = { client: "RB", manager: null, agreedHpm: null, months: {} };
+    expect(run(c, { client: "RB", baseType: "digital", baseAgreedHours: 8 }, [], WORKED)).toEqual([]);
+  });
+
+  it("package -> digital from 2026-08-01: accrues Jun/Jul, stops from Aug, clears stale computed rows like an hourly month", () => {
+    const stale = (accrualValue, workedHours) => ({ accrualValue, workedHours, accrualNote: null, isOverride: false });
+    const c = { client: "RB", manager: null, agreedHpm: "8", months: { "2026-08": stale(11, 15), "2026-09": stale(16, 13) } };
+    const profile = { client: "RB", baseType: "package", baseAgreedHours: 8 };
+    const rows = run(c, profile, [typeEv(1, "2026-08-01", "digital", null)], WORKED);
+    expect(c.months["2026-06"].accrualValue).toBe(12 - 8);
+    expect(c.months["2026-07"].accrualValue).toBe(7 - 8 + 4);
+    for (const mk of ["2026-08", "2026-09", "2026-10"]) {
+      expect(c.months[mk]?.accrualValue ?? null).toBeNull();
+    }
+    expect(c.months["2026-08"].accrualNote).toBe("Not on a package this month");
+    expect(c.months["2026-09"].accrualNote).toBe("Not on a package this month");
+    expect(c.months["2026-10"]).toBeUndefined(); // no stale row -> nothing written
+    expect(rows.filter((r) => r.month_key >= "2026-08")).toEqual([
+      expect.objectContaining({ month_key: "2026-08", accrual_value: null, agreed_hpm: null, accrual_note: "Not on a package this month" }),
+      expect.objectContaining({ month_key: "2026-09", accrual_value: null, agreed_hpm: null, accrual_note: "Not on a package this month" }),
+    ]);
+  });
+
+  it("matches the hourly transition exactly (Sidewood Estate package -> hourly)", () => {
+    const profile = { client: "RB", baseType: "package", baseAgreedHours: 8 };
+    const digital = { client: "RB", manager: null, agreedHpm: "8", months: { "2026-09": { accrualValue: 3, workedHours: 13, isOverride: false } } };
+    const hourly = { client: "RB", manager: null, agreedHpm: "8", months: { "2026-09": { accrualValue: 3, workedHours: 13, isOverride: false } } };
+    const a = run(digital, profile, [typeEv(1, "2026-08-01", "digital", null)], WORKED);
+    const b = run(hourly, profile, [typeEv(1, "2026-08-01", "hourly", null)], WORKED);
+    expect(a).toEqual(b);
+    expect(digital.months).toEqual(hourly.months);
+  });
+
+  it("digital -> package later starts from a zero prior (a digital gap carries no balance)", () => {
+    const c = { client: "RB", manager: null, agreedHpm: null, months: {} };
+    const profile = { client: "RB", baseType: "package", baseAgreedHours: 8 };
+    run(c, profile, [typeEv(1, "2026-07-01", "digital", null), typeEv(2, "2026-09-01", "package", 10)], WORKED);
+    expect(c.months["2026-06"].accrualValue).toBe(4);
+    expect(c.months["2026-09"].accrualValue).toBe(13 - 10);
+    expect(c.months["2026-10"].accrualValue).toBe(6 - 10 + 3);
   });
 });
 

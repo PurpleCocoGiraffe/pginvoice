@@ -6,6 +6,7 @@
 import { supabase } from "./supabaseClient.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { PG_CLIENTS_KEY, PG_COST_CENTRES_KEY } from "./storageKeys.js";
+import { CLIENT_TYPE_LABELS } from "./nameMatch.js";
 
 // Every module (Clients, Capacity Planning) that reads pginvoice_clients stays mounted for
 // the whole session rather than remounting on tab switch, so a change made in one won't be
@@ -200,20 +201,66 @@ export function faviconUrlFor(website) {
 
 // New client, created from either Capacity Planning or the Clients module -- both write
 // to this same table, so a client added in one place shows up in the other immediately.
-export async function createClient(client, { type, agreedHours, consultant, startDate }) {
-  // Strategy is an ongoing engagement with agreed recurring hours -- the same fixed-hours
-  // accrual shape as Package -- so it carries an agreed-hours figure the same way. Quoted
-  // reuses the same column too, just as a single lifetime budget instead of a monthly one
-  // (see the quotedAmount/quotedRemaining computation in App.jsx's buildClientsForMonth).
-  const isPackageLike = type === "package" || type === "strategy" || type === "quoted";
-  const row = {
-    client, type, agreed_hours: isPackageLike ? (agreedHours ?? null) : null,
-    base_type: type, base_agreed_hours: isPackageLike ? (agreedHours ?? null) : null,
+// Which types store an agreed-hours figure at all (NOT which accrue -- that's format.js's
+// isPackageLikeType, package/strategy only). Strategy is an ongoing engagement with agreed
+// recurring hours -- the same fixed-hours accrual shape as Package. Quoted reuses the same
+// column as a single lifetime budget instead of a monthly one (see the quotedAmount/
+// quotedRemaining computation in App.jsx's buildClientsForMonth). MAP stores its monthly MAP
+// hours for reference only. Digital is a fixed-price package with no hours at all.
+export const storesAgreedHours = (type) => type === "package" || type === "strategy" || type === "quoted" || type === "map";
+
+export function newClientRow(client, { type, agreedHours, consultant, startDate, clickupFolder }) {
+  const hours = storesAgreedHours(type) ? (agreedHours ?? null) : null;
+  return {
+    client, type, agreed_hours: hours,
+    base_type: type, base_agreed_hours: hours,
     consultant: consultant || null, start_date: startDate || null, status: "active",
+    clickup_folder: clickupFolder || null,
   };
+}
+
+// Validates the Clients module's "Add client" form against the current roster. Returns
+// `{ error }` or `{ name, fields }` ready for createClient. Hours are required for the
+// recurring-hours types (package/strategy/map) and optional for quoted (the quote can be
+// set later via updateQuotedAmount); ignored for every other type.
+export function validateNewClient(form, existingClients) {
+  const name = String(form.name || "").trim();
+  if (!name) return { error: "Enter a client name." };
+  const lower = name.toLowerCase();
+  const dup = (existingClients || []).find((c) => String(c.client || "").trim().toLowerCase() === lower);
+  if (dup) return { error: `A client named "${dup.client}" already exists.` };
+  const type = form.type;
+  let agreedHours = null;
+  if (storesAgreedHours(type)) {
+    const raw = String(form.hours ?? "").trim();
+    if (raw === "") {
+      if (type !== "quoted") return { error: "Enter the agreed hours for this client (or choose a different type)." };
+    } else {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return { error: "Enter a valid number of hours." };
+      agreedHours = n;
+    }
+  }
+  return {
+    name,
+    fields: {
+      type, agreedHours,
+      consultant: String(form.consultant || "").trim() || null,
+      clickupFolder: String(form.clickupFolder || "").trim() || null,
+      startDate: form.startDate || null,
+    },
+  };
+}
+
+export async function createClient(client, fields) {
+  const row = newClientRow(client, fields);
   const { error } = await supabase.from("pginvoice_clients").insert(row);
   if (error) throw error;
   notifyClientsChanged();
+  const bits = [CLIENT_TYPE_LABELS[row.type] || row.type, row.agreed_hours != null ? `${row.agreed_hours} hrs` : null, row.clickup_folder ? `folder "${row.clickup_folder}"` : null].filter(Boolean);
+  logClientHistory(client, "created", `Created client (${bits.join(", ")})`, {
+    type: row.type, agreedHours: row.agreed_hours, consultant: row.consultant, startDate: row.start_date, clickupFolder: row.clickup_folder,
+  });
 }
 
 // Paginated (PostgREST caps a request at 1000 rows) with a unique tie-breaker (id) so rows

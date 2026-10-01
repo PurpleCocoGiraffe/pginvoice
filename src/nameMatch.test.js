@@ -14,7 +14,31 @@ import {
   splitTaskPrefixFolders,
   taskPrefixRulesFor,
   folderVariants,
+  CLIENT_TYPE_LABELS,
+  TYPE_LABELS_SHORT,
+  CLIENT_TYPE_TONES,
+  CHART_TYPE_TONES,
 } from "./nameMatch.js";
+import { isPackageLikeType } from "./format.js";
+
+describe("digital client type (Digital Package)", () => {
+  it("is in every type vocabulary map, with its own chart hue", () => {
+    expect(CLIENT_TYPE_LABELS.digital).toBe("Digital Package");
+    expect(TYPE_LABELS_SHORT.digital).toBe("Digital");
+    expect(CLIENT_TYPE_TONES.digital).toBeTruthy();
+    expect(CHART_TYPE_TONES.digital).toBe("var(--chart-digital)");
+    const others = Object.entries(CHART_TYPE_TONES).filter(([k]) => k !== "digital").map(([, v]) => v);
+    expect(others).not.toContain(CHART_TYPE_TONES.digital);
+  });
+
+  it("is not package-like (never accrues)", () => {
+    expect(isPackageLikeType("digital")).toBe(false);
+  });
+
+  it("carries no agreed hours, so never dominates a Combined group", () => {
+    expect(dominantClientType([{ basis: "Digital", agreed: 50 }, { basis: "Package", agreed: 4 }])).toBe("package");
+  });
+});
 
 describe("findMatch", () => {
   it("exact match wins", () => {
@@ -80,6 +104,7 @@ describe("basisToClientType", () => {
     expect(basisToClientType("Quoted")).toBe("quoted");
     expect(basisToClientType("Project")).toBe("project");
     expect(basisToClientType("Ad hoc")).toBe("ad_hoc");
+    expect(basisToClientType("Digital")).toBe("digital");
   });
 
   it("falls back to hourly for unrecognised or empty basis (current behavior)", () => {

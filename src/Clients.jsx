@@ -3,7 +3,7 @@ import { Search, ArrowRight, Pencil, Check, AlertTriangle, Upload, X, ChevronRig
 import {
   fetchClients, fetchClientEvents, createClientEvent, deleteClientEvent, applyDueClientEvents,
   updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
-  addTaskPrefixCostCentre,
+  addTaskPrefixCostCentre, createClient, storesAgreedHours, validateNewClient,
   fetchClientHistory, fetchClientNotes, addClientNote, updateClientNote, deleteClientNote,
 } from "./clientsSync.js";
 import {
@@ -100,18 +100,29 @@ function LogoEditor({ client, onClose, onSaved }) {
 
 const TYPE_LABEL = {
   package: "Package", hourly: "Hourly", quoted: "Quoted", queensland: "Queensland",
-  map: "MAP", project: "Project", strategy: "Strategy", ad_hoc: "Ad hoc",
+  map: "MAP", project: "Project", strategy: "Strategy", ad_hoc: "Ad hoc", digital: "Digital Package",
 };
 const TYPES = Object.keys(TYPE_LABEL);
+// Types offered when creating a brand-new client -- every canonical type except the
+// legacy Queensland one.
+const NEW_CLIENT_TYPES = ["package", "strategy", "hourly", "quoted", "map", "project", "ad_hoc", "digital"];
 // Which client types carry a plain numeric "agreed hours" figure at all (gating whether
 // the hours input shows/is required in the transition popover, and the new_agreed_hours
 // field on a type-change event) -- Package and Strategy's is a recurring monthly figure,
-// Quoted's is a single lifetime budget, but all three need the same input/column. NOT the
-// same thing as format.js's isPackageLikeType (package/strategy only, deliberately
-// excluding quoted, used everywhere the reconciliation/accrual MATH actually applies) --
-// keep these two functions named differently on purpose so a future edit can't
-// accidentally import one where the other belongs and silently change quoted's behavior.
-const hasAgreedHoursField = (t) => t === "package" || t === "strategy" || t === "quoted";
+// Quoted's is a single lifetime budget, MAP's is its monthly MAP hours (reference only, MAP
+// never accrues); Digital is fixed-price with no hours. Same rule createClient stores by
+// (clientsSync.js's storesAgreedHours). NOT the same thing as format.js's isPackageLikeType
+// (package/strategy only, deliberately excluding quoted/map, used everywhere the
+// reconciliation/accrual MATH actually applies) -- keep these two functions named
+// differently on purpose so a future edit can't accidentally import one where the other
+// belongs and silently change quoted's behavior.
+const hasAgreedHoursField = storesAgreedHours;
+// Type-appropriate label for that hours figure.
+function hoursLabelFor(t) {
+  if (t === "map") return "MAP hours per month";
+  if (t === "quoted") return "Quoted hours (total)";
+  return "Hours per month";
+}
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 // Client names carry their state as a "(Qld)"/"(WA)" suffix rather than a dedicated
@@ -126,12 +137,16 @@ function stateOf(clientName) {
 function arrangementLabel(c) {
   if (c.type === "hourly") return "Time-based billing";
   if (c.type === "quoted") return c.agreedHours != null ? `${c.agreedHours} hours quoted` : "Project fee";
+  if (c.type === "map") return c.agreedHours != null ? `${c.agreedHours} MAP hours / month` : "MAP";
+  if (c.type === "digital") return "Fixed-price package (no hours accrual)";
   if (hasAgreedHoursField(c.type) && c.agreedHours != null) return `${c.agreedHours} hours / month`;
   return TYPE_LABEL[c.type] || c.type;
 }
 function arrangementTagLabel(c) {
   if (c.type === "hourly") return "Hourly";
   if (c.type === "quoted") return "Quoted";
+  if (c.type === "map") return "MAP";
+  if (c.type === "digital") return "Digital";
   if (hasAgreedHoursField(c.type)) return "Package";
   return TYPE_LABEL[c.type] || c.type;
 }
@@ -237,8 +252,10 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
     // A blank hours field on a Package transition used to silently submit 0 -- a real,
     // billable "0 hrs/month" package, indistinguishable from someone just not having
     // filled the field in yet. Block the save and say so instead of guessing.
-    if (action === "transition" && hasAgreedHoursField(newType) && newHours.trim() === "") {
-      setErr("Enter the agreed hours for this package (or choose a different type).");
+    // String(): newHours starts as the client's current agreedHours, a number -- calling
+    // .trim() on it directly threw before the check could run.
+    if (action === "transition" && hasAgreedHoursField(newType) && String(newHours).trim() === "") {
+      setErr(`Enter the ${hoursLabelFor(newType).toLowerCase()} (or choose a different type).`);
       return;
     }
     setSaving(true);
@@ -321,9 +338,11 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
               {TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
             </select>
             {hasAgreedHoursField(newType) && (
-              <input className="pg-input" style={{ width: 90 }} type="number" placeholder="hrs" value={newHours} onChange={(e) => setNewHours(e.target.value)} />
+              <input className="pg-input" style={{ width: 90 }} type="number" placeholder="hrs" title={hoursLabelFor(newType)} aria-label={hoursLabelFor(newType)}
+                value={newHours} onChange={(e) => setNewHours(e.target.value)} />
             )}
           </div>
+          {hasAgreedHoursField(newType) && <span className="pg-footnote" style={{ marginTop: -4 }}>{hoursLabelFor(newType)}</span>}
           <label className="pg-field">
             <span className="pg-field__label">Effective date</span>
             <input className="pg-input" type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} />
@@ -984,6 +1003,7 @@ const HISTORY_ICON_LABEL = {
   event_resume: "Resume", event_resume_removed: "Resume cancelled",
   folder_change: "ClickUp folder", cost_centre_add: "Cost centre", cost_centre_remove: "Cost centre",
   note_add: "Note", note_edit: "Note", note_delete: "Note",
+  created: "Created",
 };
 
 // Full chronological log of everything that's happened to this client -- every
@@ -1037,6 +1057,96 @@ function HistorySection({ client }) {
   );
 }
 
+// Inline "Add client" panel -- writes a brand-new pginvoice_clients row via the same
+// createClient Capacity Planning's add form uses. Validation lives in the pure
+// validateNewClient (clientsSync.js) so it's testable without rendering this.
+const EMPTY_NEW_CLIENT = { name: "", type: "package", hours: "", consultant: "", clickupFolder: "", startDate: "" };
+function AddClientPanel({ clients, folderList, onCreated, onCancel }) {
+  const [form, setForm] = useState(EMPTY_NEW_CLIENT);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const consultants = useMemo(
+    () => [...new Set(clients.map((c) => c.consultant).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [clients],
+  );
+  // Non-blocking: two clients sharing one folder is occasionally legitimate (e.g. a
+  // client re-registered under a new name), but usually a mistake worth flagging.
+  const folderOwner = useMemo(() => {
+    const f = form.clickupFolder.trim().toLowerCase();
+    if (!f) return null;
+    return clients.find((c) => (c.clickupFolder || "").trim().toLowerCase() === f)?.client || null;
+  }, [clients, form.clickupFolder]);
+  const showHours = hasAgreedHoursField(form.type);
+
+  async function save() {
+    const result = validateNewClient(form, clients);
+    if (result.error) { setErr(result.error); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      await createClient(result.name, result.fields);
+      setForm(EMPTY_NEW_CLIENT);
+      await onCreated(result.name);
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="pg-cap-card" style={{ display: "flex", flexDirection: "column", gap: 10 }} aria-label="Add client">
+      <span className="pg-field__label">New client</span>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <label className="pg-field" style={{ width: 240 }}>
+          <span className="pg-field__label">Client name *</span>
+          <input className="pg-input" autoFocus value={form.name} onChange={set("name")} placeholder="e.g. Russell and Suitor" />
+        </label>
+        <label className="pg-field">
+          <span className="pg-field__label">Type</span>
+          <select className="pg-input" value={form.type} onChange={set("type")}>
+            {NEW_CLIENT_TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
+          </select>
+        </label>
+        {showHours && (
+          <label className="pg-field" style={{ width: 160 }}>
+            <span className="pg-field__label">{hoursLabelFor(form.type)}{form.type === "quoted" ? "" : " *"}</span>
+            <input className="pg-input" type="number" min="0" step="any" value={form.hours} onChange={set("hours")}
+              placeholder={form.type === "quoted" ? "optional" : "e.g. 16"} />
+          </label>
+        )}
+        <label className="pg-field" style={{ width: 200 }}>
+          <span className="pg-field__label">Consultant</span>
+          <input className="pg-input" list="new-client-consultants" value={form.consultant} onChange={set("consultant")} placeholder="Pick or type a name" />
+          <datalist id="new-client-consultants">{consultants.map((c) => <option key={c} value={c} />)}</datalist>
+        </label>
+        <label className="pg-field" style={{ width: 240 }}>
+          <span className="pg-field__label">ClickUp folder</span>
+          <input className="pg-input" list="new-client-folders" value={form.clickupFolder} onChange={set("clickupFolder")} placeholder="optional" />
+          <datalist id="new-client-folders">{folderList.map((f) => <option key={f} value={f} />)}</datalist>
+        </label>
+        <label className="pg-field">
+          <span className="pg-field__label">Start date</span>
+          <input className="pg-input" type="date" value={form.startDate} onChange={set("startDate")} />
+        </label>
+      </div>
+      {form.type === "digital" && (
+        <p className="pg-footnote">Digital Package is a fixed-price package — no hours are stored and it never accrues.</p>
+      )}
+      {folderOwner && (
+        <div className="pg-banner-warn">"{form.clickupFolder.trim()}" is already registered to {folderOwner}. Two clients sharing one folder will both count its hours.</div>
+      )}
+      {err && <div className="pg-banner-warn" role="alert">{err}</div>}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="pg-btn" disabled={saving || !form.name.trim()} onClick={save}>{saving ? "Saving…" : "Create client"}</button>
+        <button className="pg-btn-ghost" disabled={saving} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 export default function Clients() {
   const [clients, setClients] = useState(null);
   const [clientEvents, setClientEvents] = useState([]); // full history across all clients, filtered per-row when the drawer opens
@@ -1055,6 +1165,7 @@ export default function Clients() {
   const [draftCostCentreFolder, setDraftCostCentreFolder] = useState("");
   const [draftCostCentreKind, setDraftCostCentreKind] = useState("cost_centre");
   const [savingCostCentre, setSavingCostCentre] = useState(false);
+  const [showAddClient, setShowAddClient] = useState(false);
   const [capPeople, setCapPeople] = useState(SEED_PEOPLE);
   // nameMatch.js's dynamic cost-centre rules are a module-level singleton (see
   // setDynamicCostCentres) fed by Shell.jsx, not React state -- costCentreInfo below reads
@@ -1306,7 +1417,25 @@ export default function Clients() {
               {TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
             </select>
           </label>
+          <button className="pg-btn" style={{ marginLeft: "auto", gap: 6 }} onClick={() => setShowAddClient((s) => !s)}>
+            <Plus size={12} /> Add client
+          </button>
         </div>
+
+        {showAddClient && (
+          <AddClientPanel
+            clients={clients}
+            folderList={folderList}
+            onCancel={() => setShowAddClient(false)}
+            onCreated={async (name) => {
+              setShowAddClient(false);
+              await load();
+              // Make sure the new (active) client isn't hidden by the current filters.
+              setSearch(""); setStatusFilter("active"); setTypeFilter("all");
+              openDrawer(name);
+            }}
+          />
+        )}
 
         <div className="pg-cap-card pg-client-list">
           <div className="pg-client-list__head">

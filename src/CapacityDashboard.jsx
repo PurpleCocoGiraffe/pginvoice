@@ -354,7 +354,7 @@ function CapacityDashboardInner({ onNavigateTeam }) {
   const submitAddClient = useCallback(async () => {
     const name = addClientForm.name.trim();
     if (!name) return;
-    const typeMap = { Package: "package", Project: "project", Quoted: "quoted", MAP: "map", Strategy: "strategy", Hourly: "hourly", "Ad hoc": "ad_hoc" };
+    const typeMap = { Package: "package", Project: "project", Quoted: "quoted", MAP: "map", Strategy: "strategy", Hourly: "hourly", "Ad hoc": "ad_hoc", Digital: "digital" };
     const agreedNum = addClientForm.agreed === "" ? null : Number(addClientForm.agreed);
     let freshPgClients = pgClients;
     try {
@@ -690,7 +690,7 @@ function CapacityDashboardInner({ onNavigateTeam }) {
             <label className="pg-field">
               <span className="pg-field__label">Type</span>
               <select className="pg-input" value={addClientForm.basis} onChange={(e) => setAddClientForm((f) => ({ ...f, basis: e.target.value }))}>
-                {FIXED_BASES.concat(["Hourly", "Ad hoc"]).map((b) => <option key={b} value={b}>{b}</option>)}
+                {FIXED_BASES.concat(["Hourly", "Ad hoc", "Digital"]).map((b) => <option key={b} value={b}>{b}</option>)}
               </select>
             </label>
             <label className="pg-field" style={{ width: 120 }}>

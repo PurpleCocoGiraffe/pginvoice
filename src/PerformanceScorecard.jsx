@@ -342,11 +342,14 @@ function PerformanceInner() {
     // subset here caused a real crash: a client on the Strategy/Project/Ad hoc
     // basis fell outside this list, so groupsByType[...]/splitRowsByType[...]
     // below was undefined and .push() threw, taking down the whole module.
-    const TYPE_ORDER = ["hourly", "package", "quoted", "map", "strategy", "project", "ad_hoc"];
+    const TYPE_ORDER = ["hourly", "package", "quoted", "map", "strategy", "project", "ad_hoc", "digital"];
     const TYPE_LINE_LABEL = {
       hourly: "Hours for Hourly", package: "Hours for Packaged", quoted: "Hours for Quoted", map: "Hours for MAP",
       strategy: "Hours for Strategy", project: "Hours for Project", ad_hoc: "Hours for Ad hoc",
+      digital: "Hours for Digital",
     };
+    // No fixed hours agreement -> no Agreed line (Digital is fixed-price, not fixed-hours).
+    const NO_AGREED_TYPES = new Set(["hourly", "digital"]);
 
     if (selectedClient) {
       const g = groups.find((x) => x.group === selectedClient);
@@ -403,7 +406,7 @@ function PerformanceInner() {
         groupsByType[t].reduce((s, g) => s + (clientMonthly.get(g.group).monthHours.get(m) || 0), 0) +
         splitRowsByType[t].reduce((s, rs) => s + (rs.monthHours.get(m) || 0), 0)
       );
-      agreedByType[t] = t === "hourly" ? null : activeMonths.map((m) =>
+      agreedByType[t] = NO_AGREED_TYPES.has(t) ? null : activeMonths.map((m) =>
         groupsByType[t].reduce((s, g) => s + (activeInMonth(g, m) ? groupMeta(g, m).agreedTotal : 0), 0) +
         splitRowsByType[t].reduce((s, rs) => s + ((rs.monthHours.get(m) || 0) > 0 ? (agreedAt(rs.row, m) || 0) : 0), 0)
       );
@@ -431,11 +434,11 @@ function PerformanceInner() {
         { label: "Total Agreed", value: fmt0(atLast(totalAgreedByMonth)) },
         ...TYPE_ORDER.map((t) => ({ label: TYPE_LINE_LABEL[t], value: fmt0(atLast(hoursByType[t])) })),
       ];
-    } else if (qBasis === "hourly") {
-      // Hourly has no fixed agreement, so there's no Agreed line to show for it.
-      series = [{ label: TYPE_LINE_LABEL.hourly, color: CHART_TYPE_TONES.hourly, primary: true, points: hoursByType.hourly }];
-      ytd = [{ label: TYPE_LINE_LABEL.hourly, value: fmt0(ytdOf(hoursByType.hourly)) }];
-      current = [{ label: TYPE_LINE_LABEL.hourly, value: fmt0(atLast(hoursByType.hourly)) }];
+    } else if (NO_AGREED_TYPES.has(qBasis)) {
+      // Hourly/Digital have no fixed hours agreement, so there's no Agreed line to show.
+      series = [{ label: TYPE_LINE_LABEL[qBasis], color: CHART_TYPE_TONES[qBasis], primary: true, points: hoursByType[qBasis] }];
+      ytd = [{ label: TYPE_LINE_LABEL[qBasis], value: fmt0(ytdOf(hoursByType[qBasis])) }];
+      current = [{ label: TYPE_LINE_LABEL[qBasis], value: fmt0(atLast(hoursByType[qBasis])) }];
     } else {
       series = [
         { label: "Agreed", color: "var(--fg-tertiary)", points: agreedByType[qBasis] },
@@ -640,6 +643,9 @@ function PerformanceInner() {
                 )}
                 {!selectedClient && qBasis === "hourly" && (
                   <p className="pg-footnote" style={{ marginTop: 6 }}>No Agreed line for Hourly clients, since they have no fixed agreement.</p>
+                )}
+                {!selectedClient && qBasis === "digital" && (
+                  <p className="pg-footnote" style={{ marginTop: 6 }}>No Agreed line for Digital Package clients, since their package is a fixed price, not fixed hours.</p>
                 )}
                 {!selectedClient && (
                   <p className="pg-footnote" style={{ marginTop: 6 }}>A client only counts toward an Agreed line for months it actually logged ClickUp hours, so new clients and departures move the total instead of it staying flat across the whole range.</p>
