@@ -318,6 +318,25 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     expect(run(archived, { status: "archived", worked: WORKED })).toEqual([]);
   });
 
+  it("a later type/package event re-engages an offboarded client (Equippers regression)", () => {
+    // offboarded 2026-06-01, re-signed as a 24h package from 2026-08-01 via a type event, no reactivation
+    const events = [ev(1, "offboarding", "2026-06-01"), ev(2, "type", "2026-08-01")];
+    expect(endPeriodsFor(profile("active"), events)).toEqual([{ from: "2026-06", until: "2026-08", after: null, note: "Client offboarded" }]);
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-07": stale(-10), "2026-08": stale(-20), "2026-09": stale(-30) } };
+    run(c, { events, status: "active", worked: { "2026-08": 1.5 } });
+    expect(c.months["2026-07"].accrualNote).toBe("Client offboarded");
+    expect(c.months["2026-08"].accrualValue).toBe(-8.5); // live package month accrues again, from 0
+    expect(c.months["2026-09"].accrualValue).toBe(-18.5);
+  });
+
+  it("an active client with a stale open-ended offboarding event is never cleared", () => {
+    const events = [ev(1, "offboarding", "2026-06-01")];
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": stale(-10), "2026-09": stale(-20) } };
+    run(c, { events, status: "active", startMonth: "2026-08", worked: {} });
+    expect(c.months["2026-08"].accrualValue).toBe(-10);
+    expect(c.months["2026-09"].accrualValue).toBe(-20);
+  });
+
   it("endPeriodsFor: dated, undated, endDate-based, and reactivation-bounded periods", () => {
     expect(endPeriodsFor(profile("active"), [])).toEqual([]);
     expect(endPeriodsFor(profile("on_hold"), [])).toEqual([]);
@@ -418,5 +437,24 @@ describe("accrualFolderMinutesFor -- Majestic Plumbing's own folder counts towar
     expect(m.get("2026-07") / 60).toBeCloseTo(0.42);
     expect(m.get("2026-08") / 60).toBeCloseTo(19.13); // was 0 -- own folder dropped
     expect(m.get("2026-09") / 60).toBeCloseTo(10.33);
+  });
+});
+
+describe("accrualFolderMinutesFor -- registered folder matched case/whitespace-insensitively", () => {
+  // Regression: GPEx's ClickUp folder was renamed "GPEX" -> "gpex"; the registered folder
+  // stayed "GPEX", so September 2026's 103.57 billable hours (all under "gpex") counted 0.
+  it("sums every case/whitespace variant of the registered folder", () => {
+    const worked = new Map([
+      ["GPEX", new Map([["2026-08", 600]])],
+      ["gpex", new Map([["2026-09", 6214]])],
+      ["Apex Energy", new Map([["2026-09", 50]])],
+    ]);
+    const m = accrualFolderMinutesFor("GPEx", "GPEX", worked);
+    expect(m.get("2026-08")).toBe(600);
+    expect(m.get("2026-09")).toBe(6214);
+  });
+  it("matches a registered folder carrying a trailing space", () => {
+    const worked = new Map([["Utter Gutters", new Map([["2026-09", 120]])]]);
+    expect(accrualFolderMinutesFor("Utter Gutters", "Utter Gutters ", worked).get("2026-09")).toBe(120);
   });
 });

@@ -219,7 +219,14 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
     }
     return folderMinutes;
   }
-  if (clickupFolder && workedByFolderMonth.has(clickupFolder)) {
+  // Registered folder matched case- and whitespace-insensitively, summing every variant:
+  // ClickUp folder names drift (GPEx's folder was renamed "GPEX" -> "gpex", so all of
+  // September 2026's 103.57 billable hours sat under a name the exact lookup never saw and
+  // the ledger recorded 0 worked; "Utter Gutters " carries a trailing space). Client
+  // Invoicing already matches loosely, so the two modules disagreed.
+  const ownKey = clickupFolder ? clickupFolder.trim().toLowerCase() : "";
+  const ownVariants = ownKey ? folderNames.filter((f) => f.trim().toLowerCase() === ownKey) : [];
+  if (ownVariants.length) {
     // The Clients module already has an authoritative, human-set folder mapping for
     // this exact client (pginvoice_clients.clickup_folder) -- prefer it over re-deriving
     // a match from the accrual sheet's own client name string. Found via a real
@@ -233,7 +240,10 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
     // hours counted). Client Invoicing already prefers this same registered mapping for
     // exactly this reason (see pgProfileByFolder in App.jsx); accruals were the one
     // place still re-deriving the folder from the name instead of trusting it.
-    return workedByFolderMonth.get(clickupFolder);
+    if (ownVariants.length === 1) return workedByFolderMonth.get(ownVariants[0]);
+    const merged = new Map();
+    for (const f of ownVariants) for (const [mk, min] of workedByFolderMonth.get(f)) merged.set(mk, (merged.get(mk) || 0) + min);
+    return merged;
   }
   const match = findMatch(clientName, folderNames);
   return match ? workedByFolderMonth.get(match.name) : null;
@@ -416,12 +426,26 @@ function firstMonthOnOrAfter(date) {
 // Hold/resume don't affect ends (statusForMonth still drives on-hold).
 export function endPeriodsFor(profile, events) {
   const statusEvents = events
-    .filter((e) => e.client === profile.client && e.applied && (e.kind === "offboarding" || e.kind === "reactivation"))
+    .filter((e) => e.client === profile.client && e.applied && (e.kind === "offboarding" || e.kind === "reactivation" || e.kind === "type"))
     .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || a.id - b.id);
   const periods = [];
   let open = null;
   let after = null; // month of the latest reactivation -- lower bound for an undated end's evidence window
   for (const e of statusEvents) {
+    if (e.kind === "type") {
+      // A later type/package event re-engages an offboarded client just like a
+      // reactivation does: Equippers was offboarded 2026-06-01 then re-signed as a 24h
+      // package from 2026-08-01 via a type event (no "reactivation"), and the open-ended
+      // offboarding period wrongly cleared its live Aug/Sep package rows. A type event
+      // with no open period is ordinary and never implies an end on its own.
+      if (open) {
+        const until = e.effective_date.slice(0, 7);
+        periods.push({ ...open, until });
+        open = null;
+        after = until;
+      }
+      continue;
+    }
     if (e.kind === "offboarding") {
       if (!open) open = { from: firstMonthOnOrAfter(e.effective_date), until: null, after: null, note: "Client offboarded" };
     } else {
@@ -431,7 +455,10 @@ export function endPeriodsFor(profile, events) {
       after = until;
     }
   }
-  if (open) periods.push(open);
+  // A client whose current status is active/on hold is demonstrably not ended, whatever
+  // a stale offboarding event with nothing after it says -- never clear its current rows.
+  if (open && (profile.status === "active" || profile.status === "on_hold")) periods.push({ ...open, until: open.from });
+  else if (open) periods.push(open);
   else if (profile.status === "offboarded" || profile.status === "archived") {
     const note = profile.status === "archived" ? "Client archived" : "Client offboarded";
     // An end_date earlier than a later reactivation is stale (the app clears it on
