@@ -1,17 +1,25 @@
 import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
 import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { fmt, esc, filenameSafe, isPackageLikeType } from "./format.js";
+import { unfilteredForExport } from "./reconcile.js";
 
 // ------------------------------- PDF (print) --------------------------------
 const PRINT = { ink: "#000000", inkSoft: "#000000", brand: "#3F008E", line: "#E7E1F0", brandSoft: "#F1EAFB" };
 
-export function buildPrintHtml(c, monthText, priorMonthText) {
+export function buildPrintHtml(client, monthText, priorMonthText) {
+  // The whole client's tasks/hours, never one consultant's slice -- the reconciliation below
+  // is the whole client's balance, so a consultant-filtered task total next to it produced a
+  // document whose figures didn't add up. A line-item export is already its own slice.
+  const c = client.isLineItemExport ? client : unfilteredForExport(client);
   const type = c.type;
   const isPkg = isPackageLikeType(type) && !c.isLineItemExport;
+  const hasPkg = c.pkg != null && c.pkg > 0;
   const isQuoted = type === "quoted" && !c.isLineItemExport;
   const taskRows = [...c.tasksFiltered.entries()].sort((a, b) => b[1] - a[1])
     .map(([task, min]) => `<tr class="datarow"><td>${esc(task)}</td><td class="right">${fmt(min / 60)}</td></tr>`).join("");
   const workedRounded = Math.round(c.workedFiltered * 100) / 100;
+  // The package math always runs on billable hours (the Billable-only toggle is display-only).
+  const billableRounded = Math.round((c.billableWorked ?? c.workedFiltered) * 100) / 100;
   const priorSigned = c.priorBalance ?? 0;
   const priorLabel = priorSigned < 0 ? "Carried in from previous month"
                     : priorSigned > 0 ? "Over-used in previous month"
@@ -23,23 +31,36 @@ export function buildPrintHtml(c, monthText, priorMonthText) {
   // and as Remaining (Remaining convention = negated signed balance).
   const balanceForward = c.balanceForward;
   const remainingShown = c.remainingShown;
-  const totalAccrued = workedRounded + priorSigned; // as spec'd: current spent + prior signed
+  const totalAccrued = billableRounded + priorSigned; // as spec'd: current spent + prior signed
+  const onHold = c.status === "on_hold";
+  const billableRow = Math.abs(billableRounded - workedRounded) > 0.005
+    ? `<tr class="datarow"><td class="label">Billable time counted toward the package</td><td class="right">${fmt(billableRounded)} h</td></tr>` : "";
 
-  const reconciliation = isPkg ? `
+  const reconciliation = isPkg && !hasPkg ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
+    <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">No package on file for this client this month, so no balance is calculated.</td></tr>` : isPkg && onHold ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Package</td><td class="right">${fmt(c.pkg)} h / month</td></tr>
     <tr class="datarow"><td class="label">${priorLabel}${priorMonthText ? ` (${esc(priorMonthText)})` : ""}${priorRebased}</td><td class="right">${fmt(priorAbs)} h</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
+    <tr class="datarow"><td class="label">Balance carried forward</td><td class="right">${fmt(balanceForward)} h ${balanceForward > 0 ? "over" : balanceForward < 0 ? "credit" : ""}</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">On hold this month: the package is paused, so no package hours are consumed and the balance carries forward unchanged.</td></tr>` : isPkg ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
+    <tr class="datarow"><td class="label">Package</td><td class="right">${fmt(c.pkg)} h / month</td></tr>
+    <tr class="datarow"><td class="label">${priorLabel}${priorMonthText ? ` (${esc(priorMonthText)})` : ""}${priorRebased}</td><td class="right">${fmt(priorAbs)} h</td></tr>
+    <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
+    ${billableRow}
     <tr class="total"><td>Total accrued time</td><td class="right">${fmt(totalAccrued)} h</td></tr>
     <tr class="datarow"><td class="label">New balance going forward</td><td class="right">${fmt(balanceForward)} h ${balanceForward > 0 ? "over" : balanceForward < 0 ? "credit" : ""}</td></tr>
     <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${remainingShown >= 0 ? fmt(remainingShown) + " h left" : fmt(Math.abs(remainingShown)) + " h over"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are re-baselined to the accrual sheet's closing figure." : ""}</td></tr>` : isQuoted ? `
+    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = billable time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are re-baselined to the accrual sheet's closing figure." : ""}</td></tr>` : isQuoted ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Quoted project summary</td></tr>
     <tr class="datarow"><td class="label">Quoted amount</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
-    <tr class="datarow"><td class="label">Total time tracked (all time)</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
+    <tr class="datarow"><td class="label">Total time tracked on this quote</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
     <tr class="total"><td>${c.quotedRemaining != null && c.quotedRemaining < 0 ? "Over the quoted amount by" : "Remaining of quoted amount"}</td><td class="right">${c.quotedRemaining != null ? fmt(Math.abs(c.quotedRemaining)) + " h" : "—"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">Quoted is a single fixed budget for the whole project, not a monthly one -- the total/remaining figures are cumulative across every month worked, not just this one.</td></tr>` : `
+    <tr class="noborder"><td colspan="2" class="note-cell">Quoted is a single fixed budget for the whole project, not a monthly one -- the total/remaining figures are cumulative across every month of this quote, not just this one.</td></tr>` : `
     <tr class="noborder"><td colspan="2" class="section-heading">Summary</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only -- part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package/reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;

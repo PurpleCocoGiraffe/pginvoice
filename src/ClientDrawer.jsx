@@ -92,7 +92,8 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
     return next;
   });
 
-  const statusLabel = !isPackage ? null : c.pkg == null ? "No package on file"
+  const statusLabel = !isPackage ? null : c.pkg == null || c.pkg <= 0 ? "No package on file"
+    : c.status === "on_hold" ? "On hold (accrual paused)"
     : c.status === "over" ? "Over-serviced" : c.status === "under" ? "Under-serviced" : "On track";
   const statusTone = !isPackage ? undefined : c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : c.status === "ok" ? "var(--status-ok)" : "var(--fg-tertiary)";
   const iconTone = isPackage
@@ -219,9 +220,9 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
               <Metric label="Worked this month" value={`${fmt(c.workedFiltered)} h`} big />
               <Metric label="Quoted amount" value={c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—"} />
               <Metric
-                label="Total worked (all time)"
+                label="Total worked on this quote"
                 value={`${fmt(c.lifetimeWorked ?? 0)} h`}
-                sub="cumulative across every month, not just this one"
+                sub="from the quote's start month through this one"
               />
             </div>
           ) : (
@@ -231,7 +232,14 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             </div>
           )}
 
-          {isPackage && c.remaining != null && (
+          {isPackage && c.status === "on_hold" && (
+            <div className="pg-drawer__overunder">
+              <span className="pg-drawer__overunder-label">On hold this month</span>
+              <span className="pg-drawer__overunder-value">{fmt(Math.abs(c.balanceForward ?? 0))} h</span>
+              <span className="pg-drawer__overunder-tag">balance carried forward unchanged</span>
+            </div>
+          )}
+          {isPackage && c.status !== "on_hold" && c.remaining != null && (
             <div className="pg-drawer__overunder">
               <span className="pg-drawer__overunder-label">{c.remaining < 0 ? "Over by" : "Remaining this month"}</span>
               <span className="pg-drawer__overunder-value" style={{ color: c.remaining < 0 ? "var(--status-over)" : c.remaining > 0 ? "var(--status-ok)" : undefined }}>
@@ -270,9 +278,9 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             </div>
             <div className="pg-drawer__recon-row">
               <span>Billable total</span>
-              <span>{fmt(c.workedFiltered)} h</span>
+              <span>{fmt(c.billableWorked ?? c.worked)} h</span>
             </div>
-            <PackageBar pkg={c.pkg} worked={c.worked} prior={c.priorBalance ?? 0} status={c.status} monthProgress={monthProgress} />
+            <PackageBar pkg={c.pkg} worked={c.billableWorked ?? c.worked} prior={c.priorBalance ?? 0} status={c.status} monthProgress={monthProgress} />
           </div>
         )}
 

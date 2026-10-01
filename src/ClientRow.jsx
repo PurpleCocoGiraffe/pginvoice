@@ -84,7 +84,9 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
     : isQuoted && c.quotedRemaining != null
       ? (c.quotedRemaining < 0 ? "var(--status-over)" : "var(--status-ok)")
       : undefined;
-  const statusText = isPackage && c.status !== "no-pkg"
+  const statusText = isPackage && c.status === "on_hold"
+    ? "On hold: accrual paused, balance carried forward unchanged"
+    : isPackage && c.status !== "no-pkg"
     ? (c.status === "over" ? `${fmt(Math.abs(c.newBalance))} h over-served` : c.status === "under" ? `${fmt(Math.abs(c.newBalance))} h under-served` : "on track")
     : isQuoted && c.quotedRemaining != null
       ? (c.quotedRemaining < 0 ? `${fmt(Math.abs(c.quotedRemaining))} h over the quoted amount` : `${fmt(c.quotedRemaining)} h left of the quoted amount`)
@@ -97,9 +99,12 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   const worked = c.workedFiltered ?? c.worked;
   const pkg = isQuoted ? (c.quotedAmount ?? 0) : (c.pkg ?? 0);
   const lifetimeWorked = c.lifetimeWorked ?? 0;
-  const carry = Math.abs(c.priorBalance ?? 0);
+  // Carry is a package balance -- a row that isn't package-like this month (e.g. just moved
+  // package -> hourly) has none, even if the ledger still holds the old package's figure.
+  const priorBalance = isPackage ? c.priorBalance : null;
+  const carry = Math.abs(priorBalance ?? 0);
   const barBase = isQuoted ? lifetimeWorked : worked;
-  const effective = pkg - (c.priorBalance ?? 0);
+  const effective = pkg - (priorBalance ?? 0);
   const barMax = Math.max(barBase, effective, pkg, 1) * 1.15;
   const workedPct = Math.max(0, Math.min(100, (barBase / barMax) * 100));
   const pkgPct = (pkg / barMax) * 100;
@@ -109,13 +114,13 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // last month, so this month's hours are effectively paying that down — shown
   // red, same "carried in (green) vs. carried over/used (red)" convention the
   // drawer already uses for this exact field, just applied to this row too.
-  const carryLabel = c.priorBalance == null || c.priorBalance === 0 ? "Carry-over"
-    : c.priorBalance < 0 ? "Carried in" : "Over-used prior";
-  const carryTone = c.priorBalance == null || c.priorBalance === 0 ? undefined
-    : c.priorBalance < 0 ? "var(--status-ok)" : "var(--status-over)";
-  const carryTitle = c.priorBalance == null ? undefined
-    : c.priorBalance < 0 ? `${fmt(carry)} h of unused package time carried in from last month.`
-    : c.priorBalance > 0 ? `${fmt(carry)} h of last month's over-use being carried over into this month.`
+  const carryLabel = priorBalance == null || priorBalance === 0 ? "Carry-over"
+    : priorBalance < 0 ? "Carried in" : "Over-used prior";
+  const carryTone = priorBalance == null || priorBalance === 0 ? undefined
+    : priorBalance < 0 ? "var(--status-ok)" : "var(--status-over)";
+  const carryTitle = priorBalance == null ? undefined
+    : priorBalance < 0 ? `${fmt(carry)} h of unused package time carried in from last month.`
+    : priorBalance > 0 ? `${fmt(carry)} h of last month's over-use being carried over into this month.`
     : undefined;
   // remaining < 0: over-served (used more than the package this month) — red.
   // remaining > 0: hours still left in the package this month — green.
@@ -136,8 +141,10 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // so they get a plain "not tracked" placeholder instead. Quoted gets its own lifetime-
   // budget pacing (spent-down against the one fixed quoted figure, not a monthly one).
   const statusPill = isPackage
-    ? (c.pkg == null
+    ? (c.pkg == null || c.pkg <= 0
       ? { label: "No package", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
+      : c.status === "on_hold"
+        ? { label: "On hold", tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
       : c.status === "over"
         ? { label: "Overserviced", tone: "var(--status-over)", bg: "var(--status-over-soft)" }
         : c.status === "under"
@@ -206,9 +213,9 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
           )}
         </span>
         <span className="pg-tag pg-tag--pill" style={{ color: CLIENT_TYPE_TONES[c.type] }}>{TYPE_LABELS_SHORT[c.type]}</span>
-        <span className="pg-row__num" style={carryTone ? { color: carryTone } : undefined} title={isQuoted ? "Total billed against this quoted project so far, across every month -- not just this one." : carryTitle}>
+        <span className="pg-row__num" style={carryTone ? { color: carryTone } : undefined} title={isQuoted ? "Total billed against this quote so far, from the quote's start month through this one." : carryTitle}>
           <span className="pg-row__num-label">{isQuoted ? "Total worked" : carryLabel}</span>
-          {isQuoted ? `${fmt(lifetimeWorked)} h` : c.priorBalance != null ? `${fmt(carry)} h` : isPackage ? "—" : ""}
+          {isQuoted ? `${fmt(lifetimeWorked)} h` : priorBalance != null ? `${fmt(carry)} h` : isPackage ? "—" : ""}
         </span>
         <span className="pg-row__num">
           <span className="pg-row__num-label">{isQuoted ? "Quoted" : "Package"}</span>
@@ -272,11 +279,13 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
         <div className="pg-row-inline">
           <div className="pg-row-inline__col">
             <div className="pg-row-inline__title">Reconciliation overview</div>
-            {isPackage && c.pkg != null ? (
+            {isPackage && c.pkg != null && c.pkg > 0 ? (
               <>
                 <div className="pg-row-inline__barhead">
                   <span>worked {fmt(worked)} h</span>
-                  {c.remaining != null && (
+                  {c.status === "on_hold" ? (
+                    <span>on hold, accrual paused</span>
+                  ) : c.remaining != null && (
                     <span style={{ color: statusTone }}>{c.remaining < 0 ? "over" : "under"} {fmt(Math.abs(c.remaining))} h</span>
                   )}
                 </div>
