@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterClientList, computePrimaryNameByGroup } from "./clientListFilter.js";
+import { filterClientList, computePrimaryNameByGroup, matchesSearch, searchMatchesInOtherTypes } from "./clientListFilter.js";
 
 const row = (name, userMinutes, extra = {}) => ({ name, type: "package", userMinutes: new Map(userMinutes), ...extra });
 const opts = (over = {}) => ({ clientTypeFilter: "all", consultantFilter: "", search: "", primaryNameByGroup: new Map(), ...over });
@@ -87,5 +87,36 @@ describe("filterClientList never hides a row under a parent that isn't there", (
   it("the digital bucket filters by type", () => {
     const list = [row("Rent Busters (Bunbury, WA)", [], { type: "digital" }), row("Acme", [])];
     expect(filterClientList(list, opts({ clientTypeFilter: "digital" })).map((c) => c.name)).toEqual(["Rent Busters (Bunbury, WA)"]);
+  });
+});
+
+// "Can't find Aged Rights": ARAS's row is named after the client, its ClickUp folder is
+// "Aged Rights Advocacy Services", and it's hourly (hidden by the default package filter).
+describe("search: folder names, nested rows, and matches hidden by the type filter", () => {
+  const list = [
+    row("ARAS", [], { type: "hourly", capGroup: "ARAS", searchFolders: ["Aged Rights Advocacy Services"], registered: true }),
+    row("ARAS Website Optimisation Project", [], { type: "hourly", capGroup: "ARAS", costCentreParentAccName: "ARAS", searchFolders: ["ARAS Website Optimisation Project"] }),
+    row("Clarke Energy (CEA)", [], { type: "hourly", searchFolders: ["Clarke Energy", "CEA WAME 2026"] }),
+    row("Majestic Plumbing", [], { type: "package" }),
+  ];
+  const o = (over) => opts({ primaryNameByGroup: computePrimaryNameByGroup(list), ...over });
+  it("matches a row by its registered/source ClickUp folder", () => {
+    expect(filterClientList(list, o({ search: "aged" })).map((c) => c.name)).toEqual(["ARAS"]);
+    expect(filterClientList(list, o({ search: "wame" })).map((c) => c.name)).toEqual(["Clarke Energy (CEA)"]);
+  });
+  it("matches a parent by the name of a row nested under it", () => {
+    expect(filterClientList(list, o({ search: "optimisation" })).map((c) => c.name)).toEqual(["ARAS"]);
+  });
+  it("matchesSearch covers name, display name and folders", () => {
+    expect(matchesSearch({ name: "x", displayName: "Aged" }, "aged")).toBe(true);
+    expect(matchesSearch({ name: "x", searchFolders: ["Aged Rights"] }, "aged")).toBe(true);
+    expect(matchesSearch({ name: "x" }, "aged")).toBe(false);
+  });
+  it("reports matches the type filter hides (default view = package)", () => {
+    expect(filterClientList(list, o({ clientTypeFilter: "package", search: "aged" }))).toEqual([]);
+    expect(searchMatchesInOtherTypes(list, o({ clientTypeFilter: "package", search: "aged" })).map((c) => c.name)).toEqual(["ARAS"]);
+    expect(searchMatchesInOtherTypes(list, o({ clientTypeFilter: "all", search: "aged" }))).toEqual([]);
+    expect(searchMatchesInOtherTypes(list, o({ clientTypeFilter: "package", search: "" }))).toEqual([]);
+    expect(searchMatchesInOtherTypes(list, o({ clientTypeFilter: "package", search: "majestic" }))).toEqual([]);
   });
 });

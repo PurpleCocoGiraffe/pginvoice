@@ -76,7 +76,36 @@ export function filterClientList(list, { clientTypeFilter, consultantFilter, sea
   out = out.filter((c) => !nestedUnderPresent(c));
   if (search.trim()) {
     const q = search.trim().toLowerCase();
-    out = out.filter((c) => c.name.toLowerCase().includes(q) || (c.displayName || "").toLowerCase().includes(q));
+    // A row nested under each parent (same two rules as nestedUnderPresent), so searching for
+    // a sub-project's name finds the tile it's rendered in.
+    const nestedByParent = new Map();
+    for (const c of list) {
+      if (!nestedUnderPresent(c)) continue;
+      const parent = c.costCentreParentAccName && presentNames.has(c.costCentreParentAccName)
+        ? c.costCentreParentAccName : primaryNameByGroup.get(c.capGroup);
+      if (!nestedByParent.has(parent)) nestedByParent.set(parent, []);
+      nestedByParent.get(parent).push(c);
+    }
+    out = out.filter((c) => matchesSearch(c, q) || (nestedByParent.get(c.name) || []).some((s) => matchesSearch(s, q)));
   }
   return out;
+}
+
+// Free-text match against everything a user might know a client by: its row name, display
+// name, and every ClickUp folder behind it (`searchFolders`, set in buildClientsForMonth --
+// e.g. ARAS's folder "Aged Rights Advocacy Services", or a roll-up's cost-centre folders).
+// `q` is already trimmed and lower-cased.
+export function matchesSearch(c, q) {
+  const has = (s) => String(s || "").toLowerCase().includes(q);
+  return has(c.name) || has(c.displayName) || (c.searchFolders || []).some(has);
+}
+
+// Search matches the type filter is hiding: the same list filtered with every type ("all"),
+// minus what's already in view. Empty when there's no search or the filter is already "all".
+// Lets the list say "1 match in other types -- ARAS (Hourly). Show all types" instead of an
+// unexplained empty result (the default view is "Clients on a Package").
+export function searchMatchesInOtherTypes(list, opts) {
+  if (!opts.search?.trim() || opts.clientTypeFilter === "all") return [];
+  const shown = new Set(filterClientList(list, opts).map((c) => c.name));
+  return filterClientList(list, { ...opts, clientTypeFilter: "all" }).filter((c) => !shown.has(c.name));
 }

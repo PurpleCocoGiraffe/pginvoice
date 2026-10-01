@@ -25,11 +25,12 @@ import {
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY } from "./storageKeys.js";
-import { filterClientList, computePrimaryNameByGroup } from "./clientListFilter.js";
+import { filterClientList, computePrimaryNameByGroup, searchMatchesInOtherTypes } from "./clientListFilter.js";
 import {
   folderKey, buildFolderCanonicalizer, newFolderEntry, aggregateMonthRows, billableMinutesByFolder,
   reconcileClientMonth, shouldSeedPackageMonth, sumCarry, lastMonthAccruedClients, lifetimeBudgetFor, isLifetimeBudgetType,
   sumMinutesInRange, seedBlockedBy, monthInEndPeriods, priorFolderKeysFor, subProjectType, resolveClientType,
+  endedCarryIn, fixedFeeSummary,
 } from "./reconcile.js";
 import { typeLabelShort } from "./clientTypeLabels.js";
 import { buildSummaryText } from "./clientSummary.js";
@@ -773,10 +774,22 @@ export default function PGReconciliation({ onNavigateClients }) {
       const priorMonthWorkedMin = priorKeys.reduce((a, k) => a + (monthWorked?.get(k) || 0), 0);
       // An offboarded/archived stretch accrues nothing (recomputeAccruals' end periods), so
       // a prior month inside one carries nothing -- never an estimate from the old package.
-      const priorEnded = !!(pgProfile && priorKey && accruedClient) && monthInEndPeriods(
-        endPeriodsFor(pgProfile, pgClientEvents), priorKey,
+      const endPeriods = pgProfile && accruedClient && !isSubProject ? endPeriodsFor(pgProfile, pgClientEvents) : [];
+      const priorEnded = !!(priorKey && endPeriods.length) && monthInEndPeriods(
+        endPeriods, priorKey,
         { hasEvidence: accruedClient.balances?.[priorKey] != null || priorMonthWorkedMin > 0 },
       );
+      // The viewed month itself inside an end period: the balance carried into it, read back
+      // from the ledger's carry-outs, decides whether it's a wrap-up drawdown of owed hours
+      // (see endedCarryIn / reconcileClientMonth). Evidence mirrors the ledger's own: worked
+      // hours or a reset keep an undated end from covering the month.
+      const monthEnded = !!(monthKey && endPeriods.length) && monthInEndPeriods(
+        endPeriods, monthKey,
+        { hasEvidence: billableWorked > 0 || accruedClient.resets?.[monthKey] != null },
+      );
+      const wrapUpPrior = monthEnded
+        ? endedCarryIn(accruedClient, priorKey, (k) => monthInEndPeriods(endPeriods, k, { hasEvidence: accruedClient.balances?.[k] != null }))
+        : null;
       const recon = reconcileClientMonth({
         worked: billableWorked, accruedClient, monthKey, priorKey,
         priorWorkedH: monthWorked ? priorMonthWorkedMin / 60 : null,
@@ -787,6 +800,7 @@ export default function PGReconciliation({ onNavigateClients }) {
         monthSegmentAgreed: seg?.agreedHours ?? null,
         allowScalarPackage,
         priorEnded,
+        wrapUpPrior,
       });
       const clientObj = {
         ...c, worked, billableWorked, accruedClient, matchInfo,
@@ -834,21 +848,36 @@ export default function PGReconciliation({ onNavigateClients }) {
         // so the registered clickupFolder is the right key; c.name is only a safe fallback
         // for a client with no registration at all.
         const quotedFolders = c.costCentre ? c.costCentre.accrualFolderNames : [pgProfile?.clickupFolder || c.name];
-        const budget = pgProfile && monthKey
+        const budgetFor = (opts) => (pgProfile && monthKey
           ? lifetimeBudgetFor(typeTimelineFor(pgProfile, pgClientEvents), monthKey, {
             type: clientObj.type, currentAgreedHours: pgProfile.agreedHours,
             // A MAP that is the client's base type starts at its profile start date (Quoted
             // keeps its existing open-ended behaviour for a base-type quote).
             startDate: clientObj.type === "map" ? pgProfile.startDate : null,
+            ...opts,
           })
-          : null;
+          : null);
+        let budget = budgetFor();
+        // A fixed-fee quote with no hour budget (AWIWA: $10,000 one-off project) counts its
+        // hours from its own type event, not from an earlier hour-based quote before it.
+        const feeOnly = pgProfile?.fixedFee != null && (budget ? budget.amount : pgProfile.agreedHours) == null;
+        if (feeOnly && budget) budget = budgetFor({ segmentOnly: true });
         const fromMonth = budget?.fromMonth ?? null;
         const lifetimeWorkedMin = quotedFolders.reduce((a, f) => a + sumMinutesInRange(workedByFolderMonth.get(folderKey(f)), fromMonth, monthKey || null), 0);
         clientObj.lifetimeWorked = lifetimeWorkedMin / 60;
         clientObj.quotedAmount = budget ? budget.amount : (pgProfile?.agreedHours ?? null);
         clientObj.quotedRemaining = clientObj.quotedAmount != null ? clientObj.quotedAmount - clientObj.lifetimeWorked : null;
+        // Display-only dollar fee + effective rate (fee / lifetime billable hours).
+        clientObj.fixedFee = fixedFeeSummary(pgProfile?.fixedFee, clientObj.lifetimeWorked);
       }
       if (capRow) clientObj.capGroup = capRow.group;
+      // Every ClickUp folder behind this row, for the list search (filterClientList): a row
+      // renamed to its client's name ("ARAS") is otherwise unfindable by its real folder
+      // ("Aged Rights Advocacy Services"), and a roll-up by its cost-centre folders.
+      clientObj.searchFolders = [...new Set([
+        c.folder, pgProfile?.clickupFolder,
+        ...(c.costCentre?.accrualFolderNames || []), ...(c.costCentre?.lineItems || []).map((i) => i.name),
+      ].filter(Boolean))];
       // Client Invoicing has no independent way to know a client is on a Marketing
       // Action Plan (MAP) — that's tracked only in Capacity Planning's "basis" field.
       // Cross-reference it here by name, purely additively: c.type (which the
@@ -1045,6 +1074,11 @@ export default function PGReconciliation({ onNavigateClients }) {
     }
     return list;
   }, [clients, clientTypeFilter, consultantFilter, search, sortMode, primaryNameByGroup]);
+  // Search matches hidden only by the type filter (see searchMatchesInOtherTypes).
+  const otherTypeMatches = useMemo(
+    () => searchMatchesInOtherTypes(clients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup }),
+    [clients, clientTypeFilter, consultantFilter, search, primaryNameByGroup]
+  );
 
   // Same filter pipeline as `visible` above, applied to prevClients — real,
   // fully-computed prior-month numbers (not an estimate) so the KPI cards can show a
@@ -1194,7 +1228,8 @@ export default function PGReconciliation({ onNavigateClients }) {
     // that actually has resets.
     return clients.map((c) => {
       // Carry only exists for a package-like row (an hourly row has no package balance).
-      const prior = isPackageLikeType(c.type) ? c.priorBalance : null;
+      // (A wrap-up month of an offboarded client also carries its owed balance.)
+      const prior = isPackageLikeType(c.type) || c.status === "wrap_up" ? c.priorBalance : null;
       return {
         "Client (ClickUp)": c.name,
         "Client type": typeLabelShort(c.type),
@@ -1214,7 +1249,7 @@ export default function PGReconciliation({ onNavigateClients }) {
         } : {}),
         "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
         "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
-        "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", on_hold: "on hold (accrual paused)", "no-pkg": "no package", fixed_price: "fixed price" }[c.status],
+        "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", on_hold: "on hold (accrual paused)", "no-pkg": "no package", fixed_price: "fixed price", wrap_up: "wrap-up (owed hours drawn down)" }[c.status],
         // Quoted/MAP have no monthly package/remaining figure (the columns above stay blank
         // for them) -- their own fixed-budget-vs-lifetime-worked figures get their own
         // columns instead of being squeezed into fields that mean something different.
@@ -1222,6 +1257,8 @@ export default function PGReconciliation({ onNavigateClients }) {
         "Quoted amount (h)": isLifetimeBudgetType(c.type) ? (c.quotedAmount ?? "") : "",
         "Total worked on this quote (h)": isLifetimeBudgetType(c.type) ? Math.round((c.lifetimeWorked ?? 0) * 100) / 100 : "",
         "Quoted remaining (h)": isLifetimeBudgetType(c.type) && c.quotedRemaining != null ? Math.round(c.quotedRemaining * 100) / 100 : "",
+        "Fixed fee (AUD)": c.fixedFee ? c.fixedFee.fee : "",
+        "Effective rate (AUD/h)": c.fixedFee?.effectiveRate != null ? Math.round(c.fixedFee.effectiveRate * 100) / 100 : "",
         "Consultants": [...c.userMinutes.entries()].map(([u, m]) => `${u || "—"} (${fmt(m / 60)}h)`).join("; "),
       };
     });
@@ -1609,6 +1646,18 @@ export default function PGReconciliation({ onNavigateClients }) {
                   : consultantFilter
                     ? `${consultantFilter} didn't work on any ${TYPE_LABELS[clientTypeFilter].toLowerCase()} this month.`
                     : `No ${TYPE_LABELS[clientTypeFilter].toLowerCase()} in this view.`}
+              </div>
+            )}
+            {otherTypeMatches.length > 0 && (
+              // Search hits the type filter is hiding -- say so instead of an unexplained
+              // empty/short list (the default view is "Clients on a Package").
+              <div className="pg-manual-note" style={{ marginTop: 8 }}>
+                <span>
+                  {otherTypeMatches.length} match{otherTypeMatches.length === 1 ? "" : "es"} in other types —{" "}
+                  {otherTypeMatches.slice(0, 5).map((c) => `${c.displayName} (${typeLabelShort(c.type)})`).join(", ")}
+                  {otherTypeMatches.length > 5 ? `, +${otherTypeMatches.length - 5} more` : ""}.
+                </span>
+                <button onClick={() => setClientTypeFilter("all")}>Show all types</button>
               </div>
             )}
           </div>

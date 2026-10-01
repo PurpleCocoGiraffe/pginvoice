@@ -4,7 +4,7 @@ import {
   reconcileClientMonth, shouldSeedPackageMonth, sumCarry, lastMonthAccruedClients,
   quotedBudgetFor, sumMinutesInRange, unfilteredForExport,
   seedBlockedBy, monthInEndPeriods, priorFolderKeysFor, subProjectType, resolveClientType,
-  lifetimeBudgetFor, isLifetimeBudgetType,
+  lifetimeBudgetFor, isLifetimeBudgetType, endedCarryIn, fixedFeeSummary,
 } from "./reconcile.js";
 import { typeLabelShort, typeTone } from "./clientTypeLabels.js";
 import { endPeriodsFor } from "./accrualsSync.js";
@@ -578,5 +578,112 @@ describe("Digital Package: fixed price, no package math", () => {
     expect(text).not.toContain("undefined");
     const html = buildPrintHtml(c, "September 2026", "");
     expect(html).toContain("Digital Package: fixed monthly price");
+  });
+});
+
+// "From the moment we finished, we owe them the unutilised hours, so anything we do should be
+// deducted from those hours." Mirrors replayClientAccruals' wrap-up drawdown.
+describe("wrap-up drawdown for an offboarded client still owed hours", () => {
+  // Warrina Homes: offboarded 2026-07-31 (ended from 2026-08), Aug reset -13.41, Sep 0.25 h.
+  const periods = endPeriodsFor(
+    { client: "Warrina Homes", status: "offboarded", endDate: "2026-07-31" },
+    [{ client: "Warrina Homes", kind: "offboarding", effective_date: "2026-07-31", applied: true }],
+  );
+  const isEnded = (k) => monthInEndPeriods(periods, k);
+  const warrina = (over = {}) => accrued({
+    name: "Warrina Homes", agreedByMonth: { "2026-07": 24, "2026-08": null }, balances: { "2026-07": -13.41, "2026-08": -13.41 },
+    resets: { "2026-08": -13.41 }, ...over,
+  });
+  it("Sep 2026: carry -13.41 (owed), no package, worked 0.25, 13.16 h still owed", () => {
+    const owed = endedCarryIn(warrina(), "2026-08", isEnded);
+    expect(owed).toBe(-13.41);
+    const r = reconcileClientMonth({
+      worked: 0.25, accruedClient: warrina(), monthKey: "2026-09", priorKey: "2026-08", priorWorkedH: 0,
+      monthType: "package", priorType: "package", priorEnded: true, wrapUpPrior: owed,
+    });
+    expect(r.status).toBe("wrap_up");
+    expect(r.pkg).toBe(null);
+    expect(r.priorBalance).toBe(-13.41);
+    expect(r.newBalance).toBeCloseTo(-13.16, 6);
+    expect(r.remaining).toBeCloseTo(13.16, 6);
+    expect(r.remainingShown).toBeCloseTo(13.16, 6);
+    expect(r.balanceForward).toBeCloseTo(-13.16, 6);
+  });
+  it("a no-work ended month in between holds the balance: walk back to the last carry-out", () => {
+    // Oct: Sep had a wrap-up row (-13.16); Nov: Oct had no work and so no row.
+    const a = warrina({ balances: { "2026-07": -13.41, "2026-08": -13.41, "2026-09": -13.16 } });
+    expect(endedCarryIn(a, "2026-09", isEnded)).toBe(-13.16);
+    expect(endedCarryIn(a, "2026-10", isEnded)).toBe(-13.16);
+  });
+  it("the first ended month carries the last active month's carry-out; nothing before an end stretch is walked", () => {
+    const a = warrina({ balances: { "2026-07": -13.41 }, resets: {} });
+    expect(endedCarryIn(a, "2026-07", isEnded)).toBe(-13.41);
+    expect(endedCarryIn(accrued({ balances: { "2026-05": -9 } }), "2026-07", isEnded)).toBe(null);
+  });
+  it("a client offboarded over-serviced (carry >= 0) keeps today's behaviour", () => {
+    const a = accrued({ agreedByMonth: { "2026-07": 24, "2026-08": null }, balances: { "2026-07": 5 } });
+    const r = reconcileClientMonth({
+      worked: 2, accruedClient: a, monthKey: "2026-08", priorKey: "2026-07", priorWorkedH: 20,
+      monthType: "package", priorType: "package", wrapUpPrior: 5,
+    });
+    expect(r.status).not.toBe("wrap_up");
+    expect(r.pkg).toBe(null);
+    expect(r.status).toBe("no-pkg");
+  });
+  it("wrap-up work beyond the owed hours goes positive (as the ledger does)", () => {
+    const r = reconcileClientMonth({ worked: 15, accruedClient: warrina(), monthKey: "2026-09", priorKey: "2026-08", wrapUpPrior: -13.41 });
+    expect(r.newBalance).toBeCloseTo(1.59, 6);
+    expect(r.remaining).toBeCloseTo(-1.59, 6);
+  });
+  it("counts toward the Carry KPI and the last-month accrued export", () => {
+    const c = { type: "package", status: "wrap_up", pkg: null, priorBalance: -13.41 };
+    expect(sumCarry([c])).toBeCloseTo(13.41, 6);
+    expect(lastMonthAccruedClients([c])).toEqual([c]);
+    // even when the month's type isn't package-like any more
+    expect(sumCarry([{ ...c, type: "hourly" }])).toBeCloseTo(13.41, 6);
+  });
+  it("the copy summary and PDF report the owed hours, not 'No package on file'", () => {
+    const c = {
+      name: "Warrina Homes", displayName: "Warrina Homes", type: "package", status: "wrap_up", pkg: null,
+      priorBalance: -13.41, remaining: 13.16, remainingShown: 13.16, balanceForward: -13.16, worked: 0.25, billableWorked: 0.25,
+      tasksAll: new Map(), taskUsers: new Map(), userMinutes: new Map(),
+    };
+    const text = buildSummaryText(c, { invoiceMonth: "September 2026", priorMonthPretty: "August 2026" });
+    expect(text).toContain("unutilised hours owed carried in: 13.41 h");
+    expect(text).toContain("Still owed after this month: 13.16 h");
+    expect(text).not.toContain("No package on file");
+    const html = buildPrintHtml(c, "September 2026", "August 2026");
+    expect(html).toContain("Still owed");
+    expect(html).not.toContain("No package on file");
+  });
+});
+
+// "AWIWA was a 10000 AUD one-time project, so kind of a quoted project, but we didn't have an
+// hour for it."
+describe("fixed-fee quote (no hour budget)", () => {
+  it("fee and effective rate = fee / lifetime billable hours", () => {
+    expect(fixedFeeSummary(10000, 174)).toEqual({ fee: 10000, effectiveRate: 10000 / 174 });
+    expect(fixedFeeSummary(10000, 0)).toEqual({ fee: 10000, effectiveRate: null });
+    expect(fixedFeeSummary(null, 10)).toBe(null);
+  });
+  it("counts hours from the fee's own quote event, not an earlier hour-based quote", () => {
+    // AWIWA: base quoted 40 h, later 57 h; a 2026-08-01 quoted event with no hours.
+    const t = [{ from: null, type: "quoted", agreedHours: 40 }, { from: "2026-08-01", type: "quoted", agreedHours: null }];
+    expect(quotedBudgetFor(t, "2026-09")).toEqual({ fromMonth: null, amount: null }); // the hour-based run
+    expect(lifetimeBudgetFor(t, "2026-09", { type: "quoted", segmentOnly: true })).toEqual({ fromMonth: "2026-08", amount: null });
+  });
+  it("the copy summary and PDF show the fee and rate instead of 'No quoted amount'", () => {
+    const c = {
+      name: "Australian Women in Wine", displayName: "Australian Women in Wine Association (AWIWA)", type: "quoted", pkg: null,
+      quotedAmount: null, quotedRemaining: null, lifetimeWorked: 174, fixedFee: fixedFeeSummary(10000, 174),
+      worked: 60, billableWorked: 60, tasksAll: new Map(), taskUsers: new Map(), userMinutes: new Map(),
+    };
+    const text = buildSummaryText(c, { invoiceMonth: "September 2026" });
+    expect(text).toContain("Fixed fee: $10,000.00");
+    expect(text).toContain("Effective rate so far: $57.47/h");
+    expect(text).not.toContain("No quoted amount");
+    const html = buildPrintHtml(c, "September 2026", "");
+    expect(html).toContain("Fixed fee");
+    expect(html).toContain("$57.47/h");
   });
 });

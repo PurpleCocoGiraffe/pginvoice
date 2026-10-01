@@ -101,6 +101,9 @@ function rowToClient(r) {
     // transition can still be reconstructed correctly (see typeTimelineFor).
     baseType: r.base_type,
     baseAgreedHours: r.base_agreed_hours === null ? null : Number(r.base_agreed_hours),
+    // One-off fixed fee in AUD for a quoted (or MAP) engagement priced in dollars rather
+    // than hours (e.g. AWIWA, $10,000) -- display-only, never part of any hours/accrual math.
+    fixedFee: r.fixed_fee == null ? null : Number(r.fixed_fee),
     consultant: r.consultant || null,
     startDate: r.start_date || null,
     endDate: r.end_date || null,
@@ -138,6 +141,15 @@ export async function updateQuotedAmount(client, hours, { previousHours } = {}) 
   if (error) throw error;
   notifyClientsChanged();
   logClientHistory(client, "quoted_amount_change", `Set quoted amount to ${hours} hrs`, { from: previousHours ?? null, to: hours });
+}
+
+// Same direct-edit pattern as updateQuotedAmount, for a quote priced as a fixed dollar fee
+// (pginvoice_clients.fixed_fee, AUD). null clears it.
+export async function updateFixedFee(client, fee, { previousFee } = {}) {
+  const { error } = await supabase.from("pginvoice_clients").update({ fixed_fee: fee }).eq("client", client);
+  if (error) throw error;
+  notifyClientsChanged();
+  logClientHistory(client, "fixed_fee_change", fee == null ? "Cleared fixed fee" : `Set fixed fee to $${fee}`, { from: previousFee ?? null, to: fee });
 }
 
 // Saves the client's website URL and, when `autoLogo` is true, derives a logo

@@ -26,7 +26,12 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
     lines.push("");
   }
   lines.push(`Time tracked this month: ${fmt(c.workedFiltered)} h`);
-  if (isPackageLikeType(c.type) && c.pkg != null && c.pkg > 0) {
+  if (c.status === "wrap_up") {
+    // Offboarded, still owed unutilised hours: this month's work is deducted from them.
+    lines.push(`Offboarded: unutilised hours owed carried in: ${fmt(Math.abs(c.priorBalance))} h`);
+    if (Math.abs(billable - c.worked) > 0.005) lines.push(`Billable wrap-up time deducted: ${fmt(billable)} h`);
+    lines.push(c.remainingShown > 0 ? `Still owed after this month: ${fmt(c.remainingShown)} h` : `Owed hours used up (over by ${fmt(Math.abs(c.remainingShown))} h)`);
+  } else if (isPackageLikeType(c.type) && c.pkg != null && c.pkg > 0) {
     if (Math.abs(billable - c.worked) > 0.005) lines.push(`Billable time counted toward the package: ${fmt(billable)} h`);
     lines.push(`Package: ${fmt(c.pkg)} h`);
     const p = c.priorBalance ?? 0;
@@ -58,9 +63,15 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
       lines.push(`${isMap ? "MAP hours" : "Quoted amount"}: ${fmt(c.quotedAmount)} h`);
       lines.push(`Total time tracked on this ${isMap ? "MAP" : "quote"}: ${fmt(c.lifetimeWorked ?? 0)} h`);
       lines.push(c.quotedRemaining >= 0 ? `Remaining of ${word} amount: ${fmt(c.quotedRemaining)} h` : `Over the ${word} amount by: ${fmt(Math.abs(c.quotedRemaining))} h`);
+    } else if (c.fixedFee) {
+      // Priced as a one-off dollar fee, no hours: the fee and its effective hourly rate.
+      lines.push(`Fixed fee: ${fmtMoney(c.fixedFee.fee)}`);
+      lines.push(`Total time tracked on this ${isMap ? "MAP" : "quote"}: ${fmt(c.lifetimeWorked ?? 0)} h`);
+      if (c.fixedFee.effectiveRate != null) lines.push(`Effective rate so far: ${fmtMoney(c.fixedFee.effectiveRate)}/h`);
     } else {
       lines.push(`No ${word} amount on file for this client.`);
     }
+    if (c.quotedAmount != null && c.fixedFee) lines.push(`Fixed fee: ${fmtMoney(c.fixedFee.fee)}`);
   }
   const invoices = costCentreInvoicesFor(c);
   if (invoices) {

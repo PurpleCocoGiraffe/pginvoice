@@ -107,12 +107,23 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   const budgetWord = isMap ? "MAP" : "quoted";
   // Digital Package: fixed price, hours shown for reference only (no package/remaining).
   const isDigital = c.type === "digital";
-  const statusTone = isPackage
+  // A quote priced as a one-off dollar fee with no hour budget (AWIWA): shows the fee and
+  // its effective hourly rate instead of any hours-left/over figure.
+  const feeOnly = isQuoted && c.quotedAmount == null && !!c.fixedFee;
+  // An offboarded client still owed unutilised hours: wrap-up work this month is drawn
+  // down from them (reconcileClientMonth's wrap-up branch). Carry = the owed balance,
+  // Remaining = hours still owed.
+  const isWrapUp = c.status === "wrap_up";
+  const statusTone = isWrapUp ? "var(--status-ok)"
+    : isPackage
     ? (c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : "var(--status-ok)")
     : isQuoted && c.quotedRemaining != null
       ? (c.quotedRemaining < 0 ? "var(--status-over)" : "var(--status-ok)")
       : undefined;
-  const statusText = isPackage && c.status === "on_hold"
+  const statusText = isWrapUp
+    ? (c.remaining > 0 ? `Offboarded: ${fmt(c.remaining)} h of unutilised hours still owed after this month's wrap-up work` : "Offboarded: owed hours fully used by wrap-up work")
+    : feeOnly ? `Fixed fee ${fmtMoney(c.fixedFee.fee)}${c.fixedFee.effectiveRate != null ? `, ${fmtMoney(c.fixedFee.effectiveRate)}/h so far over ${fmt(c.lifetimeWorked ?? 0)} h` : ""}`
+    : isPackage && c.status === "on_hold"
     ? "On hold: accrual paused, balance carried forward unchanged"
     : isPackage && c.status !== "no-pkg"
     ? (c.status === "over" ? `${fmt(Math.abs(c.newBalance))} h over-served` : c.status === "under" ? `${fmt(Math.abs(c.newBalance))} h under-served` : "on track")
@@ -130,7 +141,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   const lifetimeWorked = c.lifetimeWorked ?? 0;
   // Carry is a package balance -- a row that isn't package-like this month (e.g. just moved
   // package -> hourly) has none, even if the ledger still holds the old package's figure.
-  const priorBalance = isPackage ? c.priorBalance : null;
+  const priorBalance = isPackage || isWrapUp ? c.priorBalance : null;
   const carry = Math.abs(priorBalance ?? 0);
   const barBase = isQuoted ? lifetimeWorked : worked;
   const effective = pkg - (priorBalance ?? 0);
@@ -148,6 +159,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   const carryTone = priorBalance == null || priorBalance === 0 ? undefined
     : priorBalance < 0 ? "var(--status-ok)" : "var(--status-over)";
   const carryTitle = priorBalance == null ? undefined
+    : isWrapUp ? `${fmt(carry)} h of unutilised package hours owed to the client since offboarding.`
     : priorBalance < 0 ? `${fmt(carry)} h of unused package time carried in from last month.`
     : priorBalance > 0 ? `${fmt(carry)} h of last month's over-use being carried over into this month.`
     : undefined;
@@ -169,7 +181,13 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // showing their type here again would just repeat the Type column two cells over,
   // so they get a plain "not tracked" placeholder instead. Quoted gets its own lifetime-
   // budget pacing (spent-down against the one fixed quoted figure, not a monthly one).
-  const statusPill = isPackage
+  const statusPill = isWrapUp
+    // Kept as short as the other pills (the fixed-width box clipped "Wrap-up · owes 13.2 h");
+    // the hours still owed are the Remaining figure, spelled out in the tooltip.
+    ? { label: c.remaining > 0 ? "Wrap-up" : "Wrap-up done", tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
+    : feeOnly
+      ? { label: `Fixed fee ${fmtMoney(c.fixedFee.fee).replace(/\.00$/, "")}`, tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
+    : isPackage
     ? (c.pkg == null || c.pkg <= 0
       ? { label: "No package", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
       : c.status === "on_hold"
@@ -250,14 +268,17 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
         </span>
         <span className="pg-row__num">
           <span className="pg-row__num-label">{isQuoted ? (isMap ? "MAP" : "Quoted") : "Package"}</span>
-          {isQuoted ? (c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—") : c.pkg != null ? `${fmt(c.pkg)} h` : isPackage ? "—" : ""}
+          {isQuoted ? (c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : feeOnly ? fmtMoney(c.fixedFee.fee).replace(/\.00$/, "") : "—") : c.pkg != null ? `${fmt(c.pkg)} h` : isPackage || isWrapUp ? "—" : ""}
         </span>
         <span className="pg-row__num">
           <span className="pg-row__num-label">Worked</span>{fmt(worked)} h
         </span>
-        <span className="pg-row__num" style={remainingTone ? { color: remainingTone } : undefined}>
-          <span className="pg-row__num-label">Remaining</span>
-          {isQuoted
+        <span className="pg-row__num" style={remainingTone ? { color: remainingTone } : undefined}
+          title={feeOnly ? "Effective rate: the fixed fee divided by every billable hour logged against it so far." : isWrapUp ? "Unutilised hours still owed to the client after this month's wrap-up work." : undefined}>
+          <span className="pg-row__num-label">{feeOnly ? "Effective rate" : isWrapUp ? "Owed" : "Remaining"}</span>
+          {feeOnly
+            ? (c.fixedFee.effectiveRate != null ? `${fmtMoney(c.fixedFee.effectiveRate).replace(/\.\d\d$/, "")}/h` : "—")
+            : isQuoted
             ? (c.quotedRemaining != null ? `${c.quotedRemaining < 0 ? "−" : ""}${fmt(Math.abs(c.quotedRemaining))} h` : "—")
             : c.remaining != null ? `${c.remaining < 0 ? "−" : ""}${fmt(Math.abs(c.remaining))} h` : isPackage ? "—" : ""}
         </span>
@@ -346,6 +367,10 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
                   <span>bar is cumulative across every month, not just this one</span>
                 </div>
               </>
+            ) : isWrapUp ? (
+              <div className="pg-row-inline__empty">{statusText}</div>
+            ) : feeOnly ? (
+              <div className="pg-row-inline__empty">{statusText}</div>
             ) : (
               <div className="pg-row-inline__empty">{isQuoted ? `No ${budgetWord} amount on file for this client.` : isDigital ? "Digital Package: fixed monthly price, no package hours tracked." : "No package on file for this client."}</div>
             )}
