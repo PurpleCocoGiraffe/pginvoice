@@ -259,7 +259,7 @@ function CrossStateInner({ onNavigateClients, onNavigateTeam }) {
             })}
           </tbody>
         </table>
-        <p className="pg-footnote" style={{ marginTop: 8 }}>Purple figures are cross-state work. Grey figures are same-state work, shown for context. Click any figure to see the breakdown.</p>
+        <p className="pg-footnote" style={{ marginTop: 8 }}>{report.ownPgHours > 0 && <>Not included: {fmt1(report.ownPgHours)} hrs on Purple Giraffe's own folder (internal work). </>}Purple figures are cross-state work. Grey figures are same-state work, shown for context. Click any figure to see the breakdown.</p>
       </div>
 
       {selectedCell && (

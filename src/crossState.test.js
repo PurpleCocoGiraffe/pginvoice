@@ -93,6 +93,12 @@ describe("buildCrossStateReport", () => {
     expect(r.unassignedFolders).toEqual([{ folder: "Mystery Folder", hours: 0.75 }]);
   });
 
+  it("leaves PG's own 'Purple Giraffe' folder out of the grid and totals it separately", () => {
+    const r = buildCrossStateReport([...rows, row("Holly", "Purple Giraffe", 90)], { clients, people, months: new Set(["2026-09"]) });
+    expect(r.ownPgHours).toBe(1.5);
+    expect(r.detail.some((d) => d.client === "Purple Giraffe")).toBe(false);
+  });
+
   it("includes non-billable hours when billableOnly is off", () => {
     const r = buildCrossStateReport(rows, { clients, people, billableOnly: false, months: new Set(["2026-09"]) });
     expect(r.cellHours("SA", "QLD")).toBe(12);

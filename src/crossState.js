@@ -12,6 +12,14 @@ export const UNKNOWN = "Unknown";
 export const EXTERNAL = "External (DMA)";
 export const DMA_USERNAME = "purple giraffe";
 
+// The "Purple Giraffe" ClickUp FOLDER is PG's own work (admin, intern management, PG's own
+// marketing) -- not a client, so it's left out of the cross-state grid and reported as its own
+// total instead. Deliberately NOT added to nameMatch.js's isInternalFolder: other modules
+// treat that folder differently, and the "Purple Giraffe" *login* (DMA) is a separate thing.
+export function isOwnPgFolder(folder) {
+  return normalizeName(folder) === "purple giraffe";
+}
+
 // Kelly's confirmed client-state list (Oct 2026). Each entry is a normalized phrase matched
 // as whole words inside the client's normalized name, so "Filter Supplies (WA)", "Rent
 // Busters WA" and "Mary Di Marco - Ray White (Qld)" all hit regardless of punctuation or
@@ -108,11 +116,13 @@ export function staffFor(user, people) {
 export function buildCrossStateReport(rows, opts = {}) {
   const { clients = [], people = [], savedStates = {}, billableOnly = true, hasBillable = true, months = null } = opts;
   const included = [];
+  let ownPgMin = 0;
   for (const r of rows || []) {
     if (isInternalFolder(r.folder)) continue;
     if (billableOnly && hasBillable && !r.billable) continue;
     if (months && (!r.monthKey || !months.has(r.monthKey))) continue;
     if (!(r.minutes > 0)) continue;
+    if (isOwnPgFolder(r.folder)) { ownPgMin += r.minutes; continue; }
     included.push(r);
   }
   const folders = [...new Set(included.map((r) => r.folder))];
@@ -160,6 +170,7 @@ export function buildCrossStateReport(rows, opts = {}) {
     colStates,
     cellHours,
     totalHours: hours(totalMin),
+    ownPgHours: hours(ownPgMin),
     detail: [...detail.values()].map((d) => ({ ...d, hours: hours(d.minutes) })).sort(sortDesc),
     unassignedFolders: [...unassigned.entries()].map(([folder, min]) => ({ folder, hours: hours(min) })).sort(sortDesc),
     estimatedFolders: [...estimated.entries()].map(([folder, v]) => ({ folder, client: v.client, hours: hours(v.minutes) })).sort(sortDesc),
