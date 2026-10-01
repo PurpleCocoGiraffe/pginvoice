@@ -103,11 +103,18 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
     return next;
   });
 
-  const statusLabel = isDigital ? "Fixed price"
+  // Offboarded client still owed unutilised hours: this month's wrap-up work is drawn down
+  // from them (see reconcileClientMonth). Quote priced as a one-off fee with no hours: fee +
+  // effective rate instead of hours left/over.
+  const isWrapUp = c.status === "wrap_up";
+  const feeOnly = isQuoted && c.quotedAmount == null && !!c.fixedFee;
+  const statusLabel = isWrapUp ? "Wrap-up (owed hours)"
+    : feeOnly ? "Fixed fee"
+    : isDigital ? "Fixed price"
     : !isPackage ? null : c.pkg == null || c.pkg <= 0 ? "No package on file"
     : c.status === "on_hold" ? "On hold (accrual paused)"
     : c.status === "over" ? "Over-serviced" : c.status === "under" ? "Under-serviced" : "On track";
-  const statusTone = isDigital ? "var(--fg-secondary)" : !isPackage ? undefined : c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : c.status === "ok" ? "var(--status-ok)" : "var(--fg-tertiary)";
+  const statusTone = isDigital || isWrapUp || feeOnly ? "var(--fg-secondary)" : !isPackage ? undefined : c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : c.status === "ok" ? "var(--status-ok)" : "var(--fg-tertiary)";
   const iconTone = isPackage
     ? (c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : "var(--status-ok)")
     : isQld ? "var(--status-info)" : "var(--accent)";
@@ -222,7 +229,7 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             )}
           </div>
 
-          {isPackage ? (
+          {isPackage || isWrapUp ? (
             <div className="pg-metrics" style={{ marginTop: 14 }}>
               <Metric label={consultantFilter ? `Worked (by ${consultantFilter})` : "Worked"} value={`${fmt(c.workedFiltered)} h`} big />
               <Metric label="Package" value={c.pkg != null ? `${fmt(c.pkg)} h` : "—"} />
@@ -245,7 +252,9 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
           ) : isQuoted ? (
             <div className="pg-metrics" style={{ marginTop: 14 }}>
               <Metric label="Worked this month" value={`${fmt(c.workedFiltered)} h`} big />
-              <Metric label={isMap ? "MAP hours" : "Quoted amount"} value={c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—"} />
+              {feeOnly
+                ? <Metric label="Fixed fee" value={fmtMoney(c.fixedFee.fee)} sub={c.fixedFee.effectiveRate != null ? `${fmtMoney(c.fixedFee.effectiveRate)}/h effective so far` : "no hours logged yet"} />
+                : <Metric label={isMap ? "MAP hours" : "Quoted amount"} value={c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : "—"} />}
               <Metric
                 label={`Total worked on this ${isMap ? "MAP" : "quote"}`}
                 value={`${fmt(c.lifetimeWorked ?? 0)} h`}
@@ -266,7 +275,16 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
               <span className="pg-drawer__overunder-tag">balance carried forward unchanged</span>
             </div>
           )}
-          {isPackage && c.status !== "on_hold" && c.remaining != null && (
+          {isWrapUp && (
+            <div className="pg-drawer__overunder" title="We owe an offboarded client its unutilised hours, so any work after the end date is deducted from them.">
+              <span className="pg-drawer__overunder-label">{c.remaining > 0 ? "Still owed after wrap-up" : "Owed hours used up by"}</span>
+              <span className="pg-drawer__overunder-value" style={{ color: c.remaining > 0 ? "var(--status-ok)" : undefined }}>
+                {fmt(Math.abs(c.remaining))} h
+              </span>
+              <span className="pg-drawer__overunder-tag">offboarded, no new package hours</span>
+            </div>
+          )}
+          {isPackage && !isWrapUp && c.status !== "on_hold" && c.remaining != null && (
             <div className="pg-drawer__overunder">
               <span className="pg-drawer__overunder-label">{c.remaining < 0 ? "Over by" : "Remaining this month"}</span>
               <span className="pg-drawer__overunder-value" style={{ color: c.remaining < 0 ? "var(--status-over)" : c.remaining > 0 ? "var(--status-ok)" : undefined }}>
@@ -285,6 +303,13 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             </div>
           )}
 
+          {feeOnly && (
+            <div className="pg-drawer__overunder" title="The fixed fee divided by every billable hour logged against it so far.">
+              <span className="pg-drawer__overunder-label">Effective rate</span>
+              <span className="pg-drawer__overunder-value">{c.fixedFee.effectiveRate != null ? `${fmtMoney(c.fixedFee.effectiveRate)}/h` : "—"}</span>
+              <span className="pg-drawer__overunder-tag">{fmtMoney(c.fixedFee.fee)} over {fmt(c.lifetimeWorked ?? 0)} h</span>
+            </div>
+          )}
           {isQuoted && c.quotedRemaining != null && (
             <div className="pg-drawer__overunder">
               <span className="pg-drawer__overunder-label">{c.quotedRemaining < 0 ? `Over the ${budgetWord} amount by` : `Remaining of ${budgetWord} amount`}</span>

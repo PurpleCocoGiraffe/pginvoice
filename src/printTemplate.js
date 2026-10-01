@@ -56,7 +56,21 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
   const billableRow = Math.abs(billableRounded - workedRounded) > 0.005
     ? `<tr class="datarow"><td class="label">Billable time counted toward the package</td><td class="right">${fmt(billableRounded)} h</td></tr>` : "";
 
-  const reconciliation = isPkg && !hasPkg ? `
+  const isWrapUp = c.status === "wrap_up" && !c.isLineItemExport;
+  const feeOnly = isQuoted && c.quotedAmount == null && !!c.fixedFee;
+  const reconciliation = isWrapUp ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
+    <tr class="datarow"><td class="label">Unutilised hours owed${priorMonthText ? ` (carried in from ${esc(priorMonthText)})` : ""}</td><td class="right">${fmt(priorAbs)} h</td></tr>
+    <tr class="datarow"><td class="label">Wrap-up time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
+    ${billableRow.replace("toward the package", "against the owed hours")}
+    <tr class="total"><td>${remainingShown > 0 ? "Still owed" : "Owed hours used up, over by"}</td><td class="right">${fmt(Math.abs(remainingShown))} h</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">The engagement has ended. We owe the client its unutilised package hours, so any work after the end date is deducted from them; no new package hours are added.</td></tr>` : feeOnly ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">${isMap ? "MAP summary" : "Quoted project summary"}</td></tr>
+    <tr class="datarow"><td class="label">Fixed fee</td><td class="right">${esc(fmtMoney(c.fixedFee.fee))}</td></tr>
+    <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
+    <tr class="datarow"><td class="label">Total time tracked on this ${isMap ? "MAP" : "quote"}</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
+    <tr class="total"><td>Effective rate so far</td><td class="right">${c.fixedFee.effectiveRate != null ? esc(fmtMoney(c.fixedFee.effectiveRate)) + "/h" : "—"}</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">A one-off fixed fee rather than an hour budget: the effective rate is the fee divided by every billable hour logged against it so far.</td></tr>` : isPkg && !hasPkg ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">No package on file for this client this month, so no balance is calculated.</td></tr>` : isPkg && onHold ? `

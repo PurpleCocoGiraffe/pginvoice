@@ -52,8 +52,10 @@ export function buildFolderCanonicalizer(rows, preferred = []) {
 }
 
 // ------------------------------ row aggregation ------------------------------
+// `folder` keeps the real ClickUp folder name even after a roll-up renames `name` to the
+// client's (e.g. ARAS's "Aged Rights Advocacy Services"), for search.
 export const newFolderEntry = (name) => ({
-  name, totalMin: 0, billableMin: 0,
+  name, folder: name, totalMin: 0, billableMin: 0,
   tasksAll: new Map(), userMinutes: new Map(), tasksByUser: new Map(), taskUsers: new Map(), taskIds: new Map(),
 });
 
@@ -128,11 +130,33 @@ export function billableMinutesByFolder(rows, monthKey, hasBillable) {
 //                  scalar is a stale last-write-wins value (see accrualsSync.js).
 // A Quoted or MAP month (isLifetimeBudgetType) gets no monthly figures here at all -- its
 // budget is lifetimeBudgetFor's, computed by the caller.
+// wrapUpPrior   -- the viewed month sits inside an end period and this is the balance carried
+//                  into it (endedCarryIn); when owed (< 0) the month is a wrap-up drawdown.
 export function reconcileClientMonth({
   worked, accruedClient: a, monthKey, priorKey, priorWorkedH = null,
   monthType = null, priorType = null, monthStatus = null, priorStatus = null,
   monthSegmentAgreed = null, allowScalarPackage = false, priorEnded = false,
+  wrapUpPrior = null,
 }) {
+  // Wrap-up drawdown (mirrors replayClientAccruals' ended-period branch): we still owe an
+  // offboarded client its unutilised hours, so work logged after the end is deducted from
+  // them -- no new package, balance = owed + worked. An over-serviced client (carry >= 0)
+  // isn't drawn down and keeps the plain ended handling below.
+  if (wrapUpPrior != null && wrapUpPrior < 0) {
+    const monthReset = a && monthKey ? (a.resets?.[monthKey] ?? null) : null;
+    const newBalance = wrapUpPrior + worked;
+    return {
+      ...NO_PACKAGE_RESULT,
+      priorBalance: wrapUpPrior, newBalance,
+      // Remaining convention: hours still owed (owed - worked).
+      remaining: 0 - newBalance,
+      status: "wrap_up",
+      resetValue: monthReset,
+      remainingReset: monthReset !== null ? 0 - monthReset : null,
+      balanceForward: monthReset ?? newBalance,
+      remainingShown: monthReset !== null ? 0 - monthReset : 0 - newBalance,
+    };
+  }
   // Digital Package: a fixed monthly price. Hours are tracked for reference only -- no
   // package, carry, remaining or accrual figures of any kind.
   if (monthType === "digital") return { ...NO_PACKAGE_RESULT, status: "fixed_price" };
@@ -287,6 +311,24 @@ export function seedBlockedBy({ ledgerName, matchedLedgerNames, ownFolder = null
   return (clientFolders || []).some((f) => monthFolderKeys.has(folderKey(f)));
 }
 
+// The balance carried into a month inside an end period, straight from the ledger's
+// carry-outs (`balances` = reset ?? accrual, which already includes recomputeAccruals'
+// wrap-up rows): the prior month's carry-out, or -- when that month has no row because
+// nothing was worked (the ledger holds the balance) -- the nearest earlier carry-out, walking
+// back through the ended stretch and stopping at the last month before it. `isEnded(mk)`
+// says whether a month is inside the stretch. null = nothing on file.
+export function endedCarryIn(accruedClient, priorKey, isEnded) {
+  if (!accruedClient || !priorKey) return null;
+  let k = priorKey;
+  for (let guard = 0; guard < 120; guard++) {
+    const b = accruedClient.balances?.[k];
+    if (b != null) return b;
+    if (!isEnded(k)) return null;
+    k = prevMonthKeyStr(k);
+  }
+  return null;
+}
+
 // Whether monthKey falls inside one of endPeriodsFor()'s periods ({ from, until, after }:
 // ended from `from` inclusive to `until` exclusive). An undated period (from null) is
 // resolved by replayClientAccruals from the client's last evidence month; here a month
@@ -320,14 +362,16 @@ export function priorFolderKeysFor({ name, costCentreFolders = null, clientName 
   return [folderKey(ownFolder || name)];
 }
 
-// Carry-over KPI: absolute prior balance, only for rows that are actually package-like.
+// Carry-over KPI: absolute prior balance, only for rows that are actually package-like
+// (or drawing down an offboarded client's owed hours -- still a carried balance).
 export function sumCarry(list) {
-  return list.reduce((a, c) => a + (isPackageLikeType(c.type) && c.priorBalance != null ? Math.abs(c.priorBalance) : 0), 0);
+  return list.reduce((a, c) => a + ((isPackageLikeType(c.type) || c.status === "wrap_up") && c.priorBalance != null ? Math.abs(c.priorBalance) : 0), 0);
 }
 
-// Rows for the "last month accrued" ready-to-merge export: package-like type AND a real package.
+// Rows for the "last month accrued" ready-to-merge export: package-like type AND a real
+// package, plus a wrap-up month (its closing owed balance is a real ledger figure).
 export function lastMonthAccruedClients(list) {
-  return list.filter((c) => isPackageLikeType(c.type) && c.pkg != null && c.pkg > 0);
+  return list.filter((c) => (isPackageLikeType(c.type) && c.pkg != null && c.pkg > 0) || c.status === "wrap_up");
 }
 
 // ------------------------------ Quoted / MAP ------------------------------
@@ -352,15 +396,18 @@ const firstMonthFrom = (date) => (date.slice(8, 10) === "01" ? date.slice(0, 7) 
 // amount is that segment's agreed hours -- except for the client's current (last) segment,
 // where the live profile figure wins, since updateQuotedAmount edits it directly without an
 // event. `startDate` (the profile's start_date) bounds a run that starts at the client's base
-// segment, which has no date of its own.
-export function lifetimeBudgetFor(timeline, monthKey, { type, currentAgreedHours = null, startDate = null } = {}) {
+// segment, which has no date of its own. `segmentOnly` starts at the segment containing
+// monthKey instead of its whole run -- for a fixed-fee quote (no hours), which is priced by
+// the event that set it, not by any earlier hour-based quote it happens to follow (AWIWA:
+// quoted 57 h, then a 2026-08-01 quoted event with no hours for its $10,000 project).
+export function lifetimeBudgetFor(timeline, monthKey, { type, currentAgreedHours = null, startDate = null, segmentOnly = false } = {}) {
   if (!timeline?.length || !monthKey) return null;
   const monthStart = `${monthKey}-01`;
   let idx = 0;
   timeline.forEach((seg, i) => { if (seg.from === null || seg.from <= monthStart) idx = i; });
   if (timeline[idx].type !== type) return null;
   let start = idx;
-  while (start > 0 && timeline[start - 1].type === type) start--;
+  while (!segmentOnly && start > 0 && timeline[start - 1].type === type) start--;
   const from = timeline[start].from ?? startDate;
   const fromMonth = from ? firstMonthFrom(from) : null;
   const isCurrent = idx === timeline.length - 1;
@@ -368,6 +415,15 @@ export function lifetimeBudgetFor(timeline, monthKey, { type, currentAgreedHours
   return { fromMonth, amount };
 }
 export const quotedBudgetFor = (timeline, monthKey, opts = {}) => lifetimeBudgetFor(timeline, monthKey, { ...opts, type: "quoted" });
+
+// A quoted/MAP engagement priced as a one-off dollar fee (pginvoice_clients.fixed_fee)
+// rather than hours. Display-only: { fee, effectiveRate } where effectiveRate = fee per
+// billable hour logged against it so far (null before any hours). null when there's no fee.
+export function fixedFeeSummary(fee, lifetimeBillableHours) {
+  if (fee == null || !Number.isFinite(Number(fee))) return null;
+  const h = Number(lifetimeBillableHours) || 0;
+  return { fee: Number(fee), effectiveRate: h > 0 ? Number(fee) / h : null };
+}
 
 // Sums a Map(monthKey -> minutes) over [fromMonth, toMonth] (either bound null = open).
 // Minutes with no month (key "") only count when there's no lower bound.

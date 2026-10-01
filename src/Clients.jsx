@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Search, ArrowRight, Pencil, Check, AlertTriangle, Upload, X, ChevronRight, ChevronDown, ArrowLeft, Plus, Trash2 } from "lucide-react";
 import {
   fetchClients, fetchClientEvents, createClientEvent, deleteClientEvent, applyDueClientEvents,
-  updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
+  updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, updateFixedFee, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
   addTaskPrefixCostCentre, createClient, storesAgreedHours, validateNewClient,
   fetchClientHistory, fetchClientNotes, addClientNote, updateClientNote, deleteClientNote,
 } from "./clientsSync.js";
@@ -546,6 +546,64 @@ function QuotedAmountEditor({ client, onSaved }) {
   );
 }
 
+// Same self-contained popover as QuotedAmountEditor, for a quote priced as a one-off dollar
+// fee rather than hours (pginvoice_clients.fixed_fee -- e.g. AWIWA's $10,000 project).
+// Display-only: Client Invoicing shows the fee and an effective hourly rate, never hours math.
+function FixedFeeEditor({ client, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [fee, setFee] = useState(client.fixedFee ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  const ref = useDismissable(() => setOpen(false));
+  useEscape(() => setOpen(false));
+
+  async function save() {
+    const trimmed = String(fee).trim();
+    // Blank clears the fee.
+    const num = trimmed === "" ? null : Number(trimmed);
+    if (num !== null && (!Number.isFinite(num) || num < 0)) { setErr("Enter a valid dollar amount."); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      await updateFixedFee(client.client, num, { previousFee: client.fixedFee });
+      setOpen(false);
+      onSaved();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <button
+        type="button" className="pg-icon-btn-sm" style={{ padding: 2 }}
+        title={client.fixedFee != null ? "Edit fixed fee" : "Set fixed fee"}
+        onClick={() => { setFee(client.fixedFee ?? ""); setErr(null); setOpen((o) => !o); }}
+      >
+        <Pencil size={12} />
+      </button>
+      {open && (
+        <div ref={ref} className="pg-menu" style={{ top: "calc(100% + 4px)", left: 0, right: "auto", width: 220, padding: 12, display: "flex", flexDirection: "column", gap: 10, zIndex: 20 }}
+          onClick={(e) => e.stopPropagation()}>
+          <label className="pg-field">
+            <span className="pg-field__label">Fixed fee (AUD, blank to clear)</span>
+            <input
+              className="pg-input" type="number" min="0" step="any" autoFocus
+              value={fee} onChange={(e) => setFee(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+            />
+          </label>
+          {err && <p className="pg-footnote" style={{ color: "var(--status-over)" }}>{err}</p>}
+          <button className="pg-btn" disabled={saving} onClick={save}>{saving ? "Saving…" : "Save"}</button>
+          <button className="pg-btn-ghost" style={{ justifyContent: "center" }} onClick={() => setOpen(false)} disabled={saving}>Cancel</button>
+        </div>
+      )}
+    </span>
+  );
+}
+
 function ClientProfileDrawer({
   client: c, events, folderSet, folderList, costCentreInfo, isDynamic, capPeople,
   editingFolder, draftFolder, savingFolder, folderMenuOpen, folderSuggestions,
@@ -610,6 +668,15 @@ function ClientProfileDrawer({
             {c.type === "quoted" && <QuotedAmountEditor client={c} onSaved={onSaved} />}
           </span>
         </div>
+        {(c.type === "quoted" || c.type === "map" || c.fixedFee != null) && (
+          <div className="pg-drawer__field" style={{ marginTop: 14 }}>
+            <span className="pg-field__label">Fixed fee</span>
+            <span className="pg-drawer__field-value" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+              {c.fixedFee != null ? `$${c.fixedFee.toLocaleString("en-AU")} (one-off)` : "Not set"}
+              <FixedFeeEditor client={c} onSaved={onSaved} />
+            </span>
+          </div>
+        )}
         <div className="pg-drawer__field" style={{ marginTop: 14 }}>
           <span className="pg-field__label">Engaged since</span>
           <span className="pg-drawer__field-value" style={{ fontSize: 14 }}>{c.startDate || "Not set"}</span>
