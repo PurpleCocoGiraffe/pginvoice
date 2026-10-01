@@ -216,12 +216,23 @@ export async function createClient(client, { type, agreedHours, consultant, star
   notifyClientsChanged();
 }
 
+// Paginated (PostgREST caps a request at 1000 rows) with a unique tie-breaker (id) so rows
+// sharing an effective_date can't be skipped/duplicated across page boundaries.
 export async function fetchClientEvents(client) {
-  let q = supabase.from("pginvoice_client_events").select("*").order("effective_date", { ascending: true });
-  if (client) q = q.eq("client", client);
-  const { data, error } = await q;
-  if (error) throw error;
-  return data || [];
+  const PAGE = 1000;
+  let all = [];
+  for (let from = 0; ; from += PAGE) {
+    let q = supabase.from("pginvoice_client_events").select("*")
+      .order("effective_date", { ascending: true })
+      .order("id", { ascending: true });
+    if (client) q = q.eq("client", client);
+    const { data, error } = await q.range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || !data.length) break;
+    all = all.concat(data);
+    if (data.length < PAGE) break;
+  }
+  return all;
 }
 
 const EVENT_KIND_LABEL = {
@@ -279,27 +290,68 @@ function latestByEffectiveDate(events) {
 }
 
 // Derives the client's current type/agreed_hours/consultant/status/end_date from its
-// immutable base snapshot plus its FULL history of applied events -- each field is decided
+// current row plus its FULL history of applied events -- each field is decided
 // independently by that field's own chronologically-latest applied event, so insertion
 // order (which event got added to the DB last) can never override effective-date order
 // (which event actually happened most recently). This is what applyDueClientEvents below
 // writes, instead of a raw per-event patch.
-function recomputeClientCurrentState(baseRow, appliedEvents) {
+//
+// `baseRow` is the client's current row (client, base_type, base_agreed_hours, type,
+// agreed_hours, consultant, status, end_date). A field with no event of its kind keeps the
+// row's current value -- starting from defaults (status "active", base hours) meant applying
+// ANY event (say a consultant change) silently wiped a status set without an event (e.g.
+// "archived") or a quoted amount edited directly via updateQuotedAmount.
+// `dueIds` (optional Set): ids of the events being applied in this run. Status is only
+// re-derived when a status-kind or type event is among them (otherwise a status set outside
+// the event log would be overwritten by an unrelated event), and a quoted client's amount
+// is kept unless the type event that set it is itself being applied now. Omitted = treat
+// every event as due (full replay).
+export function recomputeClientCurrentState(baseRow, appliedEvents, dueIds = null) {
   const own = appliedEvents.filter((e) => e.client === baseRow.client);
-  const patch = { type: baseRow.base_type, agreed_hours: baseRow.base_agreed_hours, consultant: baseRow.consultant, status: "active", end_date: null };
+  const isDue = (e) => !dueIds || dueIds.has(e.id);
+  const patch = {
+    type: baseRow.type ?? baseRow.base_type,
+    agreed_hours: baseRow.agreed_hours !== undefined ? baseRow.agreed_hours : baseRow.base_agreed_hours,
+    consultant: baseRow.consultant ?? null,
+    status: baseRow.status ?? "active",
+    end_date: baseRow.end_date ?? null,
+  };
 
   const lt = latestByEffectiveDate(own.filter((e) => e.kind === "type"));
-  if (lt) { patch.type = lt.new_type; patch.agreed_hours = lt.new_agreed_hours; }
+  if (lt) {
+    // updateQuotedAmount edits a quoted client's amount directly (no event), so an older,
+    // already-applied type->quoted event must not reset it on every later recompute.
+    const keepQuotedAmount = lt.new_type === "quoted" && baseRow.type === "quoted" && !isDue(lt);
+    patch.type = lt.new_type;
+    if (!keepQuotedAmount) patch.agreed_hours = lt.new_agreed_hours;
+  }
 
   const lc = latestByEffectiveDate(own.filter((e) => e.kind === "consultant"));
   if (lc) patch.consultant = lc.new_consultant;
 
-  const ls = latestByEffectiveDate(own.filter((e) => ["offboarding", "reactivation", "hold", "resume"].includes(e.kind)));
-  if (ls) {
-    if (ls.kind === "offboarding") { patch.status = "offboarded"; patch.end_date = ls.effective_date; }
-    else if (ls.kind === "reactivation") { patch.status = "active"; patch.end_date = null; }
-    else if (ls.kind === "hold") { patch.status = "on_hold"; }
-    else if (ls.kind === "resume") { patch.status = "active"; }
+  const STATUS_KINDS = ["offboarding", "reactivation", "hold", "resume"];
+  const statusDue = own.some((e) => STATUS_KINDS.includes(e.kind) && isDue(e));
+  const typeDue = own.some((e) => e.kind === "type" && isDue(e));
+  if (statusDue) {
+    // Replays status-kind events in effective_date order (id tie-break). A type event later
+    // than an offboarding re-engages the client, exactly as accrualsSync's endPeriodsFor
+    // treats it (Equippers: offboarded, then re-signed via a package type event).
+    const timeline = own
+      .filter((e) => STATUS_KINDS.includes(e.kind) || e.kind === "type")
+      .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || a.id - b.id);
+    let status = "active";
+    let endDate = null;
+    for (const e of timeline) {
+      if (e.kind === "offboarding") { status = "offboarded"; endDate = e.effective_date; }
+      else if (e.kind === "reactivation" || e.kind === "resume") { status = "active"; endDate = null; }
+      else if (e.kind === "hold") { status = "on_hold"; endDate = null; }
+      else if (e.kind === "type" && status === "offboarded") { status = "active"; endDate = null; }
+    }
+    patch.status = status;
+    patch.end_date = endDate;
+  } else if (typeDue && patch.status === "offboarded" && patch.end_date && lt && lt.effective_date > patch.end_date) {
+    patch.status = "active";
+    patch.end_date = null;
   }
   return patch;
 }
@@ -327,13 +379,14 @@ export async function applyDueClientEvents() {
   // state from its COMPLETE applied-event history (not just the events that were due this
   // run) -- a previously-applied event with a later effective_date than one applied just now
   // must still win, and only a full replay in effective_date order guarantees that.
-  const { data: baseRows, error: baseErr } = await supabase.from("pginvoice_clients").select("client, base_type, base_agreed_hours, consultant").in("client", clientNames);
+  const { data: baseRows, error: baseErr } = await supabase.from("pginvoice_clients").select("client, base_type, base_agreed_hours, type, agreed_hours, consultant, status, end_date").in("client", clientNames);
   if (baseErr) throw baseErr;
   const { data: allApplied, error: appliedErr } = await supabase.from("pginvoice_client_events").select("*").eq("applied", true).in("client", clientNames);
   if (appliedErr) throw appliedErr;
 
+  const dueIds = new Set(due.map((e) => e.id));
   for (const baseRow of baseRows || []) {
-    const patch = recomputeClientCurrentState(baseRow, allApplied || []);
+    const patch = recomputeClientCurrentState(baseRow, allApplied || [], dueIds);
     const { error: updErr } = await supabase.from("pginvoice_clients").update(patch).eq("client", baseRow.client);
     if (updErr) throw updErr;
   }
@@ -349,7 +402,9 @@ export function typeTimelineFor(client, events) {
   const segments = [{ from: null, type: client.baseType, agreedHours: client.baseAgreedHours, note: null }];
   const typeEvents = events
     .filter((e) => e.client === client.client && e.kind === "type" && e.applied)
-    .sort((a, b) => a.effective_date.localeCompare(b.effective_date));
+    // id tie-break, same as latestByEffectiveDate -- two type events on the same date must
+    // resolve to the same winner here as in the client's current row.
+    .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || a.id - b.id);
   for (const e of typeEvents) segments.push({ from: e.effective_date, type: e.new_type, agreedHours: e.new_agreed_hours === null ? null : Number(e.new_agreed_hours), note: e.note || null });
   return segments;
 }

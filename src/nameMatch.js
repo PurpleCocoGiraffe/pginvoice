@@ -319,6 +319,24 @@ function unionTaskPrefixFolders(base, allFolders, taskPrefixFolders) {
   return [...(base || []), ...extra];
 }
 
+// Every folder in `allFolders` that's the same name as `folder` ignoring case and surrounding
+// whitespace -- ClickUp folder names drift ("GPEX" renamed "gpex", "Utter Gutters " with a
+// trailing space), and a month's rows can sit under either spelling, so a lookup of one
+// folder has to sum all of them rather than pick just one.
+export function folderVariants(folder, allFolders) {
+  const key = folder ? String(folder).trim().toLowerCase() : "";
+  if (!key) return [];
+  return allFolders.filter((f) => typeof f === "string" && f.trim().toLowerCase() === key);
+}
+
+// Folds a client's own registered folder (every case/whitespace variant of it) into an
+// already-non-empty multi-folder match -- see multiFolderAccrualMatchesFor's `ownFolder`.
+function foldOwnFolder(out, allFolders, ownFolder, isExcluded) {
+  if (!ownFolder || !out || !out.length) return out;
+  const extra = folderVariants(ownFolder, allFolders).filter((f) => !out.includes(f) && !isExcluded(f));
+  return extra.length ? [...out, ...extra] : out;
+}
+
 // Returns every real ClickUp folder belonging to a multi-folder client, or null if `name`
 // isn't one of them (meaning the caller should fall back to plain findMatch instead). Checks
 // the user-editable dynamic table first (exact name match) -- a client with explicit
@@ -327,7 +345,9 @@ function unionTaskPrefixFolders(base, allFolders, taskPrefixFolders) {
 // rather than the two silently combining into a confusing double-match. Task-prefix synthetic
 // folders (see taskPrefixSyntheticFoldersFor) are unioned in on top of whichever of those two
 // resolves, since they're additive by nature rather than an alternative identity source.
-export function multiFolderMatchesFor(name, allFolders) {
+// `ownFolder` (optional): the client's registered pginvoice_clients.clickup_folder, folded in
+// exactly as multiFolderAccrualMatchesFor does (minus the accrual exclusions).
+export function multiFolderMatchesFor(name, allFolders, ownFolder) {
   const dynamic = DYNAMIC_COST_CENTRES.get(name);
   const taskPrefixFolders = taskPrefixSyntheticFoldersFor(name);
   let base;
@@ -342,7 +362,7 @@ export function multiFolderMatchesFor(name, allFolders) {
       return rule.prefixes.some((p) => nf.startsWith(p));
     }) : null;
   }
-  return unionTaskPrefixFolders(base, allFolders, taskPrefixFolders);
+  return foldOwnFolder(unionTaskPrefixFolders(base, allFolders, taskPrefixFolders), allFolders, ownFolder, () => false);
 }
 
 // Same as multiFolderMatchesFor, but drops any folder marked "sub_project" in the dynamic
@@ -381,11 +401,9 @@ export function multiFolderAccrualMatchesFor(name, allFolders, ownFolder) {
       return true;
     }) : null;
   }
-  const out = unionTaskPrefixFolders(base, allFolders, taskPrefixFolders);
-  if (ownFolder && out && out.length && !out.includes(ownFolder) && allFolders.includes(ownFolder) && !isExcluded(ownFolder)) {
-    return [...out, ownFolder];
-  }
-  return out;
+  // Matched case/whitespace-insensitively, every variant included (folder-name drift, see
+  // folderVariants).
+  return foldOwnFolder(unionTaskPrefixFolders(base, allFolders, taskPrefixFolders), allFolders, ownFolder, isExcluded);
 }
 
 // Internal / non-revenue folders (per the billable-hours guide, §3.1): onboarding/

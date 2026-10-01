@@ -9,7 +9,7 @@
 // Extracted here so the page and its consumers are peers, both importing
 // from a real shared module, instead of one secretly depending on the other.
 import { loadState, saveState } from "./capacityStore.js";
-import { findMatch, multiFolderMatchesFor, isInternalFolder } from "./nameMatch.js";
+import { findMatch, multiFolderMatchesFor, folderVariants, isInternalFolder } from "./nameMatch.js";
 
 /* ============================================================
    MONTHS / CONSTANTS
@@ -404,8 +404,13 @@ export function computeDynamicAverages(clickupData, clients) {
     }
     const match = findMatch(group, folderList);
     if (!match) continue;
-    const byMonth = perFolderMonth.get(match.name);
-    if (!byMonth || byMonth.size === 0) continue;
+    // findMatch picks ONE folder, but a renamed folder's rows can sit under several
+    // case/whitespace spellings ("GPEX" and "gpex") -- sum every variant of it.
+    const byMonth = new Map();
+    for (const f of folderVariants(match.name, folderList)) {
+      for (const [mk, min] of perFolderMonth.get(f) || []) byMonth.set(mk, (byMonth.get(mk) || 0) + min);
+    }
+    if (byMonth.size === 0) continue;
     const totalMin = [...byMonth.values()].reduce((a, b) => a + b, 0);
     result.set(group, { avgHours: (totalMin / 60) / byMonth.size, matchedFolder: match.name, monthsCounted: byMonth.size, confidence: match.confidence });
   }

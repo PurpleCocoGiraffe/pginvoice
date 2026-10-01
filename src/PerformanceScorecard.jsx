@@ -4,7 +4,7 @@ import {
   Search, Download, ChevronDown, Plus, X, Users,
 } from "lucide-react";
 import { idbGet, PG_DATA_EVENT } from "./idbStore.js";
-import { findMatch, multiFolderMatchesFor, isInternalFolder, basisToClientType, dominantClientType, CLIENT_TYPE_LABELS, CHART_TYPE_TONES } from "./nameMatch.js";
+import { findMatch, multiFolderMatchesFor, folderVariants, isInternalFolder, basisToClientType, dominantClientType, CLIENT_TYPE_LABELS, CHART_TYPE_TONES } from "./nameMatch.js";
 import { SEED_CLIENTS, SEED_PEOPLE, FIXED_BASES, loadKey, agreedAt } from "./capacityData.js";
 import { useDismissable } from "./useDismissable.js";
 import { SearchBox } from "./SearchBox.jsx";
@@ -235,7 +235,12 @@ function PerformanceInner() {
     }
     const match = findMatch(name, folderList);
     if (!match) return null;
-    const byMonth = folderMonth.get(match.name) || new Map();
+    // Sum every case/whitespace variant of the matched folder ("GPEX" + "gpex") -- see
+    // folderVariants in nameMatch.js.
+    const byMonth = new Map();
+    for (const f of folderVariants(match.name, folderList)) {
+      for (const [mk, min] of folderMonth.get(f) || []) byMonth.set(mk, (byMonth.get(mk) || 0) + min);
+    }
     const monthHours = new Map();
     activeMonths.forEach((m) => monthHours.set(m, (byMonth.get(m) || 0) / 60));
     return { matchedFolder: match.name, confidence: match.confidence, monthHours };

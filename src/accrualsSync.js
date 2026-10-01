@@ -66,7 +66,10 @@ export async function fetchAccrualsFromSupabase() {
     const { data, error } = await supabase
       .from("pginvoice_accruals")
       .select("client, account_manager, agreed_hpm, month_key, accrual_value, accrual_note, pct_over_under, comment, worked_hours, is_override, hours_flagged, reset_value, reset_note")
+      // (client, month_key) is the table's unique key -- ordering by client alone lets a
+      // client's rows tie across a page boundary and get skipped/duplicated between pages.
       .order("client", { ascending: true })
+      .order("month_key", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
     if (!data || !data.length) break;
@@ -261,7 +264,9 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
 // never part of an upsert payload (PostgREST upsert only touches listed columns, so the
 // stored reset survives every recompute) -- but every rebuilt in-memory cell must carry it
 // over, or a second recompute in the same session would lose it and chain from our own
-// figure instead.
+// figure instead. The same goes for `comment`: only a human edits it (upsertAccrualCell), so
+// it's never in a recompute payload either -- a recompute running from a snapshot taken
+// before a comment was saved would otherwise write the old comment back over the new one.
 //
 // Offboarded/archived: a month inside one of the client's end periods (see endPeriodsFor)
 // accrues nothing. Each period is `{ from, until, after, note }`: ended from month `from`
@@ -310,7 +315,7 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
           rows.push({
             client: c.client, account_manager: c.manager || null, agreed_hpm: null,
             month_key: mk, accrual_value: null, accrual_note: endedNote, pct_over_under: null,
-            comment: cell.comment, worked_hours: null, is_override: false, hours_flagged: false,
+            worked_hours: null, is_override: false, hours_flagged: false,
           });
         }
         prior = resetValue ?? 0;
@@ -330,13 +335,13 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
     // like a package client in Client Accruals until the following recompute cycle.
     if (monthStatus === "on_hold" && (seg.type === "package" || seg.type === "strategy") && !existing?.isOverride) {
       const cell = { accrualValue: prior, accrualNote: "On hold — accrual paused", pct: null, comment: existing?.comment ?? null, workedHours: existing?.workedHours ?? null, isOverride: false, hoursFlagged: false, resetValue, resetNote };
-      const changed = !existing || existing.accrualValue !== cell.accrualValue || existing.accrualNote !== cell.accrualNote;
+      const changed = !existing || existing.accrualValue !== cell.accrualValue || existing.accrualNote !== cell.accrualNote || !!existing.hoursFlagged !== cell.hoursFlagged;
       c.months[mk] = cell;
       if (changed) {
         rows.push({
           client: c.client, account_manager: c.manager || null, agreed_hpm: seg.agreedHours != null ? String(seg.agreedHours) : null,
           month_key: mk, accrual_value: cell.accrualValue, accrual_note: cell.accrualNote, pct_over_under: null,
-          comment: cell.comment, worked_hours: cell.workedHours, is_override: false, hours_flagged: false,
+          worked_hours: cell.workedHours, is_override: false, hours_flagged: false,
         });
       }
       if (resetValue !== null) prior = resetValue;
@@ -362,7 +367,7 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
           // over this column anyway, but keep the raw data honest too).
           client: c.client, account_manager: c.manager || null, agreed_hpm: null,
           month_key: mk, accrual_value: null, accrual_note: "Not on a package this month", pct_over_under: null,
-          comment: cell.comment, worked_hours: null, is_override: false, hours_flagged: false,
+          worked_hours: null, is_override: false, hours_flagged: false,
         });
       }
       // A package pause doesn't carry an accrual balance across the gap -- unless the macro
@@ -383,7 +388,9 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
       const isClosedMonth = mk < cur;
       const hoursFlagged = isClosedMonth && existing?.workedHours != null && Math.abs(existing.workedHours - workedHours) > 0.01;
       const cell = { accrualValue, accrualNote: null, pct, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged, resetValue, resetNote };
-      const changed = !existing || existing.accrualValue !== accrualValue || existing.workedHours !== workedHours;
+      // The flag is part of the comparison so a previously-flagged month whose hours now
+      // match again gets the cleared flag written back -- otherwise it stayed flagged forever.
+      const changed = !existing || existing.accrualValue !== accrualValue || existing.workedHours !== workedHours || !!existing.hoursFlagged !== hoursFlagged;
       c.months[mk] = cell;
       if (changed) {
         rows.push({
@@ -397,7 +404,7 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
           // though the accrual math itself (which does use agreedNum) was already correct.
           client: c.client, account_manager: c.manager || null, agreed_hpm: String(agreedNum),
           month_key: mk, accrual_value: accrualValue, accrual_note: null, pct_over_under: pct,
-          comment: cell.comment, worked_hours: workedHours, is_override: false, hours_flagged: hoursFlagged,
+          worked_hours: workedHours, is_override: false, hours_flagged: hoursFlagged,
         });
       }
       prior = resetValue ?? accrualValue;
@@ -421,52 +428,80 @@ function firstMonthOnOrAfter(date) {
 //     accrues in full, even mid-month). A reactivation with no open period (the client was
 //     archived/offboarded by a direct status edit, then reactivated) implies an undated end
 //     between the previous reactivation (if any) and this one;
+//   - a later type or resume event re-engages an offboarded client the same way a
+//     reactivation does (closes the open period at its own month); with no open period
+//     it's ordinary and implies nothing. A hold never re-engages;
 //   - still offboarded/archived with no open period at the end (status set directly): an
-//     open-ended period from profile.endDate when set, else undated.
-// Hold/resume don't affect ends (statusForMonth still drives on-hold).
+//     open-ended period from profile.endDate when set, else undated -- unless that status
+//     is just the stale leftover of an offboarding event that's already been closed.
+// Hold/resume otherwise don't affect ends (statusForMonth still drives on-hold).
 export function endPeriodsFor(profile, events) {
   const statusEvents = events
-    .filter((e) => e.client === profile.client && e.applied && (e.kind === "offboarding" || e.kind === "reactivation" || e.kind === "type"))
+    .filter((e) => e.client === profile.client && e.applied && ["offboarding", "reactivation", "type", "hold", "resume"].includes(e.kind))
     .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || a.id - b.id);
   const periods = [];
   let open = null;
+  let holdWhileOpen = false; // a hold placed after the open offboarding -- explains an on_hold profile
   let after = null; // month of the latest reactivation -- lower bound for an undated end's evidence window
+  const closedOffboardingDates = new Set();
+  let openOffboardingDate = null;
+  const close = (until) => {
+    periods.push({ ...open, until });
+    closedOffboardingDates.add(openOffboardingDate);
+    open = null;
+    openOffboardingDate = null;
+    holdWhileOpen = false;
+    after = until;
+  };
   for (const e of statusEvents) {
-    if (e.kind === "type") {
+    if (e.kind === "hold") {
+      if (open) holdWhileOpen = true;
+      continue;
+    }
+    if (e.kind === "type" || e.kind === "resume") {
       // A later type/package event re-engages an offboarded client just like a
       // reactivation does: Equippers was offboarded 2026-06-01 then re-signed as a 24h
       // package from 2026-08-01 via a type event (no "reactivation"), and the open-ended
       // offboarding period wrongly cleared its live Aug/Sep package rows. A type event
       // with no open period is ordinary and never implies an end on its own.
-      if (open) {
-        const until = e.effective_date.slice(0, 7);
-        periods.push({ ...open, until });
-        open = null;
-        after = until;
-      }
+      if (open) close(e.effective_date.slice(0, 7));
       continue;
     }
     if (e.kind === "offboarding") {
-      if (!open) open = { from: firstMonthOnOrAfter(e.effective_date), until: null, after: null, note: "Client offboarded" };
+      if (!open) {
+        open = { from: firstMonthOnOrAfter(e.effective_date), until: null, after: null, note: "Client offboarded" };
+        openOffboardingDate = e.effective_date;
+      }
+    } else if (open) {
+      close(e.effective_date.slice(0, 7));
     } else {
       const until = e.effective_date.slice(0, 7);
-      periods.push(open ? { ...open, until } : { from: null, until, after, note: "Client offboarded" });
-      open = null;
+      periods.push({ from: null, until, after, note: "Client offboarded" });
       after = until;
     }
   }
   // A client whose current status is active/on hold is demonstrably not ended, whatever
   // a stale offboarding event with nothing after it says -- never clear its current rows.
-  if (open && (profile.status === "active" || profile.status === "on_hold")) periods.push({ ...open, until: open.from });
+  // Except an on_hold status explained by a hold placed AFTER the offboarding: a hold
+  // doesn't re-engage, so the client is still ended (offboarded 2026-10-15, hold 2026-11-01).
+  const notEnded = profile.status === "active" || (profile.status === "on_hold" && !holdWhileOpen);
+  if (open && notEnded) periods.push({ ...open, until: open.from });
   else if (open) periods.push(open);
   else if (profile.status === "offboarded" || profile.status === "archived") {
-    const note = profile.status === "archived" ? "Client archived" : "Client offboarded";
-    // An end_date earlier than a later reactivation is stale (the app clears it on
-    // reactivation; only a direct edit leaves it) -- treat the end as undated so the
-    // evidence rule decides, rather than ending the client from the reactivation month.
-    const endFrom = profile.endDate ? firstMonthOnOrAfter(profile.endDate) : null;
-    const from = endFrom && after && endFrom < after ? null : endFrom;
-    periods.push({ from, until: null, after, note });
+    // An "offboarded" profile whose end_date is exactly an offboarding event that a later
+    // type/reactivation/resume already closed is stale stored state (written before the
+    // client row's status was recomputed to follow re-engagement) -- not a fresh, direct
+    // offboarding. Adding a trailing period for it cleared every new month without hours.
+    const staleFromClosedEvent = profile.status === "offboarded" && profile.endDate && closedOffboardingDates.has(profile.endDate);
+    if (!staleFromClosedEvent) {
+      const note = profile.status === "archived" ? "Client archived" : "Client offboarded";
+      // An end_date earlier than a later reactivation is stale (the app clears it on
+      // reactivation; only a direct edit leaves it) -- treat the end as undated so the
+      // evidence rule decides, rather than ending the client from the reactivation month.
+      const endFrom = profile.endDate ? firstMonthOnOrAfter(profile.endDate) : null;
+      const from = endFrom && after && endFrom < after ? null : endFrom;
+      periods.push({ from, until: null, after, note });
+    }
   }
   return periods;
 }
@@ -535,6 +570,26 @@ export async function recomputeAccruals(clients) {
     notifyAccrualsChanged();
   }
   return { clients: nextClients, updatedCount: updatedRows.length };
+}
+
+// Recompute results carry each cell's comment from the snapshot the run started from; a
+// comment saved while it was running lives only in current state, so prefer that.
+export function mergeLatestComments(next, prev) {
+  if (!prev) return next;
+  const prevByClient = new Map(prev.map((c) => [c.client, c]));
+  return next.map((c) => {
+    const p = prevByClient.get(c.client);
+    if (!p) return c;
+    let months = null;
+    for (const [mk, cell] of Object.entries(c.months)) {
+      const latest = p.months[mk]?.comment ?? null;
+      if (cell && (cell.comment ?? null) !== latest) {
+        months = months || { ...c.months };
+        months[mk] = { ...cell, comment: latest };
+      }
+    }
+    return months ? { ...c, months } : c;
+  });
 }
 
 // -------------------------- export, same layout as the source sheet --------------------------

@@ -115,11 +115,18 @@ async function clickupFetch(path: string, token: string) {
 // never removes from it, so past months stay syncable indefinitely.
 const KNOWN_USER_IDS_KEY = "clickup_known_user_ids";
 async function unionKnownUserIds(supabase: any, currentIds: string[]): Promise<string[]> {
-  const { data } = await supabase.from("pginvoice_app_state").select("value").eq("key", KNOWN_USER_IDS_KEY).maybeSingle();
+  const { data, error } = await supabase.from("pginvoice_app_state").select("value").eq("key", KNOWN_USER_IDS_KEY).maybeSingle();
+  // Only a genuine "no row" (data null, no error) means nothing known yet. Treating a failed
+  // read as empty would drop every departed user's id from this sync's assignee filter (their
+  // past months' entries then vanish from the response and the stale-row cleanup deletes
+  // them) -- and the upsert below would overwrite the stored set with just today's members.
+  if (error) throw new Error(`Couldn't read known ClickUp user ids: ${error.message || error}`);
   const known: string[] = Array.isArray(data?.value) ? data.value : [];
   const union = [...new Set([...known, ...currentIds])];
   if (union.length !== known.length) {
-    await supabase.from("pginvoice_app_state").upsert({ key: KNOWN_USER_IDS_KEY, value: union, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    const { error: upsertError } = await supabase.from("pginvoice_app_state").upsert({ key: KNOWN_USER_IDS_KEY, value: union, updated_at: new Date().toISOString() }, { onConflict: "key" });
+    // This run already uses the in-memory union, so a failed save isn't fatal -- just visible.
+    if (upsertError) console.error("Couldn't save known ClickUp user ids:", upsertError);
   }
   return union;
 }
@@ -342,56 +349,72 @@ Deno.serve(async (req: Request) => {
     // current month) so this stays close to live without a separate job.
     // source='manual'/'capacity_lead' rows are untouched: only source='clickup'
     // rows are ever added or removed here.
+    //
+    // Every read below checks its error: a failed (not empty) read used to look identical
+    // to "this person logged no time / has no matching clients", and the diff then REVOKED
+    // all of their clickup-sourced access. Any error for a user skips that user entirely --
+    // their existing rows stay as they are until a later sync reads cleanly.
     try {
-      const { data: profiles } = await supabase
+      const { data: profiles, error: profilesError } = await supabase
         .from("pginvoice_profiles")
         .select("user_id, clickup_user_name")
         .in("role", ["consultant", "coordinator"])
         .not("clickup_user_name", "is", null);
+      if (profilesError) throw profilesError;
       for (const p of profiles || []) {
-        // Paginated -- PostgREST caps a single request at 1000 rows, and several
-        // people here log well over that many entries all-time (Alexander: 6851,
-        // Vinavie: 4687, ...), so an unpaginated select silently missed every
-        // folder past the first page.
-        const folderSet = new Set<string>();
-        let pageFrom = 0;
-        while (true) {
-          const { data: page } = await supabase
-            .from("pginvoice_clickup_entries")
-            .select("folder")
-            .ilike("user_name", p.clickup_user_name)
-            .range(pageFrom, pageFrom + 999);
-          if (!page || !page.length) break;
-          for (const e of page) if (e.folder) folderSet.add(e.folder);
-          if (page.length < 1000) break;
-          pageFrom += 1000;
-        }
-        const folders = [...folderSet];
-        let clients: string[] = [];
-        if (folders.length) {
-          const [{ data: directClients }, { data: costCentres }] = await Promise.all([
-            supabase.from("pginvoice_clients").select("client, clickup_folder").in("clickup_folder", folders),
-            supabase.from("pginvoice_cost_centres").select("client, folder").in("folder", folders),
-          ]);
-          const set = new Set<string>();
-          for (const c of directClients || []) if (c.client) set.add(c.client);
-          for (const c of costCentres || []) if (c.client) set.add(c.client);
-          clients = [...set];
-        }
-        const { data: existingRows } = await supabase
-          .from("pginvoice_user_clients")
-          .select("client")
-          .eq("user_id", p.user_id)
-          .eq("source", "clickup");
-        const existingSet = new Set((existingRows || []).map((r: any) => r.client));
-        const desiredSet = new Set(clients);
-        const toDelete = [...existingSet].filter((c) => !desiredSet.has(c));
-        const toInsert = clients.filter((c) => !existingSet.has(c));
-        if (toDelete.length) {
-          await supabase.from("pginvoice_user_clients").delete().eq("user_id", p.user_id).eq("source", "clickup").in("client", toDelete);
-        }
-        if (toInsert.length) {
-          await supabase.from("pginvoice_user_clients").insert(toInsert.map((client) => ({ user_id: p.user_id, client, source: "clickup" })));
+        try {
+          // Paginated -- PostgREST caps a single request at 1000 rows, and several
+          // people here log well over that many entries all-time (Alexander: 6851,
+          // Vinavie: 4687, ...), so an unpaginated select silently missed every
+          // folder past the first page.
+          const folderSet = new Set<string>();
+          let pageFrom = 0;
+          while (true) {
+            // Unique tie-breaker order so pages can't skip/duplicate rows between requests.
+            const { data: page, error: pageError } = await supabase
+              .from("pginvoice_clickup_entries")
+              .select("folder")
+              .ilike("user_name", p.clickup_user_name)
+              .order("entry_id", { ascending: true })
+              .range(pageFrom, pageFrom + 999);
+            if (pageError) throw pageError;
+            if (!page || !page.length) break;
+            for (const e of page) if (e.folder) folderSet.add(e.folder);
+            if (page.length < 1000) break;
+            pageFrom += 1000;
+          }
+          const folders = [...folderSet];
+          let clients: string[] = [];
+          if (folders.length) {
+            const [{ data: directClients, error: clientsError }, { data: costCentres, error: costCentresError }] = await Promise.all([
+              supabase.from("pginvoice_clients").select("client, clickup_folder").in("clickup_folder", folders),
+              supabase.from("pginvoice_cost_centres").select("client, folder").in("folder", folders),
+            ]);
+            if (clientsError) throw clientsError;
+            if (costCentresError) throw costCentresError;
+            const set = new Set<string>();
+            for (const c of directClients || []) if (c.client) set.add(c.client);
+            for (const c of costCentres || []) if (c.client) set.add(c.client);
+            clients = [...set];
+          }
+          const { data: existingRows, error: existingRowsError } = await supabase
+            .from("pginvoice_user_clients")
+            .select("client")
+            .eq("user_id", p.user_id)
+            .eq("source", "clickup");
+          if (existingRowsError) throw existingRowsError;
+          const existingSet = new Set((existingRows || []).map((r: any) => r.client));
+          const desiredSet = new Set(clients);
+          const toDelete = [...existingSet].filter((c) => !desiredSet.has(c));
+          const toInsert = clients.filter((c) => !existingSet.has(c));
+          if (toDelete.length) {
+            await supabase.from("pginvoice_user_clients").delete().eq("user_id", p.user_id).eq("source", "clickup").in("client", toDelete);
+          }
+          if (toInsert.length) {
+            await supabase.from("pginvoice_user_clients").insert(toInsert.map((client) => ({ user_id: p.user_id, client, source: "clickup" })));
+          }
+        } catch (userErr) {
+          console.error(`clickup-derived client reconciliation skipped for user ${p.user_id}:`, userErr);
         }
       }
     } catch (reconcileErr) {

@@ -13,6 +13,7 @@ import {
   isDynamicCostCentreClient,
   splitTaskPrefixFolders,
   taskPrefixRulesFor,
+  folderVariants,
 } from "./nameMatch.js";
 
 describe("findMatch", () => {
@@ -388,5 +389,28 @@ describe("splitTaskPrefixFolders (task-name-prefix cost centres, e.g. Aus3C's ne
     expect(result).toContain("Hybrid Client Sub A");
     expect(result).toContain("Hybrid Client Split Track");
     expect(result).not.toContain("Unrelated");
+  });
+});
+
+describe("folder-name drift -- registered folder matched case/whitespace-insensitively (GPEX/gpex)", () => {
+  afterEach(() => setDynamicCostCentres([]));
+  const ROWS = [{ client: "GPEx", folder: "GPEx Website Project", kind: "cost_centre" }];
+
+  it("folderVariants returns every case/whitespace spelling present", () => {
+    expect(folderVariants("GPEX", ["GPEX", "gpex", " Gpex ", "GPEX 2"])).toEqual(["GPEX", "gpex", " Gpex "]);
+    expect(folderVariants("", ["", "x"])).toEqual([]);
+    expect(folderVariants(null, ["x"])).toEqual([]);
+  });
+
+  it("multiFolderAccrualMatchesFor folds in every variant of the own folder", () => {
+    setDynamicCostCentres(ROWS);
+    const got = multiFolderAccrualMatchesFor("GPEx", ["GPEX", "gpex", "GPEx Website Project", "Other"], "GPEX");
+    expect([...got].sort()).toEqual(["GPEX", "GPEx Website Project", "gpex"].sort());
+  });
+
+  it("multiFolderMatchesFor takes the same optional ownFolder argument", () => {
+    setDynamicCostCentres(ROWS);
+    expect(multiFolderMatchesFor("GPEx", ["gpex", "GPEx Website Project"])).toEqual(["GPEx Website Project"]);
+    expect(multiFolderMatchesFor("GPEx", ["gpex", "GPEx Website Project"], "GPEX ")).toEqual(["GPEx Website Project", "gpex"]);
   });
 });
