@@ -219,7 +219,14 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
     }
     return folderMinutes;
   }
-  if (clickupFolder && workedByFolderMonth.has(clickupFolder)) {
+  // Registered folder matched case- and whitespace-insensitively, summing every variant:
+  // ClickUp folder names drift (GPEx's folder was renamed "GPEX" -> "gpex", so all of
+  // September 2026's 103.57 billable hours sat under a name the exact lookup never saw and
+  // the ledger recorded 0 worked; "Utter Gutters " carries a trailing space). Client
+  // Invoicing already matches loosely, so the two modules disagreed.
+  const ownKey = clickupFolder ? clickupFolder.trim().toLowerCase() : "";
+  const ownVariants = ownKey ? folderNames.filter((f) => f.trim().toLowerCase() === ownKey) : [];
+  if (ownVariants.length) {
     // The Clients module already has an authoritative, human-set folder mapping for
     // this exact client (pginvoice_clients.clickup_folder) -- prefer it over re-deriving
     // a match from the accrual sheet's own client name string. Found via a real
@@ -233,7 +240,10 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
     // hours counted). Client Invoicing already prefers this same registered mapping for
     // exactly this reason (see pgProfileByFolder in App.jsx); accruals were the one
     // place still re-deriving the folder from the name instead of trusting it.
-    return workedByFolderMonth.get(clickupFolder);
+    if (ownVariants.length === 1) return workedByFolderMonth.get(ownVariants[0]);
+    const merged = new Map();
+    for (const f of ownVariants) for (const [mk, min] of workedByFolderMonth.get(f)) merged.set(mk, (merged.get(mk) || 0) + min);
+    return merged;
   }
   const match = findMatch(clientName, folderNames);
   return match ? workedByFolderMonth.get(match.name) : null;

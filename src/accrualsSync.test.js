@@ -439,3 +439,22 @@ describe("accrualFolderMinutesFor -- Majestic Plumbing's own folder counts towar
     expect(m.get("2026-09") / 60).toBeCloseTo(10.33);
   });
 });
+
+describe("accrualFolderMinutesFor -- registered folder matched case/whitespace-insensitively", () => {
+  // Regression: GPEx's ClickUp folder was renamed "GPEX" -> "gpex"; the registered folder
+  // stayed "GPEX", so September 2026's 103.57 billable hours (all under "gpex") counted 0.
+  it("sums every case/whitespace variant of the registered folder", () => {
+    const worked = new Map([
+      ["GPEX", new Map([["2026-08", 600]])],
+      ["gpex", new Map([["2026-09", 6214]])],
+      ["Apex Energy", new Map([["2026-09", 50]])],
+    ]);
+    const m = accrualFolderMinutesFor("GPEx", "GPEX", worked);
+    expect(m.get("2026-08")).toBe(600);
+    expect(m.get("2026-09")).toBe(6214);
+  });
+  it("matches a registered folder carrying a trailing space", () => {
+    const worked = new Map([["Utter Gutters", new Map([["2026-09", 120]])]]);
+    expect(accrualFolderMinutesFor("Utter Gutters", "Utter Gutters ", worked).get("2026-09")).toBe(120);
+  });
+});
