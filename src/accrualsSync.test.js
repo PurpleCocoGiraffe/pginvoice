@@ -318,6 +318,25 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     expect(run(archived, { status: "archived", worked: WORKED })).toEqual([]);
   });
 
+  it("a later type/package event re-engages an offboarded client (Equippers regression)", () => {
+    // offboarded 2026-06-01, re-signed as a 24h package from 2026-08-01 via a type event, no reactivation
+    const events = [ev(1, "offboarding", "2026-06-01"), ev(2, "type", "2026-08-01")];
+    expect(endPeriodsFor(profile("active"), events)).toEqual([{ from: "2026-06", until: "2026-08", after: null, note: "Client offboarded" }]);
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-07": stale(-10), "2026-08": stale(-20), "2026-09": stale(-30) } };
+    run(c, { events, status: "active", worked: { "2026-08": 1.5 } });
+    expect(c.months["2026-07"].accrualNote).toBe("Client offboarded");
+    expect(c.months["2026-08"].accrualValue).toBe(-8.5); // live package month accrues again, from 0
+    expect(c.months["2026-09"].accrualValue).toBe(-18.5);
+  });
+
+  it("an active client with a stale open-ended offboarding event is never cleared", () => {
+    const events = [ev(1, "offboarding", "2026-06-01")];
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": stale(-10), "2026-09": stale(-20) } };
+    run(c, { events, status: "active", startMonth: "2026-08", worked: {} });
+    expect(c.months["2026-08"].accrualValue).toBe(-10);
+    expect(c.months["2026-09"].accrualValue).toBe(-20);
+  });
+
   it("endPeriodsFor: dated, undated, endDate-based, and reactivation-bounded periods", () => {
     expect(endPeriodsFor(profile("active"), [])).toEqual([]);
     expect(endPeriodsFor(profile("on_hold"), [])).toEqual([]);
