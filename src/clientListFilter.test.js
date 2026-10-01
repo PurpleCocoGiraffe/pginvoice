@@ -120,3 +120,36 @@ describe("search: folder names, nested rows, and matches hidden by the type filt
     expect(searchMatchesInOtherTypes(list, o({ clientTypeFilter: "package", search: "majestic" }))).toEqual([]);
   });
 });
+
+describe("filterClientList workedOnly", () => {
+  const wrow = (name, worked, extra = {}) => row(name, [], { worked, ...extra });
+
+  it("drops rows with zero worked hours and keeps the rest", () => {
+    const list = [wrow("Amorim Cork", 0), wrow("Astill Consultants", 46.3), wrow("Adelaide Direct Stationers", 0)];
+    expect(filterClientList(list, opts({ workedOnly: true })).map((c) => c.name)).toEqual(["Astill Consultants"]);
+  });
+
+  it("is off by default", () => {
+    const list = [wrow("Amorim Cork", 0), wrow("Astill Consultants", 46.3)];
+    expect(filterClientList(list, opts()).map((c) => c.name)).toEqual(["Amorim Cork", "Astill Consultants"]);
+  });
+
+  it("keeps a zero-hour parent when a nested sub-project has hours", () => {
+    const list = [
+      wrow("Apex Energy", 0),
+      wrow("Apex Comms Website (QP)", 11.6, { type: "quoted", costCentreParentAccName: "Apex Energy" }),
+      wrow("Warrina Homes", 0, { capGroup: "g1" }),
+      wrow("Warrina Homes - Employee Guide", 2, { capGroup: "g1" }),
+    ];
+    const names = filterClientList(list, opts({ workedOnly: true, primaryNameByGroup: new Map([["g1", "Warrina Homes"]]) })).map((c) => c.name);
+    expect(names).toEqual(["Apex Energy", "Warrina Homes"]);
+  });
+
+  it("uses the selected consultant's hours when a consultant is picked", () => {
+    const list = [
+      row("Villani Jewellers", [["Suba", 0]], { worked: 5 }),
+      row("Coonawarra", [["Suba", 30]], { worked: 5 }),
+    ];
+    expect(filterClientList(list, opts({ workedOnly: true, consultantFilter: "Suba" })).map((c) => c.name)).toEqual(["Coonawarra"]);
+  });
+});
