@@ -122,6 +122,7 @@
   --chart-strategy: #4338CA;
   --chart-project: #0F766E;
   --chart-ad-hoc:  #B45309;
+  --chart-digital: #4D7C0F;
 }
 :root[data-theme="light"] ::selection { color: var(--fg-on-accent); }
 
@@ -178,6 +179,7 @@
   --chart-strategy: #818CF8;
   --chart-project: #2DD4BF;
   --chart-ad-hoc:  #FBBF24;
+  --chart-digital: #A3E635;
 }
 :root[data-theme="dark"] ::selection { color: var(--fg-on-accent); }
 

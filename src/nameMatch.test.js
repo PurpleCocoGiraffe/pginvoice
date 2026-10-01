@@ -13,7 +13,32 @@ import {
   isDynamicCostCentreClient,
   splitTaskPrefixFolders,
   taskPrefixRulesFor,
+  folderVariants,
+  CLIENT_TYPE_LABELS,
+  TYPE_LABELS_SHORT,
+  CLIENT_TYPE_TONES,
+  CHART_TYPE_TONES,
 } from "./nameMatch.js";
+import { isPackageLikeType } from "./format.js";
+
+describe("digital client type (Digital Package)", () => {
+  it("is in every type vocabulary map, with its own chart hue", () => {
+    expect(CLIENT_TYPE_LABELS.digital).toBe("Digital Package");
+    expect(TYPE_LABELS_SHORT.digital).toBe("Digital");
+    expect(CLIENT_TYPE_TONES.digital).toBeTruthy();
+    expect(CHART_TYPE_TONES.digital).toBe("var(--chart-digital)");
+    const others = Object.entries(CHART_TYPE_TONES).filter(([k]) => k !== "digital").map(([, v]) => v);
+    expect(others).not.toContain(CHART_TYPE_TONES.digital);
+  });
+
+  it("is not package-like (never accrues)", () => {
+    expect(isPackageLikeType("digital")).toBe(false);
+  });
+
+  it("carries no agreed hours, so never dominates a Combined group", () => {
+    expect(dominantClientType([{ basis: "Digital", agreed: 50 }, { basis: "Package", agreed: 4 }])).toBe("package");
+  });
+});
 
 describe("findMatch", () => {
   it("exact match wins", () => {
@@ -79,6 +104,7 @@ describe("basisToClientType", () => {
     expect(basisToClientType("Quoted")).toBe("quoted");
     expect(basisToClientType("Project")).toBe("project");
     expect(basisToClientType("Ad hoc")).toBe("ad_hoc");
+    expect(basisToClientType("Digital")).toBe("digital");
   });
 
   it("falls back to hourly for unrecognised or empty basis (current behavior)", () => {
@@ -388,5 +414,28 @@ describe("splitTaskPrefixFolders (task-name-prefix cost centres, e.g. Aus3C's ne
     expect(result).toContain("Hybrid Client Sub A");
     expect(result).toContain("Hybrid Client Split Track");
     expect(result).not.toContain("Unrelated");
+  });
+});
+
+describe("folder-name drift -- registered folder matched case/whitespace-insensitively (GPEX/gpex)", () => {
+  afterEach(() => setDynamicCostCentres([]));
+  const ROWS = [{ client: "GPEx", folder: "GPEx Website Project", kind: "cost_centre" }];
+
+  it("folderVariants returns every case/whitespace spelling present", () => {
+    expect(folderVariants("GPEX", ["GPEX", "gpex", " Gpex ", "GPEX 2"])).toEqual(["GPEX", "gpex", " Gpex "]);
+    expect(folderVariants("", ["", "x"])).toEqual([]);
+    expect(folderVariants(null, ["x"])).toEqual([]);
+  });
+
+  it("multiFolderAccrualMatchesFor folds in every variant of the own folder", () => {
+    setDynamicCostCentres(ROWS);
+    const got = multiFolderAccrualMatchesFor("GPEx", ["GPEX", "gpex", "GPEx Website Project", "Other"], "GPEX");
+    expect([...got].sort()).toEqual(["GPEX", "GPEx Website Project", "gpex"].sort());
+  });
+
+  it("multiFolderMatchesFor takes the same optional ownFolder argument", () => {
+    setDynamicCostCentres(ROWS);
+    expect(multiFolderMatchesFor("GPEx", ["gpex", "GPEx Website Project"])).toEqual(["GPEx Website Project"]);
+    expect(multiFolderMatchesFor("GPEx", ["gpex", "GPEx Website Project"], "GPEX ")).toEqual(["GPEx Website Project", "gpex"]);
   });
 });

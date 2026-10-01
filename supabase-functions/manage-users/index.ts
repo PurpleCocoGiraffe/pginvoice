@@ -40,6 +40,8 @@ async function fetchAllFolders(admin: any, clickupUserName: string): Promise<str
       .from("pginvoice_clickup_entries")
       .select("folder")
       .ilike("user_name", clickupUserName)
+      // Unique order -- without one, pages can skip/duplicate rows between requests.
+      .order("entry_id", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
     if (!data || !data.length) break;

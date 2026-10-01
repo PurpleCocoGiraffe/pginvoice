@@ -10,9 +10,9 @@ import {
 import { idbGet, idbSet, PG_DATA_EVENT } from "./idbStore.js";
 import { findMatch, multiFolderMatchesFor, multiFolderAccrualMatchesFor, isInternalFolder, CLIENT_TYPE_LABELS, CLIENT_TYPE_TONES, TYPE_LABELS_SHORT, dominantClientType, basisToClientType } from "./nameMatch.js";
 import { fetchClickupFromSupabase, fetchSyncMeta, triggerManualSync, LIVE_SYNC_LABEL } from "./clickupSync.js";
-import { fetchAccruedForReconciliation, ACCRUALS_LIVE_SYNC_LABEL } from "./accrualsSync.js";
+import { fetchAccruedForReconciliation, ACCRUALS_LIVE_SYNC_LABEL, endPeriodsFor } from "./accrualsSync.js";
 import { SEED_CLIENTS as CAP_SEED_CLIENTS, SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
-import { fetchClients as fetchPgClients, fetchClientEvents, applyDueClientEvents, typeForMonth } from "./clientsSync.js";
+import { fetchClients as fetchPgClients, fetchClientEvents, applyDueClientEvents, typeForMonth, statusForMonth, typeTimelineFor } from "./clientsSync.js";
 import { ClientAvatar } from "./avatar.jsx";
 import { useDismissable } from "./useDismissable.js";
 import { fmt, esc, filenameSafe, timeAgo, isPackageLikeType } from "./format.js";
@@ -25,7 +25,15 @@ import {
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY } from "./storageKeys.js";
-import { filterClientList } from "./clientListFilter.js";
+import { filterClientList, computePrimaryNameByGroup } from "./clientListFilter.js";
+import {
+  folderKey, buildFolderCanonicalizer, newFolderEntry, aggregateMonthRows, billableMinutesByFolder,
+  reconcileClientMonth, shouldSeedPackageMonth, sumCarry, lastMonthAccruedClients, lifetimeBudgetFor, isLifetimeBudgetType,
+  sumMinutesInRange, seedBlockedBy, monthInEndPeriods, priorFolderKeysFor, subProjectType, resolveClientType,
+} from "./reconcile.js";
+import { typeLabelShort } from "./clientTypeLabels.js";
+import { buildSummaryText } from "./clientSummary.js";
+import { runManualSync } from "./manualSync.js";
 // A <label> wrapping a <select> only focuses it on click in most browsers -- opening
 // the dropdown itself needs a second click directly on the control. Used as the
 // onClick for every pill-style filter label so one click anywhere on the pill
@@ -41,11 +49,8 @@ function openPillPicker(e) {
 }
 
 // ------------------------------ classification ------------------------------
-function classifyClient(c) {
-  if (c.matched && c.pkg != null) return "package";
-  if (/\(qld\)/i.test(c.name)) return "queensland";
-  return "hourly";
-}
+// A row's type (ledger guess -> Clients module month type -> Capacity Planning demotion) is
+// resolveClientType in reconcile.js.
 
 const TYPE_LABELS = {
   all: "All Clients",
@@ -53,6 +58,7 @@ const TYPE_LABELS = {
   hourly: "Clients on Hourly rate",
   quoted: "Quoted Clients",
   map: "MAP Clients",
+  digital: "Digital Package Clients",
   project: "Project Clients",
   strategy: "Strategy Clients",
   ad_hoc: "Ad hoc Clients",
@@ -65,28 +71,9 @@ const TYPE_LABELS = {
 // ------------------------------- storage keys --------------------------------
 const NAMEMAP_KEY = "pg-name-map-v1";
 const VIEWSTATE_KEY = "pg-view-state-v1";
-// Below this many hours of disagreement between the accrued sheet's recorded prior-month
-// balance and what it recalculates to from current ClickUp data, treat it as rounding noise
-// rather than a real edit-after-the-fact discrepancy worth flagging.
-const MISMATCH_TOLERANCE_H = 0.2;
 
-// Groups a client list by capGroup and, for any group with 2+ members, picks one
-// "primary" (the Package-like one if present, else whoever logged the most hours)
-// so the others can nest under it instead of showing as separate top-level cards.
-// A pure function of the list handed in so it can be run against both the current
-// month's clients and the prior month's without two hand-maintained copies of the
-// same grouping logic quietly drifting apart from each other.
-function computePrimaryNameByGroup(clientList) {
-  const byGroup = new Map();
-  clientList.forEach((c) => { if (!c.capGroup) return; if (!byGroup.has(c.capGroup)) byGroup.set(c.capGroup, []); byGroup.get(c.capGroup).push(c); });
-  const result = new Map();
-  byGroup.forEach((members, group) => {
-    if (members.length < 2) return;
-    const primary = members.find((m) => isPackageLikeType(m.type)) || [...members].sort((a, b) => b.worked - a.worked)[0];
-    result.set(group, primary.name);
-  });
-  return result;
-}
+// computePrimaryNameByGroup (one "primary" row per Capacity Planning group, the rest nested
+// under it) lives in clientListFilter.js next to the filter that depends on it.
 
 // ================================ COMPONENT =================================
 export default function PGReconciliation({ onNavigateClients }) {
@@ -181,7 +168,7 @@ export default function PGReconciliation({ onNavigateClients }) {
   const capGroupNames = useMemo(() => [...capTypeByGroup.keys()], [capTypeByGroup]);
   // Exact folder-name -> Capacity Planning row, for clients with more than one real
   // ClickUp folder under the same group (e.g. Warrina Homes: a Package folder plus a
-  // separate one-off Quoted sub-project folder). classifyClient() below only asks "did
+  // separate one-off Quoted sub-project folder). resolveClientType's ledger guess only asks "did
   // some accrued-sheet row match this folder's name," so when a sub-project's name is
   // close enough to fuzzy-match the SAME accrued row as the main package, it silently
   // inherited that package's full $ balance/pacing treatment -- two folders both showing
@@ -189,14 +176,14 @@ export default function PGReconciliation({ onNavigateClients }) {
   // independent copy of the same commitment, which is exactly backwards. Capacity
   // Planning's own per-row basis is more precise than the accrued sheet can be here (the
   // accrued sheet only tracks Package-type clients at all), so it wins when they disagree.
-  const capRowByClientName = useMemo(() => new Map(capClients.map((c) => [c.client, c])), [capClients]);
+  const capRowByClientName = useMemo(() => new Map(capClients.map((c) => [folderKey(c.client), c])), [capClients]);
 
   // The Clients module's roster + scheduled type-change events (Supabase-backed) — the
   // authoritative source for "what type was this client actually on in a given month,"
   // including temporary transitions like a package client billing hourly for a couple of
   // months before reverting (e.g. GPEx, June-July 2026). Client Accruals already replays
   // this history correctly (see accrualsSync.js's recomputeAccruals); Client Invoicing's
-  // own classifyClient() below only ever guessed from whatever accrued workbook happened
+  // own ledger guess (resolveClientType) only ever guessed from whatever accrued workbook happened
   // to be uploaded, with no month- or history-awareness, so a scheduled transition never
   // showed up here. Cross-referenced by ClickUp folder name below so each client card's
   // type reflects whatever was actually in effect for the month currently in view.
@@ -220,16 +207,18 @@ export default function PGReconciliation({ onNavigateClients }) {
   // profiles that haven't had their folder set yet.
   const pgProfileByFolder = useMemo(() => {
     const m = new Map();
+    // Keyed by folderKey (trimmed, lower-cased) -- ClickUp folder names drift in case and
+    // whitespace, and an exact-string key silently missed the registration.
     pgClients.forEach((p) => {
       if (!p.clickupFolder) return;
-      const existing = m.get(p.clickupFolder);
+      const existing = m.get(folderKey(p.clickupFolder));
       // More than one Clients-module record can point at the same ClickUp folder
       // (e.g. a since-offboarded sub-engagement that used to share a client's
       // main folder) -- prefer whichever one is still active, so lookups here
       // (type, logo, consultant, …) reflect the client actually using that
       // folder today rather than whichever row happened to sort last.
       if (!existing || (existing.status !== "active" && p.status === "active")) {
-        m.set(p.clickupFolder, p);
+        m.set(folderKey(p.clickupFolder), p);
       }
     });
     return m;
@@ -335,12 +324,11 @@ export default function PGReconciliation({ onNavigateClients }) {
     setSyncing(true);
     manualOverrideRef.current = false; // an explicit "Sync now" click means: give me live data
     try {
-      await triggerManualSync();
-      const live = await fetchClickupFromSupabase();
+      // Reloads even when one month's sync failed (the other may have changed the data).
+      const { live, meta, error } = await runManualSync({ trigger: triggerManualSync, fetchLive: fetchClickupFromSupabase, fetchMeta: fetchSyncMeta });
       if (live) { setClickup(live); setClickupSource("supabase"); }
-      setSyncMeta(await fetchSyncMeta());
-    } catch (e) {
-      setClickupErr("Sync failed: " + (e && e.message ? e.message : String(e)));
+      if (meta) setSyncMeta(meta);
+      setClickupErr(error ? "Sync failed: " + (error.message ? error.message : String(error)) : null);
     } finally {
       setSyncing(false);
     }
@@ -468,40 +456,49 @@ export default function PGReconciliation({ onNavigateClients }) {
 
   const accruedNames = useMemo(() => (accrued ? accrued.clients.map((c) => c.name) : []), [accrued]);
 
-  // billable, non-internal minutes per folder for a given month — used to independently
-  // re-derive what that month's ending balance would be from current ClickUp data, to
-  // cross-check against what the accrued sheet already has recorded for it. Parametrized
-  // (rather than reading priorMonthKey directly) so the KPI trend comparison below can
-  // run this same check for the month before priorMonthKey too. Returns null when the
-  // export doesn't cover that month at all (nothing to check).
-  const computeMonthWorked = useCallback((monthKey) => {
-    if (!clickup || !monthKey) return null;
-    const byFolder = new Map();
-    let covered = false;
-    for (const r of clickup.rows) {
-      if (r.monthKey === monthKey) covered = true; else continue;
-      if (clickup.hasBillable && billableOnly && !r.billable) continue;
-      if (r.isInternal) continue;
-      byFolder.set(r.folder, (byFolder.get(r.folder) || 0) + r.minutes);
-    }
-    return covered ? byFolder : null;
-  }, [clickup, billableOnly]);
-  const priorMonthWorked = useMemo(() => computeMonthWorked(priorMonthKey), [computeMonthWorked, priorMonthKey]);
+  // One display name per folder regardless of case/whitespace drift ("GPEX" vs "gpex", a
+  // trailing space) -- raw-string keys turned each variant into its own duplicate client
+  // row. A registered clickup_folder spelling wins; built over every row so all months
+  // resolve a folder to the same name.
+  const folderCanon = useMemo(
+    () => buildFolderCanonicalizer(clickup?.rows || [], pgClients.map((p) => p.clickupFolder).filter(Boolean)),
+    [clickup, pgClients]
+  );
 
-  // Same shape as computeMonthWorked's per-folder map, but summed across every synced
-  // month rather than one -- a Quoted client's remaining balance is the quoted amount
-  // minus everything ever billed against it, not just this month's hours, since a quoted
-  // project runs until its budget is spent rather than resetting monthly like a package.
-  const lifetimeWorkedByFolder = useMemo(() => {
+  // BILLABLE, non-internal minutes per folder (keyed by folderKey) for a given month — used
+  // to independently re-derive what that month's ending balance would be from current ClickUp
+  // data, to cross-check against what the accrued sheet already has recorded for it. Always
+  // billable regardless of the "Billable only" toggle: that toggle is display-only, and the
+  // accrual math must not move with it. Returns null when the export doesn't cover that
+  // month at all (nothing to check).
+  // Every raw folder name in the data (all months, every spelling) -- what the prior-month
+  // accrual-folder resolution matches against (see priorFolderKeysFor).
+  const allRawFolders = useMemo(() => (clickup ? [...new Set(clickup.rows.map((r) => r.folder))] : []), [clickup]);
+
+  const computeMonthWorked = useCallback(
+    (monthKey) => (clickup ? billableMinutesByFolder(clickup.rows, monthKey, clickup.hasBillable) : null),
+    [clickup]
+  );
+
+  // Billable minutes per folder (folderKey) per month, across every synced month -- a Quoted
+  // client's remaining balance is the quoted amount minus everything billed against THAT
+  // quote (summed from the quote's start month through the viewed month, see
+  // quotedBudgetFor), since a quoted project runs until its budget is spent rather than
+  // resetting monthly like a package. Billable-only for the same reason as above.
+  const workedByFolderMonth = useMemo(() => {
     if (!clickup) return new Map();
     const byFolder = new Map();
     for (const r of clickup.rows) {
-      if (clickup.hasBillable && billableOnly && !r.billable) continue;
+      if (clickup.hasBillable && !r.billable) continue;
       if (r.isInternal) continue;
-      byFolder.set(r.folder, (byFolder.get(r.folder) || 0) + r.minutes);
+      const k = folderKey(r.folder);
+      if (!byFolder.has(k)) byFolder.set(k, new Map());
+      const m = byFolder.get(k);
+      const mk = r.monthKey || "";
+      m.set(mk, (m.get(mk) || 0) + r.minutes);
     }
     return byFolder;
-  }, [clickup, billableOnly]);
+  }, [clickup]);
 
   // Full per-client reconciliation, parametrized by (monthKey, priorKey) instead of
   // reading dataMonthKey/priorMonthKey directly — so the KPI trend row below can call
@@ -510,35 +507,10 @@ export default function PGReconciliation({ onNavigateClients }) {
   const buildClientsForMonth = useCallback((monthKey, priorKey) => {
     if (!clickup) return [];
     const monthWorked = computeMonthWorked(priorKey);
-    const map = new Map();
-    for (const r of clickup.rows) {
-      if (clickup.hasBillable && billableOnly && !r.billable) continue;
-      if (r.isInternal) continue;
-      if (monthKey && r.monthKey && r.monthKey !== monthKey) continue;
-      if (!map.has(r.folder))
-        map.set(r.folder, { name: r.folder, totalMin: 0, tasksAll: new Map(), userMinutes: new Map(), tasksByUser: new Map(), taskUsers: new Map(), taskIds: new Map() });
-      const c = map.get(r.folder);
-      c.totalMin += r.minutes;
-      c.tasksAll.set(r.task, (c.tasksAll.get(r.task) || 0) + r.minutes);
-      const u = r.user || "";
-      c.userMinutes.set(u, (c.userMinutes.get(u) || 0) + r.minutes);
-      if (!c.tasksByUser.has(u)) c.tasksByUser.set(u, new Map());
-      const t = c.tasksByUser.get(u);
-      t.set(r.task, (t.get(r.task) || 0) + r.minutes);
-      // who logged time against each task, regardless of the consultant filter
-      if (!c.taskUsers.has(r.task)) c.taskUsers.set(r.task, new Map());
-      const tu = c.taskUsers.get(r.task);
-      tu.set(u, (tu.get(u) || 0) + r.minutes);
-      // Every row sharing a task NAME should also share the same real ClickUp task id --
-      // but names aren't actually unique (e.g. two different "Untitled"/task-less rows,
-      // or two genuinely different tasks that happen to be named the same). Track every
-      // distinct id seen per name; a link is only shown when there's exactly one, so an
-      // ambiguous name never links to the wrong task.
-      if (r.taskId) {
-        if (!c.taskIds.has(r.task)) c.taskIds.set(r.task, new Set());
-        c.taskIds.get(r.task).add(r.taskId);
-      }
-    }
+    const { canon } = folderCanon;
+    // One entry per canonical folder name (case/whitespace variants merged) -- see
+    // aggregateMonthRows for the billable vs. displayed-hours split.
+    const map = aggregateMonthRows(clickup.rows, { monthKey, billableOnly, hasBillable: clickup.hasBillable, canon });
 
     // Some clients (Aus3C, Majestic Plumbing, Clarke Energy, Magain, etc.) run real work
     // across several sibling ClickUp folders ("cost centres") instead of one umbrella
@@ -563,9 +535,14 @@ export default function PGReconciliation({ onNavigateClients }) {
     // Estate's rarer single-folder months, ...). Those clients still need their folders
     // merged for display even though there's no accrual math to run on them.
     const folderNames = [...map.keys()];
+    // Every raw spelling seen for each folder, so the exact-name dynamic cost-centre rows
+    // still match whichever variant they were registered with; results map back to the
+    // canonical name (the `map` key).
+    const folderVariantNames = folderNames.flatMap((f) => folderCanon.variantsOf(f));
+    const toCanonList = (list) => (list ? [...new Set(list.map(canon))] : list);
     const costCentreCandidates = new Set([...pgClientNames, ...accruedNames]);
     for (const accName of costCentreCandidates) {
-      const accrualFolders = multiFolderAccrualMatchesFor(accName, folderNames);
+      const accrualFolders = toCanonList(multiFolderAccrualMatchesFor(accName, folderVariantNames));
       const matchedInMap = accrualFolders ? accrualFolders.filter((f) => map.has(f)) : [];
       // A hardcoded MULTI_FOLDER_CLIENTS rule's match set always includes the client's own
       // primary folder alongside real siblings; a DYNAMIC client's (pginvoice_cost_centres)
@@ -578,7 +555,8 @@ export default function PGReconciliation({ onNavigateClients }) {
       // were the whole client). Folding the registered clickupFolder in here, whether or
       // not it's an explicit dynamic row, makes this impossible regardless of what the
       // cost-centre table actually contains.
-      const ownFolder = pgClientByName.get(accName)?.clickupFolder;
+      const ownFolderRaw = pgClientByName.get(accName)?.clickupFolder;
+      const ownFolder = ownFolderRaw ? canon(ownFolderRaw) : null;
       if (ownFolder && map.has(ownFolder) && matchedInMap.length > 0 && !matchedInMap.includes(ownFolder)) {
         matchedInMap.push(ownFolder);
       }
@@ -603,7 +581,7 @@ export default function PGReconciliation({ onNavigateClients }) {
       // has no reason to know these two specific client names are related. Tagged folders
       // are left in `map` untouched (not merged, not deleted) so they still become their
       // own ordinary client row below, just carrying a pointer to their real parent.
-      const allFolders = multiFolderMatchesFor(accName, folderNames) || [];
+      const allFolders = toCanonList(multiFolderMatchesFor(accName, folderVariantNames)) || [];
       for (const f of allFolders) {
         if (matchedInMap.includes(f) || !map.has(f)) continue;
         map.get(f).costCentreParentAccName = accName;
@@ -625,9 +603,8 @@ export default function PGReconciliation({ onNavigateClients }) {
         // under it (e.g. ARAS's own folder never gets renamed off of "Aged Rights
         // Advocacy Services", so its Website Optimisation Project sub-project silently
         // has nowhere to attach).
-        const profile = pgClientByName.get(accName);
-        if (profile?.clickupFolder && map.has(profile.clickupFolder) && !map.get(profile.clickupFolder).costCentreParentAccName) {
-          const entry = map.get(profile.clickupFolder);
+        if (ownFolder && map.has(ownFolder) && !map.get(ownFolder).costCentreParentAccName) {
+          const entry = map.get(ownFolder);
           entry.name = accName;
           entry.costCentreAccruedName = accName;
         }
@@ -642,9 +619,8 @@ export default function PGReconciliation({ onNavigateClients }) {
       // item -- backwards from what the roll-up is meant to show. Vegetation Solutions and
       // Magain have no umbrella folder of their own at all (hasDirectFolder stays false),
       // so every line item below is labelled with its own real folder name instead.
-      const profile = pgClientByName.get(accName);
-      const hasDirectFolder = !!(profile?.clickupFolder && matchedInMap.includes(profile.clickupFolder));
-      let primary = hasDirectFolder ? profile.clickupFolder : matchedInMap[0];
+      const hasDirectFolder = !!(ownFolder && matchedInMap.includes(ownFolder));
+      let primary = hasDirectFolder ? ownFolder : matchedInMap[0];
       if (!hasDirectFolder) {
         for (const f of matchedInMap) if (map.get(f).totalMin > map.get(primary).totalMin) primary = f;
       }
@@ -660,12 +636,15 @@ export default function PGReconciliation({ onNavigateClients }) {
       // siblings merge into it, and a sibling's own map would otherwise get merged into a
       // shared object too if any two folders happened to share a reference.
       const cloneTasksByUser = (m) => new Map([...m].map(([u, t]) => [u, new Map(t)]));
-      const lineItems = [{ name: hasDirectFolder ? accName : primary, hours: primaryEntry.totalMin / 60, tasksByUser: cloneTasksByUser(primaryEntry.tasksByUser) }];
+      // `hours` follows the Billable-only toggle (display); `billableHours` never does --
+      // it's what a per-cost-centre invoice is billed from (see invoiceSplit.js).
+      const lineItems = [{ name: hasDirectFolder ? accName : primary, hours: primaryEntry.totalMin / 60, billableHours: primaryEntry.billableMin / 60, tasksByUser: cloneTasksByUser(primaryEntry.tasksByUser) }];
       for (const f of matchedInMap) {
         if (f === primary) continue;
         const entry = map.get(f);
-        lineItems.push({ name: f, hours: entry.totalMin / 60, tasksByUser: cloneTasksByUser(entry.tasksByUser) });
+        lineItems.push({ name: f, hours: entry.totalMin / 60, billableHours: entry.billableMin / 60, tasksByUser: cloneTasksByUser(entry.tasksByUser) });
         primaryEntry.totalMin += entry.totalMin;
+        primaryEntry.billableMin += entry.billableMin;
         for (const [task, min] of entry.tasksAll) primaryEntry.tasksAll.set(task, (primaryEntry.tasksAll.get(task) || 0) + min);
         for (const [u, min] of entry.userMinutes) primaryEntry.userMinutes.set(u, (primaryEntry.userMinutes.get(u) || 0) + min);
         for (const [u, tm] of entry.tasksByUser) {
@@ -707,19 +686,31 @@ export default function PGReconciliation({ onNavigateClients }) {
       primaryEntry.costCentreAccruedName = accName;
     }
 
-    const out = [];
-    for (const c of map.values()) {
+    // Only a manually uploaded workbook (no per-month agreed hours at all) may fall back to
+    // the client-level `package` scalar -- on live data it's a stale last-write-wins value.
+    const allowScalarPackage = !!accrued && accrued.fileName !== ACCRUALS_LIVE_SYNC_LABEL;
+    const nameMapByKey = new Map(Object.entries(nameMap).map(([k, v]) => [folderKey(k), v]));
+    const resolveProfile = (c) => (c.seeded ? pgClientByName.get(c.name) || null : null) || pgProfileByFolder.get(folderKey(c.name)) || pgClientByName.get(c.name) || (() => {
+      const m = findMatch(c.name, pgClientNames);
+      return m ? pgClientByName.get(m.name) : null;
+    })();
+
+    const buildClientObj = (c) => {
+      // `worked` follows the "Billable only" toggle (display only); `billableWorked` never
+      // does and is what every balance/remaining/mismatch/export figure is computed from.
       const worked = c.totalMin / 60;
+      const billableWorked = c.billableMin / 60;
       let accruedClient = null;
       let matchInfo = null;
+      const manualMatch = nameMap[c.name] ?? nameMapByKey.get(folderKey(c.name));
       if (accrued) {
         if (c.costCentreAccruedName) {
           accruedClient = accrued.clients.find((a) => a.name === c.costCentreAccruedName) || null;
           if (accruedClient) matchInfo = { name: accruedClient.name, confidence: 1, method: "cost-centre" };
-        } else if (nameMap[c.name]) {
-          accruedClient = accrued.clients.find((a) => a.name === nameMap[c.name]) || null;
+        } else if (manualMatch) {
+          accruedClient = accrued.clients.find((a) => a.name === manualMatch) || null;
           if (accruedClient) matchInfo = { name: accruedClient.name, confidence: 1, method: "manual" };
-        } else if (pgProfileByFolder.get(c.name)) {
+        } else if (pgProfileByFolder.get(folderKey(c.name))) {
           // The Clients module's own registered clickup_folder -> profile mapping is
           // authoritative (same reasoning as recomputeAccruals in accrualsSync.js) --
           // prefer it over re-deriving a match from c.name's raw ClickUp folder string.
@@ -728,7 +719,7 @@ export default function PGReconciliation({ onNavigateClients }) {
           // "PRG Strategic Advisors" vs. folder "PRG Financial Services Outsourced
           // Marketing") shows up correctly typed as Package but with no package figure at
           // all -- worked hours real, pkg permanently null, "No package on file".
-          const profileName = pgProfileByFolder.get(c.name).client;
+          const profileName = pgProfileByFolder.get(folderKey(c.name)).client;
           accruedClient = accrued.clients.find((a) => a.name === profileName) || null;
           if (accruedClient) matchInfo = { name: accruedClient.name, confidence: 1, method: "client-folder" };
         } else if (!c.costCentreParentAccName) {
@@ -745,164 +736,124 @@ export default function PGReconciliation({ onNavigateClients }) {
           if (m) { accruedClient = accrued.clients.find((a) => a.name === m.name) || null; matchInfo = m; }
         }
       }
-      // monthWorked is keyed by raw ClickUp folder name, one entry per folder -- a
-      // cost-centre client's identity (c.name) is the accrued client name, not a real
-      // folder, so a plain monthWorked.get(c.name) would always miss. Sum across every
-      // folder this client's roll-up actually draws from instead.
-      const priorMonthWorkedMin = c.costCentre
-        ? c.costCentre.accrualFolderNames.reduce((a, f) => a + (monthWorked?.get(f) || 0), 0)
-        : (monthWorked?.get(c.name) || 0);
-      // Prefer this exact month's agreed hours over the client-level `package` scalar --
-      // a package whose hours changed (or that moved off package for a stretch) needs the
-      // figure for the month actually being viewed. Falls back to the scalar for a client
-      // that only has that (e.g. a manually uploaded workbook, which has no per-month
-      // agreed-hours column at all).
-      const monthAgreed = accruedClient?.agreedByMonth?.[monthKey];
-      const pkg = monthAgreed !== undefined ? monthAgreed : (accruedClient?.package ?? null);
-      // `balances` holds each month's carry-out (a macro-sheet reset when the month has one,
-      // otherwise the computed balance -- see buildReconciliationClients), so a reset prior
-      // month flows in here, and into both priorPriorBalance lookups below, automatically.
-      let priorBalance = accruedClient && priorKey ? (accruedClient.balances[priorKey] ?? null) : null;
-      const priorReset = accruedClient && priorKey ? (accruedClient.resets?.[priorKey] ?? null) : null;
-      // The drawer explains a re-baselined carry (instead of flagging it as a mismatch).
-      const priorRebaseline = priorReset !== null
-        ? { resetValue: priorReset, computed: accruedClient.computedBalances?.[priorKey] ?? null }
-        : null;
-      // This month's own reset, if any -- shown as the "Remaining Reset" column alongside
-      // our own computed Remaining (which is left unchanged).
-      const monthReset = accruedClient && monthKey ? (accruedClient.resets?.[monthKey] ?? null) : null;
-      // The accrued sheet doesn't have a column for the prior month (e.g. it hasn't
-      // been re-uploaded with last month's closing balance yet) — estimate it the same
-      // way the mismatch cross-check below does: worked hours that month (from the
-      // live ClickUp data, if it covers that month) minus package, plus whatever
-      // balance the sheet DOES have for the month before that. Flagged as estimated
-      // rather than presented as verified accrued-sheet data.
-      // The prior month's OWN agreed hours: undefined = no ledger row for it at all, null =
-      // a row saying the client wasn't on a package that month. Estimating a prior balance
-      // with THIS month's package used to invent a carry for a client just moving onto a
-      // package: GPEx went hourly -> 70h in Sep 2026, and August's 128h of hourly work minus
-      // September's 70h showed up as a bogus 58.32h "over-used prior". A month off package
-      // carries nothing into a new package (same as recomputeAccruals' off-package gap).
-      const priorAgreed = accruedClient && priorKey ? accruedClient.agreedByMonth?.[priorKey] : undefined;
-      const priorPkg = priorAgreed ?? pkg; // agreedByMonth values are already parsed numbers
-      let priorBalanceEstimated = false;
-      if (priorBalance === null && accruedClient && priorAgreed === null && pkg !== null && pkg > 0) {
-        priorBalance = 0;
-      } else if (priorBalance === null && accruedClient && pkg !== null && pkg > 0 && monthWorked) {
-        const priorWorkedH = priorMonthWorkedMin / 60;
-        const priorPriorBalance = accruedClient.balances[prevMonthKeyStr(priorKey)] ?? 0;
-        priorBalance = priorWorkedH - priorPkg + priorPriorBalance;
-        priorBalanceEstimated = true;
-      }
-      let newBalance = null, remaining = null, kpiPct = null, status = "no-pkg";
-      if (pkg !== null && pkg > 0) {
-        const prior = priorBalance ?? 0;
-        newBalance = worked - pkg + prior;
-        remaining = pkg - prior - worked;
-        kpiPct = (newBalance / pkg) * 100;
-        if (kpiPct > 10) status = "over";
-        else if (kpiPct < -10) status = "under";
-        else status = "ok";
-      }
-      // Cross-check the sheet's own recorded balance for the PRIOR month (the figure being
-      // used as this month's carry-in) against what it would be if recalculated from the
-      // ClickUp data we have for that month right now. A mismatch usually means ClickUp
-      // entries were edited after the accrued sheet was last updated for that period.
-      let priorMismatch = null;
-      // Skipped for a re-baselined prior month: the reset deliberately differs from what
-      // ClickUp hours recompute to, so it isn't a mismatch (the drawer explains it instead).
-      if (!priorBalanceEstimated && !priorRebaseline && priorAgreed !== null && pkg !== null && pkg > 0 && priorBalance !== null && monthWorked) {
-        const priorWorkedH = priorMonthWorkedMin / 60;
-        const priorPriorBalance = accruedClient.balances[prevMonthKeyStr(priorKey)] ?? 0;
-        const recomputed = priorWorkedH - priorPkg + priorPriorBalance;
-        if (Math.abs(recomputed - priorBalance) > MISMATCH_TOLERANCE_H) {
-          priorMismatch = { sheetValue: priorBalance, recomputed };
-        }
-      }
+      // The Clients module knows what this client was actually billing as (and whether it
+      // was on hold) for a given month -- typeForMonth/statusForMonth replay its scheduled
+      // events. Needed for both the viewed month and the prior one: the package math below
+      // must not run for a month off package, and an on-hold month consumes no package.
+      // A sub-project only ever uses its OWN registration -- fuzzy matching its folder name
+      // ("Majestic Plumbing Quoted Web Project (WA)") lands on the parent's profile and
+      // inherited the parent's package type.
+      const isSubProject = !!c.costCentreParentAccName;
+      const ownProfile = pgProfileByFolder.get(folderKey(c.name)) || pgClientByName.get(c.name) || null;
+      const pgProfile = isSubProject ? ownProfile : resolveProfile(c);
+      const seg = pgProfile && monthKey ? typeForMonth(pgProfile, pgClientEvents, monthKey) : null;
+      const priorSeg = pgProfile && priorKey ? typeForMonth(pgProfile, pgClientEvents, priorKey) : null;
+      // This exact folder's own Capacity Planning row (not a fuzzy group match), see below.
+      const capRow = capRowByClientName.get(folderKey(c.name));
+      const capType = capRow ? basisToClientType(capRow.basis) : null;
+      // A sub-project is never package-like (see subProjectType), in the viewed month and the
+      // prior one alike, so no package/carry math ever runs on it.
+      const monthType = isSubProject ? subProjectType(c.name, { profileType: seg?.type, capType }) : (seg?.type ?? null);
+      const priorType = isSubProject ? subProjectType(c.name, { profileType: priorSeg?.type, capType }) : (priorSeg?.type ?? null);
+      // monthWorked is keyed by folderKey, one entry per real folder -- a cost-centre
+      // client's identity (c.name) is the accrued client name, not a real folder, so sum
+      // across every folder this client's roll-up actually draws from instead.
+      // A seeded or renamed row's c.name is the client/ledger name, not a folder, so resolve
+      // the client's real accrual folders (see priorFolderKeysFor).
+      const ledgerName = c.costCentreAccruedName ?? accruedClient?.name ?? null;
+      const priorKeys = accruedClient ? priorFolderKeysFor({
+        name: c.name,
+        costCentreFolders: c.costCentre?.accrualFolderNames,
+        clientName: ledgerName,
+        ownFolder: (ledgerName && pgClientByName.get(ledgerName)?.clickupFolder) || null,
+        isSubProject: !!c.costCentreParentAccName,
+        allFolders: allRawFolders,
+        accrualMatchesFor: multiFolderAccrualMatchesFor,
+      }) : [folderKey(c.name)];
+      const priorMonthWorkedMin = priorKeys.reduce((a, k) => a + (monthWorked?.get(k) || 0), 0);
+      // An offboarded/archived stretch accrues nothing (recomputeAccruals' end periods), so
+      // a prior month inside one carries nothing -- never an estimate from the old package.
+      const priorEnded = !!(pgProfile && priorKey && accruedClient) && monthInEndPeriods(
+        endPeriodsFor(pgProfile, pgClientEvents), priorKey,
+        { hasEvidence: accruedClient.balances?.[priorKey] != null || priorMonthWorkedMin > 0 },
+      );
+      const recon = reconcileClientMonth({
+        worked: billableWorked, accruedClient, monthKey, priorKey,
+        priorWorkedH: monthWorked ? priorMonthWorkedMin / 60 : null,
+        monthType,
+        priorType,
+        monthStatus: pgProfile && monthKey ? statusForMonth(pgProfile, pgClientEvents, monthKey) : null,
+        priorStatus: pgProfile && priorKey ? statusForMonth(pgProfile, pgClientEvents, priorKey) : null,
+        monthSegmentAgreed: seg?.agreedHours ?? null,
+        allowScalarPackage,
+        priorEnded,
+      });
       const clientObj = {
-        ...c, worked, accruedClient, matchInfo,
-        pkg, priorBalance, priorBalanceEstimated, newBalance, remaining, kpiPct, status, priorMismatch,
-        priorRebaseline,
-        resetValue: monthReset,
-        // Remaining convention (positive = hours left): the negated signed reset.
-        remainingReset: monthReset !== null ? 0 - monthReset : null, // 0 - x, not -x: a reset of 0 must not become -0
-        // The official closing figures every export/copy/PDF path must use: the macro-sheet
-        // reset when this month has one, otherwise our computed figures. Read these, never
-        // newBalance/remaining directly, or an export silently undoes the reset.
-        balanceForward: monthReset ?? newBalance,
-        remainingShown: monthReset !== null ? 0 - monthReset : remaining,
+        ...c, worked, billableWorked, accruedClient, matchInfo,
+        ...recon,
         matched: !!accruedClient,
+        // Has its own Clients-module registration (exact folder/name, never a fuzzy match) --
+        // used to pick a capGroup's primary row (computePrimaryNameByGroup).
+        registered: !!ownProfile,
         displayName: accruedClient?.name ?? c.name,
         costCentre: c.costCentre || null,
       };
-      clientObj.type = classifyClient(clientObj);
-      // The Clients module knows what this client was actually billing as for THIS
-      // specific month (typeForMonth replays its scheduled type-change events) — that
-      // always wins over the accrued-workbook guess above, since a temporary transition
-      // (e.g. GPEx briefly moving to hourly for a couple of months before reverting to
-      // its package) has no way to be reflected in classifyClient()'s static, upload-only
-      // logic otherwise. Falls back to classifyClient()'s result for any client not yet
-      // registered in the Clients module.
-      const pgProfile = pgProfileByFolder.get(c.name) || (() => {
-        const m = findMatch(c.name, pgClientNames);
-        return m ? pgClientByName.get(m.name) : null;
-      })();
-      if (pgProfile && monthKey) {
-        const seg = typeForMonth(pgProfile, pgClientEvents, monthKey);
-        if (seg?.type) {
-          clientObj.type = seg.type;
-          // Only worth flagging as a transition when it actually changed something from
-          // the client's normal baseline — otherwise every already-registered client would
-          // show a "scheduled" badge for no reason.
-          clientObj.typeTransitioned = seg.type !== pgProfile.baseType;
-          clientObj.typeTransitionNote = seg.note;
-        }
+      // The month's type from the Clients module always wins over the accrued-workbook guess
+      // ("matched an accrued row with a package figure, so it must be a package"), since a
+      // temporary transition (e.g. GPEx briefly moving to hourly for a couple of months
+      // before reverting to its package) has no way to be reflected in that static,
+      // upload-only guess otherwise; the guess only applies to a client not yet registered.
+      //
+      // Capacity Planning's row for this exact folder may then demote a package-like guess --
+      // a sub-project folder that only fuzzy-matched the MAIN package's accrued-sheet row by
+      // name coincidence. When Capacity Planning already knows this specific folder is
+      // really Quoted/Hourly/etc, that overrides the false "package" guess, instead of two
+      // folders both showing an identical "package 24h, over-used 7.67h" as if each
+      // independently owned the same commitment. It never promotes, so a fixed-price type
+      // (digital, map) can't be turned back into a package.
+      const resolved = resolveClientType({ name: c.name, matched: clientObj.matched, pkg: clientObj.pkg, monthType, capType });
+      clientObj.type = resolved.type;
+      if (resolved.demoted) clientObj.packageOverriddenBy = capRow.basis;
+      if (seg?.type) {
+        // Only worth flagging as a transition when it actually changed something from
+        // the client's normal baseline — otherwise every already-registered client would
+        // show a "scheduled" badge for no reason.
+        clientObj.typeTransitioned = seg.type !== pgProfile.baseType;
+        clientObj.typeTransitionNote = seg.note;
       }
-      // Quoted: a single fixed hour budget for the whole project, not a monthly one --
-      // "remaining" is the quoted amount minus every billable hour ever logged against it,
-      // across every synced month, not just the one currently being viewed. Reuses the
-      // same agreed_hours column package/strategy clients use (set via the Clients module),
-      // just interpreted as a lifetime total instead of a per-month figure for this type.
-      if (clientObj.type === "quoted") {
+      // Quoted / MAP: a single fixed hour budget for the whole engagement, not a monthly one
+      // (a MAP is quoted at a fixed total too, e.g. 80 h) -- "remaining" is the budget minus
+      // every billable hour logged against it from the engagement's own start month (the
+      // start of its quoted/map segment in the type timeline) through the month being
+      // viewed. Counting every synced month instead charged a new quote with hours from
+      // earlier, unrelated engagements (and later months' hours when viewing an older month).
+      // The quotedAmount/quotedRemaining field names are shared by both types.
+      if (isLifetimeBudgetType(clientObj.type)) {
         // c.name may already have been renamed to the accrued/registered client's display
-        // name by the cost-centre merge loop above (e.g. "ARAS", "PRG Strategic Advisors")
-        // even when there's no actual multi-folder rollup (c.costCentre null) -- the exact
-        // same class of bug fixed earlier this session for other figures (ARAS's real
-        // ClickUp folder is "Aged Rights Advocacy Services", nothing like its display name).
-        // lifetimeWorkedByFolder is keyed by REAL ClickUp folder names, so looking it up by
-        // c.name here would silently return 0 for any such client. pgProfile.clickupFolder
-        // (the Clients module's own registered mapping, already resolved above) is the
-        // right key; c.name is only a safe fallback for a client with no registration at
-        // all, where it's still the raw folder name because nothing renamed it.
+        // name by the cost-centre merge loop above (e.g. "ARAS", "PRG Strategic Advisors"),
+        // so the registered clickupFolder is the right key; c.name is only a safe fallback
+        // for a client with no registration at all.
         const quotedFolders = c.costCentre ? c.costCentre.accrualFolderNames : [pgProfile?.clickupFolder || c.name];
-        const lifetimeWorkedMin = quotedFolders.reduce((a, f) => a + (lifetimeWorkedByFolder.get(f) || 0), 0);
+        const budget = pgProfile && monthKey
+          ? lifetimeBudgetFor(typeTimelineFor(pgProfile, pgClientEvents), monthKey, {
+            type: clientObj.type, currentAgreedHours: pgProfile.agreedHours,
+            // A MAP that is the client's base type starts at its profile start date (Quoted
+            // keeps its existing open-ended behaviour for a base-type quote).
+            startDate: clientObj.type === "map" ? pgProfile.startDate : null,
+          })
+          : null;
+        const fromMonth = budget?.fromMonth ?? null;
+        const lifetimeWorkedMin = quotedFolders.reduce((a, f) => a + sumMinutesInRange(workedByFolderMonth.get(folderKey(f)), fromMonth, monthKey || null), 0);
         clientObj.lifetimeWorked = lifetimeWorkedMin / 60;
-        clientObj.quotedAmount = pgProfile?.agreedHours ?? null;
+        clientObj.quotedAmount = budget ? budget.amount : (pgProfile?.agreedHours ?? null);
         clientObj.quotedRemaining = clientObj.quotedAmount != null ? clientObj.quotedAmount - clientObj.lifetimeWorked : null;
       }
-      // This exact folder's own Capacity Planning row (not just a fuzzy group match) --
-      // corrects classifyClient()'s "matched an accrued row with a package figure, so it
-      // must be a package" assumption for a sub-project folder that only fuzzy-matched
-      // the MAIN package's accrued-sheet row by name coincidence. When Capacity Planning
-      // already knows this specific folder is really Quoted/Hourly/etc, that overrides
-      // the false "package" guess -- this folder stops carrying the main package's $
-      // balance/pacing math (which was never really its own), instead of two folders
-      // both showing an identical "package 24h, over-used 7.67h" as if each independently
-      // owned the same commitment.
-      const capRow = capRowByClientName.get(c.name);
-      if (capRow) {
-        const capType = basisToClientType(capRow.basis);
-        if (!isPackageLikeType(capType) && isPackageLikeType(clientObj.type)) {
-          clientObj.type = capType;
-          clientObj.packageOverriddenBy = capRow.basis;
-        }
-        clientObj.capGroup = capRow.group;
-      }
+      if (capRow) clientObj.capGroup = capRow.group;
       // Client Invoicing has no independent way to know a client is on a Marketing
       // Action Plan (MAP) — that's tracked only in Capacity Planning's "basis" field.
       // Cross-reference it here by name, purely additively: c.type (which the
       // package/hourly/Queensland UI below is built around, including the real
-      // accrued-balance tracking) is left exactly as classifyClient() already
+      // accrued-balance tracking) is left exactly as resolveClientType() already
       // determines it, so a MAP client that's also tracked with a package-style
       // accrual keeps that UI. isMap just layers a separate "MAP" filter option and
       // an inline tag on top, visible regardless of which type bucket a client
@@ -917,10 +868,36 @@ export default function PGReconciliation({ onNavigateClients }) {
       // Logo set in the Clients module (uploaded, or auto-fetched from the client's
       // website favicon) — purely cosmetic, falls back to initials when absent.
       clientObj.logoUrl = pgProfile?.logoUrl || null;
-      out.push(clientObj);
+      return clientObj;
+    };
+
+    const out = [...map.values()].map(buildClientObj);
+    // A package-like month consumes (or banks) the package whether or not anyone logged
+    // billable time -- but `map` only has folders with ClickUp rows, so a package client
+    // with 0 hours (or only non-billable hours with Billable only on) used to vanish from
+    // the list, the KPIs, the Pending-hours export and the last-month accrued export.
+    // Seed a zero-hour row for every such accrued client not already represented.
+    // Seeded rows are tagged `seeded` and never count as "taken" for manual matching.
+    if (accrued && monthKey) {
+      const matchedLedgerNames = new Set(out.filter((x) => x.accruedClient).map((x) => x.accruedClient.name));
+      const takenNames = new Set(out.map((x) => folderKey(x.name)));
+      const monthFolderKeys = new Set(folderNames.map(folderKey)); // pre-merge: every folder with rows this month
+      for (const a of accrued.clients) {
+        if (takenNames.has(folderKey(a.name))) continue;
+        const profile = pgClientByName.get(a.name);
+        const ownFolder = profile?.clickupFolder || null;
+        if (seedBlockedBy({
+          ledgerName: a.name, matchedLedgerNames, ownFolder, monthFolderKeys,
+          clientFolders: multiFolderMatchesFor(a.name, folderVariantNames, ownFolder || undefined),
+        })) continue;
+        const seg = profile ? typeForMonth(profile, pgClientEvents, monthKey) : null;
+        if (!shouldSeedPackageMonth(a, monthKey, seg?.type ?? null, seg?.agreedHours ?? null)) continue;
+        if (profile && monthInEndPeriods(endPeriodsFor(profile, pgClientEvents), monthKey)) continue;
+        out.push(buildClientObj({ ...newFolderEntry(a.name), costCentreAccruedName: a.name, seeded: true }));
+      }
     }
     return out;
-  }, [clickup, accrued, accruedNames, nameMap, billableOnly, computeMonthWorked, lifetimeWorkedByFolder, capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents]);
+  }, [clickup, accrued, accruedNames, nameMap, billableOnly, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth, capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents]);
 
   const clients = useMemo(() => buildClientsForMonth(dataMonthKey, priorMonthKey), [buildClientsForMonth, dataMonthKey, priorMonthKey]);
 
@@ -937,13 +914,14 @@ export default function PGReconciliation({ onNavigateClients }) {
     [buildClientsForMonth, dataMonthKey, prevMonthDataKey, priorMonthKey]
   );
 
-  // counts by type — "map" counts c.isMap (an overlay tag), not c.type, since a MAP
-  // client keeps whatever c.type its own package/hourly classification landed on.
+  // counts by type — "map" also counts c.isMap (Capacity Planning's overlay tag) on a client
+  // that keeps its own type, matching the MAP filter in filterClientList; a month typed
+  // "map" in the Clients module is counted once, by its type.
   const typeCounts = useMemo(() => {
-    const counts = { all: clients.length, package: 0, hourly: 0, queensland: 0, quoted: 0, map: 0, project: 0, strategy: 0, ad_hoc: 0 };
+    const counts = { all: clients.length, package: 0, hourly: 0, queensland: 0, quoted: 0, map: 0, digital: 0, project: 0, strategy: 0, ad_hoc: 0 };
     for (const c of clients) {
       counts[c.type] = (counts[c.type] || 0) + 1;
-      if (c.isMap) counts.map++;
+      if (c.isMap && c.type !== "map") counts.map++;
     }
     return counts;
   }, [clients]);
@@ -1129,9 +1107,10 @@ export default function PGReconciliation({ onNavigateClients }) {
     const over = statsScope.filter((c) => c.status === "over").length;
     const under = statsScope.filter((c) => c.status === "under").length;
     // "Carry-over / Accrued" KPI — total absolute prior-month balance across every
-    // package client currently in view, whichever direction (credit carried in or
-    // over-used), since both represent a balance still being carried forward.
-    const carry = statsScope.reduce((a, c) => a + (c.priorBalance != null ? Math.abs(c.priorBalance) : 0), 0);
+    // package-like client currently in view, whichever direction (credit carried in or
+    // over-used), since both represent a balance still being carried forward. A row that
+    // isn't package-like this month carries nothing (see sumCarry).
+    const carry = sumCarry(statsScope);
     return { hrs, count: statsScope.length, over, under, carry };
   }, [statsScope]);
 
@@ -1146,7 +1125,7 @@ export default function PGReconciliation({ onNavigateClients }) {
     list = list.map((c) => withConsultantFilter(c, consultantFilter));
     const hrs = list.reduce((a, c) => a + (c.workedFiltered ?? c.worked), 0);
     const over = list.filter((c) => c.status === "over").length;
-    const carry = list.reduce((a, c) => a + (c.priorBalance != null ? Math.abs(c.priorBalance) : 0), 0);
+    const carry = sumCarry(list);
     // Only meaningful once the export actually has rows for that month — otherwise
     // "0 vs last month" would misleadingly read as a 100% drop rather than "no data".
     const available = !!(clickup && prevMonthDataKey && clickup.rows.some((r) => r.monthKey === prevMonthDataKey));
@@ -1163,15 +1142,17 @@ export default function PGReconciliation({ onNavigateClients }) {
       if (clickup.hasBillable && billableOnly && !r.billable) continue;
       if (r.isInternal) continue;
       if (consultantFilter && r.user !== consultantFilter) continue;
-      if (!kpiScopeFolders.has(r.folder)) continue;
+      if (!kpiScopeFolders.has(folderCanon.canon(r.folder))) continue;
       if (!r.monthKey) continue;
       byMonth.set(r.monthKey, (byMonth.get(r.monthKey) || 0) + r.minutes);
     }
     const keys = [...byMonth.keys()].sort();
     const upto = dataMonthKey ? keys.filter((k) => k <= dataMonthKey) : keys;
     return upto.slice(-6).map((k) => byMonth.get(k) / 60);
-  }, [clickup, billableOnly, consultantFilter, dataMonthKey, kpiScopeFolders]);
-  const usedAccruedNames = useMemo(() => new Set(clients.filter((x) => x.matched).map((x) => x.accruedClient.name)), [clients]);
+  }, [clickup, billableOnly, consultantFilter, dataMonthKey, kpiScopeFolders, folderCanon]);
+  // Seeded zero-hour rows don't "take" a ledger name -- otherwise the real folder for that
+  // client could never be matched to it by hand (see seedBlockedBy in reconcile.js).
+  const usedAccruedNames = useMemo(() => new Set(clients.filter((x) => x.matched && !x.seeded).map((x) => x.accruedClient.name)), [clients]);
 
   // Only meaningful when the reporting period IS the current real-world month — a mid-month
   // check on a still-open month, e.g. "accrued sheet stops at June, it's July 17th, how's the
@@ -1211,32 +1192,39 @@ export default function PGReconciliation({ onNavigateClients }) {
     // balance ARE the reset (the agreed official figure); our own computed Remaining is kept
     // alongside in "System computed remaining (h)" -- a column that only exists for a month
     // that actually has resets.
-    return clients.map((c) => ({
-      "Client (ClickUp)": c.name,
-      "Client type": TYPE_LABELS_SHORT[c.type],
-      "Matched to (Accrued)": c.accruedClient?.name ?? "",
-      "Match confidence": c.matchInfo ? `${Math.round(c.matchInfo.confidence * 100)}% (${c.matchInfo.method})` : "unmatched",
-      "Package (h/month)": c.pkg ?? "",
-      "Prior balance (signed)": c.priorBalance ?? "",
-      "Carried in (h)": c.priorBalance != null && c.priorBalance < 0 ? Math.abs(c.priorBalance) : "",
-      "Over used prior (h)": c.priorBalance != null && c.priorBalance > 0 ? c.priorBalance : "",
-      "Worked this month (h)": Math.round(c.worked * 100) / 100,
-      "Remaining (h)": c.remainingShown != null ? Math.round(c.remainingShown * 100) / 100 : "",
-      ...(showResetCol ? {
-        "Macro sheet reset": c.resetValue != null ? "Yes" : "",
-        "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
-      } : {}),
-      "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
-      "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
-      "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", "no-pkg": "no package" }[c.status],
-      // Quoted has no monthly package/remaining figure (the columns above stay blank for
-      // it) -- its own fixed-budget-vs-lifetime-worked figures get their own columns
-      // instead of being squeezed into fields that mean something different for it.
-      "Quoted amount (h)": c.type === "quoted" ? (c.quotedAmount ?? "") : "",
-      "Total worked all time (h)": c.type === "quoted" ? Math.round((c.lifetimeWorked ?? 0) * 100) / 100 : "",
-      "Quoted remaining (h)": c.type === "quoted" && c.quotedRemaining != null ? Math.round(c.quotedRemaining * 100) / 100 : "",
-      "Consultants": [...c.userMinutes.entries()].map(([u, m]) => `${u || "—"} (${fmt(m / 60)}h)`).join("; "),
-    }));
+    return clients.map((c) => {
+      // Carry only exists for a package-like row (an hourly row has no package balance).
+      const prior = isPackageLikeType(c.type) ? c.priorBalance : null;
+      return {
+        "Client (ClickUp)": c.name,
+        "Client type": typeLabelShort(c.type),
+        "Matched to (Accrued)": c.accruedClient?.name ?? "",
+        "Match confidence": c.matchInfo ? `${Math.round(c.matchInfo.confidence * 100)}% (${c.matchInfo.method})` : "unmatched",
+        "Package (h/month)": c.pkg ?? "",
+        "Prior balance (signed)": prior ?? "",
+        "Carried in (h)": prior != null && prior < 0 ? Math.abs(prior) : "",
+        "Over used prior (h)": prior != null && prior > 0 ? prior : "",
+        "Worked this month (h)": Math.round(c.worked * 100) / 100,
+        // What the balance figures are computed from -- always billable, whatever the toggle.
+        "Billable worked (h)": Math.round(c.billableWorked * 100) / 100,
+        "Remaining (h)": c.remainingShown != null ? Math.round(c.remainingShown * 100) / 100 : "",
+        ...(showResetCol ? {
+          "Macro sheet reset": c.resetValue != null ? "Yes" : "",
+          "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
+        } : {}),
+        "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
+        "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
+        "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", on_hold: "on hold (accrual paused)", "no-pkg": "no package", fixed_price: "fixed price" }[c.status],
+        // Quoted/MAP have no monthly package/remaining figure (the columns above stay blank
+        // for them) -- their own fixed-budget-vs-lifetime-worked figures get their own
+        // columns instead of being squeezed into fields that mean something different.
+        // A MAP's budget lands in these same columns ("Client type" says which).
+        "Quoted amount (h)": isLifetimeBudgetType(c.type) ? (c.quotedAmount ?? "") : "",
+        "Total worked on this quote (h)": isLifetimeBudgetType(c.type) ? Math.round((c.lifetimeWorked ?? 0) * 100) / 100 : "",
+        "Quoted remaining (h)": isLifetimeBudgetType(c.type) && c.quotedRemaining != null ? Math.round(c.quotedRemaining * 100) / 100 : "",
+        "Consultants": [...c.userMinutes.entries()].map(([u, m]) => `${u || "—"} (${fmt(m / 60)}h)`).join("; "),
+      };
+    });
   };
   const buildPendingRows = () =>
     clients
@@ -1246,7 +1234,7 @@ export default function PGReconciliation({ onNavigateClients }) {
         "Client": c.accruedClient?.name ?? c.name,
         "Package (h/month)": c.pkg,
         "Prior month balance": Math.round((c.priorBalance ?? 0) * 100) / 100,
-        "Worked this month (h)": Math.round(c.worked * 100) / 100,
+        "Worked this month (h)": Math.round(c.billableWorked * 100) / 100,
         "New balance (h)": Math.round(c.balanceForward * 100) / 100,
         "Direction": c.balanceForward > 0 ? "OVER-SERVED (owe next month)" : "UNDER-SERVED (client credit)",
         // Next month starts from the carry-out, i.e. this month's macro-sheet reset if it has one.
@@ -1266,7 +1254,7 @@ export default function PGReconciliation({ onNavigateClients }) {
     const priorToLast = prevMonthKeyStr(lastMonthKey);
     const [ly, lm] = lastMonthKey.split("-").map(Number);
     const colLabel = monthLabel(ly, lm - 1);
-    const list = buildClientsForMonth(lastMonthKey, priorToLast).filter((c) => c.pkg != null && c.pkg > 0);
+    const list = lastMonthAccruedClients(buildClientsForMonth(lastMonthKey, priorToLast));
     return {
       rows: list.map((c) => ({
         "Client": c.displayName,
@@ -1307,50 +1295,9 @@ export default function PGReconciliation({ onNavigateClients }) {
   };
 
   // -------------------- per-client copy summary & PDF -----------------------
-  const summaryText = (c) => {
-    const lines = [];
-    const monthText = invoiceMonth || "this month";
-    lines.push(`${c.displayName}: hours for ${monthText}`);
-    if (c.accruedClient && c.accruedClient.name !== c.name) lines.push(`(ClickUp folder: ${c.name})`);
-    lines.push(`Client type: ${TYPE_LABELS_SHORT[c.type]}`);
-    if (consultantFilter) lines.push(`Filtered to consultant: ${consultantFilter}`);
-    lines.push("");
-    lines.push("Tasks:");
-    for (const [task, min] of [...c.tasksFiltered.entries()].sort((a, b) => b[1] - a[1]))
-      lines.push(`  ${fmt(min / 60)} h  ${task}`);
-    lines.push("");
-    if (c.userMinutes.size > 0) {
-      lines.push("Consultants involved:");
-      for (const [u, min] of [...c.userMinutes.entries()].sort((a, b) => b[1] - a[1]))
-        lines.push(`  ${fmt(min / 60)} h  ${u || "—"}`);
-      lines.push("");
-    }
-    lines.push(`Time tracked this month: ${fmt(c.workedFiltered)} h`);
-    if (isPackageLikeType(c.type) && c.pkg != null) {
-      lines.push(`Package: ${fmt(c.pkg)} h`);
-      const p = c.priorBalance ?? 0;
-      const rebased = c.priorRebaseline ? " (re-baselined)" : "";
-      if (p < 0) lines.push(`Carried in from ${priorMonthPretty}${rebased}: ${fmt(Math.abs(p))} h`);
-      else if (p > 0) lines.push(`Over-used in ${priorMonthPretty}${rebased}: ${fmt(p)} h`);
-      else lines.push(`Prior balance${rebased}: 0 h`);
-      lines.push(`Total accrued time: ${fmt(c.worked + p)} h`);
-      // A month re-baselined from the macro sheet reports the reset as its Remaining figure.
-      const rem = c.remainingShown;
-      lines.push(rem >= 0 ? `Remaining this month: ${fmt(rem)} h` : `Over by ${fmt(Math.abs(rem))} h`);
-      if (c.resetValue != null) lines.push("(Remaining re-baselined to the accrual sheet's closing figure for this month.)");
-      if (c.status === "over") lines.push(`⚠ Over the +10% KPI (${fmt(c.kpiPct, 1)}% of package)`);
-      if (c.status === "under") lines.push(`⚠ Under the −10% KPI (${fmt(c.kpiPct, 1)}% of package), accruing`);
-    } else if (c.type === "quoted") {
-      if (c.quotedAmount != null) {
-        lines.push(`Quoted amount: ${fmt(c.quotedAmount)} h`);
-        lines.push(`Total time tracked (all time): ${fmt(c.lifetimeWorked ?? 0)} h`);
-        lines.push(c.quotedRemaining >= 0 ? `Remaining of quoted amount: ${fmt(c.quotedRemaining)} h` : `Over the quoted amount by: ${fmt(Math.abs(c.quotedRemaining))} h`);
-      } else {
-        lines.push("No quoted amount on file for this client.");
-      }
-    }
-    return lines.join("\n");
-  };
+  // Copy summary and PDF always use the whole client's (consultant-unfiltered) tasks and
+  // hours -- see unfilteredForExport in reconcile.js.
+  const summaryText = (c) => buildSummaryText(c, { invoiceMonth, priorMonthPretty });
   const copySummary = async (c) => {
     try { await navigator.clipboard.writeText(summaryText(c)); setCopied(c.name); setTimeout(() => setCopied(null), 1500); }
     catch (e) {}
@@ -1516,6 +1463,7 @@ export default function PGReconciliation({ onNavigateClients }) {
                 <option value="quoted">Quoted Clients ({typeCounts.quoted})</option>
                 <option value="project" disabled>Project Clients ({typeCounts.project}), coming later</option>
                 <option value="map">MAP Clients ({typeCounts.map})</option>
+                <option value="digital">{TYPE_LABELS.digital} ({typeCounts.digital})</option>
                 <option value="queensland">Queensland Clients (prv) ({typeCounts.queensland})</option>
               </select>
               <ChevronDown size={13} className="pg-pill__chevron" />

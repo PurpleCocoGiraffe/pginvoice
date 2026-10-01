@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import {
   rowsToClients, buildReconciliationClients, parseAgreedHours,
-  carryOutOf, replayClientAccruals, accrualFolderMinutesFor, endPeriodsFor,
+  carryOutOf, replayClientAccruals, WRAP_UP_NOTE, accrualFolderMinutesFor, endPeriodsFor, mergeLatestComments,
 } from "./accrualsSync.js";
-import { statusForMonth } from "./clientsSync.js";
+import { statusForMonth, typeForMonth } from "./clientsSync.js";
 import { setDynamicCostCentres } from "./nameMatch.js";
 
 // Regression coverage for two real production bugs found and fixed in this codebase's
@@ -216,6 +216,67 @@ describe("replayClientAccruals -- chaining through a reset", () => {
   });
 });
 
+describe("replayClientAccruals -- Digital Package (fixed price) never accrues", () => {
+  const minutes = (byMonth) => (mk) => (byMonth[mk] || 0) * 60;
+  // segFor driven by the real typeForMonth replay, as recomputeAccruals does.
+  const run = (c, profile, events, worked) => replayClientAccruals(c, {
+    startMonth: "2026-06", cur: "2026-10",
+    segFor: (mk) => typeForMonth(profile, events, mk), statusFor: () => "active", workedMinutesFor: minutes(worked),
+  });
+  const WORKED = { "2026-06": 12, "2026-07": 7, "2026-08": 15, "2026-09": 13, "2026-10": 6 };
+  const typeEv = (id, effective_date, new_type, new_agreed_hours) => ({ id, client: "RB", kind: "type", effective_date, applied: true, new_type, new_agreed_hours });
+
+  it("a client that's been digital for its whole history accrues nothing in any month", () => {
+    const c = { client: "RB", manager: null, agreedHpm: null, months: {} };
+    const rows = run(c, { client: "RB", baseType: "digital", baseAgreedHours: null }, [], WORKED);
+    expect(rows).toEqual([]);
+    expect(Object.values(c.months).filter((m) => m.accrualValue != null)).toEqual([]);
+  });
+
+  it("digital with stray agreed hours on file still accrues nothing (type gates it, not hours)", () => {
+    const c = { client: "RB", manager: null, agreedHpm: null, months: {} };
+    expect(run(c, { client: "RB", baseType: "digital", baseAgreedHours: 8 }, [], WORKED)).toEqual([]);
+  });
+
+  it("package -> digital from 2026-08-01: accrues Jun/Jul, stops from Aug, clears stale computed rows like an hourly month", () => {
+    const stale = (accrualValue, workedHours) => ({ accrualValue, workedHours, accrualNote: null, isOverride: false });
+    const c = { client: "RB", manager: null, agreedHpm: "8", months: { "2026-08": stale(11, 15), "2026-09": stale(16, 13) } };
+    const profile = { client: "RB", baseType: "package", baseAgreedHours: 8 };
+    const rows = run(c, profile, [typeEv(1, "2026-08-01", "digital", null)], WORKED);
+    expect(c.months["2026-06"].accrualValue).toBe(12 - 8);
+    expect(c.months["2026-07"].accrualValue).toBe(7 - 8 + 4);
+    for (const mk of ["2026-08", "2026-09", "2026-10"]) {
+      expect(c.months[mk]?.accrualValue ?? null).toBeNull();
+    }
+    expect(c.months["2026-08"].accrualNote).toBe("Not on a package this month");
+    expect(c.months["2026-09"].accrualNote).toBe("Not on a package this month");
+    expect(c.months["2026-10"]).toBeUndefined(); // no stale row -> nothing written
+    expect(rows.filter((r) => r.month_key >= "2026-08")).toEqual([
+      expect.objectContaining({ month_key: "2026-08", accrual_value: null, agreed_hpm: null, accrual_note: "Not on a package this month" }),
+      expect.objectContaining({ month_key: "2026-09", accrual_value: null, agreed_hpm: null, accrual_note: "Not on a package this month" }),
+    ]);
+  });
+
+  it("matches the hourly transition exactly (Sidewood Estate package -> hourly)", () => {
+    const profile = { client: "RB", baseType: "package", baseAgreedHours: 8 };
+    const digital = { client: "RB", manager: null, agreedHpm: "8", months: { "2026-09": { accrualValue: 3, workedHours: 13, isOverride: false } } };
+    const hourly = { client: "RB", manager: null, agreedHpm: "8", months: { "2026-09": { accrualValue: 3, workedHours: 13, isOverride: false } } };
+    const a = run(digital, profile, [typeEv(1, "2026-08-01", "digital", null)], WORKED);
+    const b = run(hourly, profile, [typeEv(1, "2026-08-01", "hourly", null)], WORKED);
+    expect(a).toEqual(b);
+    expect(digital.months).toEqual(hourly.months);
+  });
+
+  it("digital -> package later starts from a zero prior (a digital gap carries no balance)", () => {
+    const c = { client: "RB", manager: null, agreedHpm: null, months: {} };
+    const profile = { client: "RB", baseType: "package", baseAgreedHours: 8 };
+    run(c, profile, [typeEv(1, "2026-07-01", "digital", null), typeEv(2, "2026-09-01", "package", 10)], WORKED);
+    expect(c.months["2026-06"].accrualValue).toBe(4);
+    expect(c.months["2026-09"].accrualValue).toBe(13 - 10);
+    expect(c.months["2026-10"].accrualValue).toBe(6 - 10 + 3);
+  });
+});
+
 describe("replayClientAccruals -- offboarded/archived clients stop accruing", () => {
   const PKG = { type: "package", agreedHours: 10 };
   const minutes = (byMonth) => (mk) => (byMonth[mk] || 0) * 60;
@@ -237,14 +298,12 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     const rows = run(c, { events, status: "offboarded", worked: WORKED });
     expect(c.months["2026-06"].accrualValue).toBe(2);
     expect(c.months["2026-07"].accrualValue).toBe(-1); // effective month itself still accrues
-    for (const mk of ["2026-08", "2026-09"]) {
-      expect(c.months[mk].accrualValue).toBeNull();
-      expect(c.months[mk].workedHours).toBeNull();
-      expect(c.months[mk].accrualNote).toBe("Client offboarded");
-    }
+    // We owed 1h at the end; August's 1h of wrap-up work uses it up (no new package hours).
+    expect(c.months["2026-08"]).toMatchObject({ accrualValue: 0, workedHours: 1, accrualNote: WRAP_UP_NOTE });
+    expect(c.months["2026-09"]).toMatchObject({ accrualValue: null, workedHours: null, accrualNote: "Client offboarded" });
     expect(c.months["2026-10"]).toBeUndefined(); // no new row created after the end
     const cleared = rows.filter((r) => r.accrual_note === "Client offboarded").map((r) => r.month_key);
-    expect(cleared).toEqual(["2026-08", "2026-09"]);
+    expect(cleared).toEqual(["2026-09"]);
     for (const r of rows) expect(r).not.toHaveProperty("reset_value");
   });
 
@@ -280,8 +339,8 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     const events = [ev(1, "offboarding", "2026-07-31"), ev(2, "reactivation", "2026-09-01")];
     const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {} } };
     run(c, { events, status: "active", worked: { ...WORKED, "2026-09": 13, "2026-10": 6 } });
-    // Aug had 1h of wrap-up work -> a cleared row, not an accrual.
-    expect(c.months["2026-08"]).toMatchObject({ accrualValue: null, workedHours: null, accrualNote: "Client offboarded" });
+    // Aug's 1h of wrap-up work draws down the 1h still owed; reactivation restarts at 0.
+    expect(c.months["2026-08"]).toMatchObject({ accrualValue: 0, workedHours: 1, accrualNote: WRAP_UP_NOTE });
     expect(c.months["2026-09"].accrualValue).toBe(3);
     expect(c.months["2026-10"].accrualValue).toBe(-1);
   });
@@ -290,7 +349,7 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     const events = [ev(1, "offboarding", "2026-07-31"), ev(2, "reactivation", "2026-09-01")];
     const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-08": { ...stale(-5, 1), resetValue: -20, resetNote: "macro" } } };
     const rows = run(c, { events, status: "active", worked: { ...WORKED, "2026-09": 13 } });
-    expect(c.months["2026-08"].accrualValue).toBeNull();
+    expect(c.months["2026-08"].accrualValue).toBe(0); // wrap-up drawdown of the 1h owed
     expect(c.months["2026-08"].resetValue).toBe(-20);
     expect(c.months["2026-08"].resetNote).toBe("macro");
     expect(c.months["2026-09"].accrualValue).toBe(13 - 10 - 20);
@@ -400,13 +459,14 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     expect(c.months["2026-10"].accrualValue).toBe(-1);
   });
 
-  it("wrap-up work in an ended month with no row writes a cleared row (idempotent)", () => {
+  it("wrap-up work after offboarding is deducted from the owed balance (idempotent)", () => {
     const events = [ev(1, "offboarding", "2026-07-31")];
     const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {} } };
     const worked = { "2026-06": 12, "2026-07": 7, "2026-08": 3 };
     const rows = run(c, { events, status: "offboarded", worked });
-    expect(c.months["2026-08"]).toMatchObject({ accrualValue: null, workedHours: null, accrualNote: "Client offboarded" });
-    expect(rows.find((r) => r.month_key === "2026-08")).toMatchObject({ accrual_value: null, worked_hours: null, agreed_hpm: null, accrual_note: "Client offboarded" });
+    // owed 1h at the end of July; 3h of wrap-up work -> 2h over, and the drawdown stops there
+    expect(c.months["2026-08"]).toMatchObject({ accrualValue: 2, workedHours: 3, accrualNote: WRAP_UP_NOTE });
+    expect(rows.find((r) => r.month_key === "2026-08")).toMatchObject({ accrual_value: 2, worked_hours: 3, agreed_hpm: null, accrual_note: WRAP_UP_NOTE });
     expect(c.months["2026-09"]).toBeUndefined(); // no work, no row
     expect(run(c, { events, status: "offboarded", worked })).toEqual([]);
   });
@@ -416,7 +476,27 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     // Evidence (worked Aug) would keep Aug accruing; endDate 2026-07-31 ends it from Aug.
     run(c, { status: "archived", endDate: "2026-07-31", worked: { "2026-06": 12, "2026-07": 7, "2026-08": 2 } });
     expect(c.months["2026-07"].accrualValue).toBe(-1);
-    expect(c.months["2026-08"]).toMatchObject({ accrualValue: null, workedHours: null, accrualNote: "Client archived" });
+    expect(c.months["2026-08"]).toMatchObject({ accrualValue: 1, workedHours: 2, accrualNote: WRAP_UP_NOTE });
+  });
+
+  it("Warrina: an owed macro-sheet balance is drawn down month by month and held in between", () => {
+    const events = [ev(1, "offboarding", "2026-07-31")];
+    const c = { client: "A", manager: null, agreedHpm: "24", months: { "2026-07": {}, "2026-08": { accrualValue: null, workedHours: null, isOverride: false, resetValue: -13.41, resetNote: "macro" } } };
+    const rows = run(c, { events, status: "offboarded", startMonth: "2026-07", worked: { "2026-07": 2.92, "2026-09": 0.25, "2026-11": 5 }, cur: "2026-11" });
+    expect(c.months["2026-08"].accrualValue).toBeNull(); // no August work; the reset is its closing figure
+    expect(c.months["2026-09"]).toMatchObject({ accrualValue: -13.16, workedHours: 0.25, accrualNote: WRAP_UP_NOTE });
+    expect(c.months["2026-10"]).toBeUndefined(); // no work: balance held, no row
+    expect(c.months["2026-11"]).toMatchObject({ accrualValue: -8.16, workedHours: 5 });
+    expect(rows.every((r) => r.agreed_hpm === null || r.month_key === "2026-07")).toBe(true);
+    expect(run(c, { events, status: "offboarded", startMonth: "2026-07", worked: { "2026-07": 2.92, "2026-09": 0.25, "2026-11": 5 }, cur: "2026-11" })).toEqual([]);
+  });
+
+  it("an over-serviced balance at offboarding is not drawn down (wrap-up rows stay cleared)", () => {
+    const events = [ev(1, "offboarding", "2026-07-31")];
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {} } };
+    run(c, { events, status: "offboarded", worked: { "2026-06": 15, "2026-07": 10, "2026-08": 4 } });
+    expect(c.months["2026-07"].accrualValue).toBe(5);
+    expect(c.months["2026-08"]).toMatchObject({ accrualValue: null, accrualNote: "Client offboarded" });
   });
 });
 
@@ -456,5 +536,139 @@ describe("accrualFolderMinutesFor -- registered folder matched case/whitespace-i
   it("matches a registered folder carrying a trailing space", () => {
     const worked = new Map([["Utter Gutters", new Map([["2026-09", 120]])]]);
     expect(accrualFolderMinutesFor("Utter Gutters", "Utter Gutters ", worked).get("2026-09")).toBe(120);
+  });
+});
+
+describe("endPeriodsFor -- stale stored profile state and holds (QA)", () => {
+  const ev = (id, kind, effective_date) => ({ id, client: "A", kind, effective_date, applied: true });
+  const PKG = { type: "package", agreedHours: 10 };
+
+  it("offboarding then a later type event: a still-'offboarded' stored profile (end_date = that offboarding) adds no trailing end", () => {
+    const events = [ev(1, "offboarding", "2026-06-01"), ev(2, "type", "2026-08-01")];
+    const periods = endPeriodsFor({ client: "A", status: "offboarded", endDate: "2026-06-01" }, events);
+    expect(periods).toEqual([{ from: "2026-06", until: "2026-08", after: null, note: "Client offboarded" }]);
+    // New package months with no hours yet must still accrue, not be cleared.
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": {} } };
+    replayClientAccruals(c, { startMonth: "2026-08", cur: "2026-10", segFor: () => PKG, statusFor: () => "active", workedMinutesFor: (mk) => (mk === "2026-08" ? 600 : 0), endPeriods: periods });
+    expect(c.months["2026-09"].accrualValue).toBe(-10);
+    expect(c.months["2026-10"].accrualValue).toBe(-20);
+  });
+
+  it("a directly-set offboarding after a closed one (different end_date) still ends the client", () => {
+    const events = [ev(1, "offboarding", "2026-03-01"), ev(2, "reactivation", "2026-04-01")];
+    const periods = endPeriodsFor({ client: "A", status: "offboarded", endDate: "2026-08-31" }, events);
+    expect(periods[periods.length - 1]).toEqual({ from: "2026-09", until: null, after: "2026-04", note: "Client offboarded" });
+  });
+
+  it("offboarding 2026-10-15 then hold 2026-11-01 stays ended (a hold doesn't re-engage)", () => {
+    const events = [ev(1, "offboarding", "2026-10-15"), ev(2, "hold", "2026-11-01")];
+    expect(endPeriodsFor({ client: "A", status: "on_hold", endDate: null }, events)).toEqual([{ from: "2026-11", until: null, after: null, note: "Client offboarded" }]);
+  });
+
+  it("a resume after the offboarding (and hold) re-engages from the resume month", () => {
+    const events = [ev(1, "offboarding", "2026-10-15"), ev(2, "hold", "2026-11-01"), ev(3, "resume", "2027-01-01")];
+    expect(endPeriodsFor({ client: "A", status: "active", endDate: null }, events)).toEqual([{ from: "2026-11", until: "2027-01", after: null, note: "Client offboarded" }]);
+  });
+
+  it("an on_hold profile from a hold BEFORE the offboarding still gets the safety net (status edited directly)", () => {
+    const events = [ev(1, "hold", "2026-05-01"), ev(2, "offboarding", "2026-06-01")];
+    expect(endPeriodsFor({ client: "A", status: "on_hold", endDate: null }, events)).toEqual([{ from: "2026-06", until: "2026-06", after: null, note: "Client offboarded" }]);
+  });
+});
+
+describe("replayClientAccruals -- hours_flagged is sticky until hours return to flagged_from_hours", () => {
+  const PKG = { type: "package", agreedHours: 10 };
+  const run = (c, workedAug) => replayClientAccruals(c, { startMonth: "2026-08", cur: "2026-09", segFor: () => PKG, statusFor: () => "active", workedMinutesFor: (mk) => (mk === "2026-08" ? workedAug * 60 : 0) });
+  const fresh = () => ({ client: "A", manager: null, agreedHpm: "10", months: { "2026-08": { accrualValue: 2, workedHours: 12, accrualNote: null, isOverride: false, hoursFlagged: false, flaggedFromHours: null } } });
+  // Simulates the DB round-trip: what the next recompute reads back is what this one wrote.
+  const persist = (c, rows) => {
+    for (const r of rows) c.months[r.month_key] = { ...c.months[r.month_key], workedHours: r.worked_hours, hoursFlagged: r.hours_flagged, flaggedFromHours: r.flagged_from_hours };
+  };
+
+  it("a closed month's hours changing raises the flag and records the hours it was flagged against", () => {
+    const c = fresh();
+    const rows = run(c, 15);
+    expect(rows.find((r) => r.month_key === "2026-08")).toMatchObject({ worked_hours: 15, hours_flagged: true, flagged_from_hours: 12 });
+  });
+
+  it("the flag survives later recomputes (previously cleared on the very next run)", () => {
+    const c = fresh();
+    persist(c, run(c, 15));
+    const second = run(c, 15);
+    expect(second.find((r) => r.month_key === "2026-08")).toBeUndefined(); // nothing changed, nothing written
+    expect(c.months["2026-08"]).toMatchObject({ hoursFlagged: true, flaggedFromHours: 12 });
+    // A further change keeps the ORIGINAL flagged-against figure.
+    persist(c, run(c, 16));
+    expect(c.months["2026-08"]).toMatchObject({ workedHours: 16, hoursFlagged: true, flaggedFromHours: 12 });
+  });
+
+  it("clears (false + null) once the hours return to the flagged-against figure", () => {
+    const c = fresh();
+    persist(c, run(c, 15));
+    const rows = run(c, 12.005);
+    expect(rows.find((r) => r.month_key === "2026-08")).toMatchObject({ hours_flagged: false, flagged_from_hours: null });
+  });
+
+  it("a human-cleared flag stays cleared while the hours don't change again", () => {
+    const c = fresh();
+    persist(c, run(c, 15));
+    c.months["2026-08"].hoursFlagged = false; // cleared by hand in the DB
+    const row = run(c, 15).find((r) => r.month_key === "2026-08");
+    // At most a tidy-up of the leftover flagged_from_hours -- never re-raised.
+    if (row) expect(row).toMatchObject({ hours_flagged: false, flagged_from_hours: null });
+    expect(c.months["2026-08"].hoursFlagged).toBe(false);
+    expect(run(c, 15).find((r) => r.month_key === "2026-08")).toBeUndefined();
+  });
+
+  it("an on-hold month carries an existing flag over unchanged", () => {
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": { accrualValue: 0, workedHours: 9, accrualNote: "On hold — accrual paused", isOverride: false, hoursFlagged: true, flaggedFromHours: 7 } } };
+    replayClientAccruals(c, { startMonth: "2026-08", cur: "2026-09", segFor: () => PKG, statusFor: () => "on_hold", workedMinutesFor: () => 0 });
+    expect(c.months["2026-08"]).toMatchObject({ hoursFlagged: true, flaggedFromHours: 7 });
+  });
+
+  it("every recompute payload branch has the identical key set (incl. flagged_from_hours, never reset_value)", () => {
+    const HOURLY = { type: "hourly", agreedHours: null };
+    const months = { "2026-06": { accrualValue: 5, workedHours: 5 }, "2026-07": { accrualValue: 1, workedHours: 1 }, "2026-08": { accrualValue: 1, workedHours: 1 }, "2026-09": { accrualValue: 1, workedHours: 1 } };
+    const rows = replayClientAccruals({ client: "A", manager: null, agreedHpm: "10", months }, {
+      startMonth: "2026-06", cur: "2026-10",
+      segFor: (mk) => (mk === "2026-07" ? HOURLY : PKG),
+      statusFor: (mk) => (mk === "2026-08" ? "on_hold" : "active"),
+      workedMinutesFor: () => 60,
+      endPeriods: [{ from: "2026-09", until: "2026-10", after: null, note: "Client offboarded" }],
+    });
+    const notes = new Set(rows.map((r) => r.accrual_note));
+    expect(notes).toEqual(new Set([null, "Not on a package this month", "On hold — accrual paused", "Client offboarded"]));
+    const keySets = new Set(rows.map((r) => Object.keys(r).sort().join(",")));
+    expect(keySets.size).toBe(1);
+    expect([...keySets][0].split(",")).toContain("flagged_from_hours");
+    expect([...keySets][0].split(",")).not.toContain("reset_value");
+  });
+});
+
+describe("recompute never writes comments", () => {
+  const PKG = { type: "package", agreedHours: 10 };
+  const HOURLY = { type: "hourly", agreedHours: null };
+  it("no recompute upsert payload carries a comment column, in any branch", () => {
+    const months = { "2026-06": { accrualValue: 5, workedHours: 5, comment: "keep me" }, "2026-07": { accrualValue: 1, workedHours: 1, comment: "old" }, "2026-08": { accrualValue: 1, workedHours: 1, comment: "x" }, "2026-09": { accrualValue: 1, workedHours: 1, comment: "y" } };
+    const c = { client: "A", manager: null, agreedHpm: "10", months };
+    const rows = replayClientAccruals(c, {
+      startMonth: "2026-06", cur: "2026-10",
+      segFor: (mk) => (mk === "2026-07" ? HOURLY : PKG),
+      statusFor: (mk) => (mk === "2026-08" ? "on_hold" : "active"),
+      workedMinutesFor: () => 60,
+      endPeriods: [{ from: "2026-09", until: "2026-10", after: null, note: "Client offboarded" }],
+    });
+    expect(rows.length).toBeGreaterThanOrEqual(4);
+    for (const r of rows) expect(r).not.toHaveProperty("comment");
+    expect(c.months["2026-06"].comment).toBe("keep me"); // in-memory cell still carries it for display
+  });
+
+  it("mergeLatestComments keeps a comment saved while a recompute was running", () => {
+    const next = [{ client: "A", months: { "2026-09": { accrualValue: -3, comment: "old" }, "2026-10": { accrualValue: -1, comment: null } } }];
+    const prev = [{ client: "A", months: { "2026-09": { accrualValue: -2, comment: "new" } } }];
+    const merged = mergeLatestComments(next, prev);
+    expect(merged[0].months["2026-09"]).toEqual({ accrualValue: -3, comment: "new" });
+    expect(merged[0].months["2026-10"].comment).toBeNull();
+    expect(mergeLatestComments(next, null)).toBe(next);
   });
 });

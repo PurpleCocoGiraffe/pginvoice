@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Search, Download, RefreshCw, ChevronLeft, ChevronRight, Pencil, AlertTriangle } from "lucide-react";
 import {
   fetchAccrualsFromSupabase, upsertAccrualCell, recomputeAccruals, exportAccrualsWorkbook,
-  currentMonthKey, monthLabelOf, shiftMonthKey, parseAgreedHours,
+  currentMonthKey, monthLabelOf, shiftMonthKey, parseAgreedHours, mergeLatestComments,
 } from "./accrualsSync.js";
 import { fetchClients } from "./clientsSync.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
@@ -42,6 +42,27 @@ export default function ClientAccruals() {
   const [draftComment, setDraftComment] = useState("");
   const [saving, setSaving] = useState(false);
   const autoRecomputedRef = useRef(false);
+  // One recompute at a time, auto (on load) or the button: two overlapping runs each replay
+  // from their own snapshot and race their upserts, and the auto path never set
+  // `recomputing`, so the button stayed clickable while it ran.
+  const recomputeInFlightRef = useRef(false);
+
+  // Runs recomputeAccruals under the single in-flight guard. Returns null (without running)
+  // when one is already in progress. A recompute replays from a snapshot taken before it
+  // started, so any comment saved while it ran is kept from current state on merge.
+  async function guardedRecompute(base) {
+    if (recomputeInFlightRef.current) return null;
+    recomputeInFlightRef.current = true;
+    setRecomputing(true);
+    try {
+      const result = await recomputeAccruals(base);
+      setClients((prev) => mergeLatestComments(result.clients, prev));
+      return result;
+    } finally {
+      recomputeInFlightRef.current = false;
+      setRecomputing(false);
+    }
+  }
 
   async function loadAndRecompute() {
     try {
@@ -50,11 +71,10 @@ export default function ClientAccruals() {
       setProfileByClient(new Map(profiles.map((p) => [p.client, p])));
       if (!data) { setClients([]); return; }
       setClients(data);
-      if (!autoRecomputedRef.current) {
+      if (!autoRecomputedRef.current && !recomputeInFlightRef.current) {
         autoRecomputedRef.current = true;
         try {
-          const { clients: next } = await recomputeAccruals(data);
-          setClients(next);
+          await guardedRecompute(data);
         } catch (e) {
           // Previously a silent no-op -- a real failure here (a timeout on the
           // full-ClickUp-history fetch this depends on, an unexpected RLS case, anything)
@@ -102,17 +122,15 @@ export default function ClientAccruals() {
   }, [clients, search, month, rangeStart, rangeEnd, rangeMode, signFilter, statusFilter, statusByClient]);
 
   async function runRecompute() {
-    if (!clients) return;
-    setRecomputing(true);
+    if (!clients || recomputeInFlightRef.current) return;
     setRecomputeMsg(null);
     try {
-      const { clients: next, updatedCount } = await recomputeAccruals(clients);
-      setClients(next);
+      const result = await guardedRecompute(clients);
+      if (!result) return;
+      const { updatedCount } = result;
       setRecomputeMsg(updatedCount ? `Updated ${updatedCount} month${updatedCount === 1 ? "" : "s"} from ClickUp hours.` : "Everything is already up to date.");
     } catch (e) {
       setLoadError("Couldn't recompute from ClickUp: " + (e.message || e));
-    } finally {
-      setRecomputing(false);
     }
   }
 

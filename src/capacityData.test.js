@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   agreedAt, computeMonthlyAvailability, resignationStatus,
-  demandFor, demandForGroup, computeDynamicAverages,
+  demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys,
 } from "./capacityData.js";
 import { adelaideLocalMidnightUtcMs } from "./dateMath.js";
 
@@ -180,6 +180,22 @@ describe("computeDynamicAverages", () => {
     const result = computeDynamicAverages(clickupData, clients);
     expect(result.has("Solo Client")).toBe(false);
     expect(result.has("Aus3C")).toBe(false);
+  });
+});
+
+describe("computeDynamicAverages -- folder-name drift (GPEX renamed gpex)", () => {
+  it("sums every case/whitespace variant of the single matched folder", () => {
+    const keys = last6MonthKeys();
+    const clickupData = {
+      hasBillable: false,
+      rows: [
+        { folder: "GPEX", monthKey: keys[1], minutes: 120, billable: true },
+        { folder: "gpex", monthKey: keys[0], minutes: 240, billable: true },
+      ],
+    };
+    const gpex = computeDynamicAverages(clickupData, [{ group: "GPEX" }]).get("GPEX");
+    expect(gpex.monthsCounted).toBe(2);
+    expect(gpex.avgHours).toBeCloseTo(3, 5);
   });
 });
 

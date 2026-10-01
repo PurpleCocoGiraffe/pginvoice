@@ -27,7 +27,12 @@ export async function fetchClickupFromSupabase(sinceMonthKey) {
     let q = supabase
       .from("pginvoice_clickup_entries")
       .select("folder, task, task_id, minutes, billable, has_billable_col, user_name, is_internal, month_key, month_label, date_key")
-      .order("entry_start", { ascending: true });
+      // entry_start alone isn't unique (hundreds of real entries share a start instant),
+      // and without a unique tie-breaker Postgres may order tied rows differently on each
+      // page request -- rows silently skipped or duplicated across page boundaries.
+      // entry_id is the table's unique key.
+      .order("entry_start", { ascending: true })
+      .order("entry_id", { ascending: true });
     if (sinceMonthKey) q = q.gte("month_key", sinceMonthKey);
     const { data, error } = await q.range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
@@ -87,12 +92,40 @@ export async function fetchSyncMeta() {
 // "Sync now" repeatedly. Two months is cheap (well under the Edge
 // Function's per-invocation budget — see clickup-sync/index.ts) and covers
 // the realistic case of edits made just after month-end.
-export async function triggerManualSync() {
-  const { data, error } = await supabase.functions.invoke("clickup-sync", { body: {} });
-  if (error) throw error;
-  const { data: lastMonthData, error: lastMonthError } = await supabase.functions.invoke("clickup-sync", { body: { monthOffset: 1 } });
-  if (lastMonthError) throw lastMonthError;
-  return { current: data, lastMonth: lastMonthData };
+export async function triggerManualSync(invoke = (body) => supabase.functions.invoke("clickup-sync", { body })) {
+  // Both months always run: last month's reconciliation is independent of this month's,
+  // so a failure on offset 0 must not silently skip offset 1. Still sequential, as before
+  // (two concurrent runs would race each other's access-reconciliation writes).
+  const out = {};
+  const failures = [];
+  for (const [key, label, body] of [["current", "Current month", {}], ["lastMonth", "Last month", { monthOffset: 1 }]]) {
+    try {
+      const { data, error } = (await invoke(body)) || {};
+      if (error) failures.push(`${label}: ${await functionErrorMessage(error)}`);
+      else out[key] = data;
+    } catch (e) {
+      failures.push(`${label}: ${e?.message || e}`);
+    }
+  }
+  if (failures.length) throw new Error(failures.join(" / "));
+  return out;
+}
+
+// supabase.functions.invoke's error for a non-2xx response only says "Edge Function
+// returned a non-2xx status code" -- the function's real reason (e.g. the stale-row
+// safety valve, a bad ClickUp token) is in the JSON body on `error.context` (the Response).
+export async function functionErrorMessage(error) {
+  const res = error?.context;
+  if (res && typeof res.json === "function") {
+    try {
+      const body = await (typeof res.clone === "function" ? res.clone() : res).json();
+      const msg = body?.error || body?.message;
+      if (msg) return String(msg);
+    } catch {
+      // Not JSON -- fall through to the generic message.
+    }
+  }
+  return error?.message || String(error);
 }
 
 // Settings' ClickUp connection card — status check never sees the raw token
