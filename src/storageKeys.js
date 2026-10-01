@@ -13,3 +13,4 @@ export const CAP_OVERRIDES_KEY = "cap_overrides";
 export const PG_CLIENTS_KEY = "pg_clients";
 export const PG_COST_CENTRES_KEY = "pg_cost_centres";
 export const PG_ACCRUALS_KEY = "pg_accruals";
+export const CLIENT_STATES_KEY = "client_states";

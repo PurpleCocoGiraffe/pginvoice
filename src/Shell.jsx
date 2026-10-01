@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, Plug, HelpCircle, Menu, X, MoreHorizontal, Handshake } from "lucide-react";
+import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, Plug, HelpCircle, Menu, X, MoreHorizontal, Handshake, Map as MapIcon } from "lucide-react";
 import Overview from "./Overview.jsx";
 import PlaceholderPage from "./PlaceholderPage.jsx";
 import PGReconciliation from "./App.jsx";
 import CapacityDashboard from "./CapacityDashboard.jsx";
 import PerformanceScorecard from "./PerformanceScorecard.jsx";
 import TimesheetSummary from "./TimesheetSummary.jsx";
+import CrossStateReport from "./CrossStateReport.jsx";
 import ClientAccruals from "./ClientAccruals.jsx";
 import Clients from "./Clients.jsx";
 import TeamDashboard from "./TeamDashboard.jsx";
@@ -31,6 +32,7 @@ const MODULES = [
   { key: "timesheet", label: "Timesheets", icon: CalendarDays },
   { key: "accruals", label: "Client Accruals", icon: Clock },
   { key: "performance", label: "Reporting", icon: TrendingUp },
+  { key: "crossstate", label: "Cross-state Hours", icon: MapIcon },
   { key: "bdm", label: "BDM", icon: Handshake },
 ];
 // What Consultant/Coordinator can see: Overview, Clients, Client Accruals,
@@ -316,6 +318,7 @@ export default function Shell() {
           <div style={{ display: active === "capacity" ? "block" : "none" }}><CapacityDashboard onNavigateTeam={() => setActive("team")} /></div>
           <div style={{ display: active === "team" ? "block" : "none" }}><TeamDashboard /></div>
           <div style={{ display: active === "timesheet" ? "block" : "none" }}><TimesheetSummary /></div>
+          <div style={{ display: active === "crossstate" ? "block" : "none" }}><CrossStateReport onNavigateClients={() => setActive("clients")} onNavigateTeam={() => setActive("team")} /></div>
           <div style={{ display: active === "bdm" ? "block" : "none" }}>
             <PlaceholderPage title="BDM." subtitle="Business development tracking isn't built yet." icon={Handshake} empty="BDM module coming soon." />
           </div>

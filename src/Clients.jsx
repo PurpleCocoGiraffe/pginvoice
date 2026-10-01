@@ -15,6 +15,9 @@ import { CLICKUP_DB_KEY, PG_CLIENTS_KEY, PG_COST_CENTRES_KEY, CAP_PEOPLE_KEY } f
 import { SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
 import { ClientAvatar, PersonAvatar, resizePhotoFile } from "./avatar.jsx";
 import { useDismissable, useEscape } from "./useDismissable.js";
+import { fetchClientStates, saveClientState } from "./clientStatesSync.js";
+import { resolveClientState, defaultClientState, STATES } from "./crossState.js";
+import { CLIENT_STATES_KEY } from "./storageKeys.js";
 
 // Popover for a client's logo -- upload an image directly, or type in the
 // client's website and let a favicon service supply the logo automatically.
@@ -125,14 +128,6 @@ function hoursLabelFor(t) {
 }
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
-// Client names carry their state as a "(Qld)"/"(WA)" suffix rather than a dedicated
-// column -- this just reads that same convention back out for the snapshot breakdown.
-function stateOf(clientName) {
-  const n = (clientName || "").toLowerCase();
-  if (n.includes("(qld)")) return "QLD";
-  if (n.includes("(wa)")) return "WA";
-  return "SA / Other";
-}
 
 function arrangementLabel(c) {
   if (c.type === "hourly") return "Time-based billing";
@@ -554,6 +549,7 @@ function ClientProfileDrawer({
   onStartManageCostCentres, onCancelManageCostCentres, onDraftCostCentreFolderChange, onDraftCostCentreKindChange,
   onAddCostCentre, onRemoveCostCentre,
   editingLogo, onToggleLogoEditor, onLogoSaved,
+  clientState, onSetClientState,
   onClose, onSaved, onEventsChanged,
 }) {
   useEscape(onClose);
@@ -621,6 +617,8 @@ function ClientProfileDrawer({
           </div>
         )}
       </div>
+
+      <ClientStateSection clientState={clientState} onSetClientState={onSetClientState} />
 
       <div className="pg-drawer__section">
         <div className="pg-drawer__section-title">Consultant</div>
@@ -1057,10 +1055,38 @@ function HistorySection({ client }) {
   );
 }
 
+// Which office state (SA/WA/QLD) the client is based in -- drives the Cross-state Hours
+// report. Stored in pginvoice_app_state via clientStatesSync.js; a client nobody has set
+// yet shows its default (Kelly's starting list, else SA) marked "Default".
+function ClientStateSection({ clientState, onSetClientState }) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  if (!clientState) return null;
+  async function change(state) {
+    setSaving(true);
+    setErr(null);
+    try { await onSetClientState(state); } catch (e) { setErr(e.message || String(e)); } finally { setSaving(false); }
+  }
+  return (
+    <div className="pg-drawer__section">
+      <div className="pg-drawer__section-title">State</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <select className="pg-select" value={clientState.state} disabled={saving} onChange={(e) => change(e.target.value)} aria-label="Client state">
+          {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        {clientState.source === "set"
+          ? <span className="pg-tag">Confirmed</span>
+          : <span className="pg-tag pg-tag--muted" title="From the starting list. Pick a state to confirm it.">Default</span>}
+      </div>
+      {err && <div className="pg-banner-warn" role="alert" style={{ marginTop: 8 }}>Couldn't save the state: {err}</div>}
+    </div>
+  );
+}
+
 // Inline "Add client" panel -- writes a brand-new pginvoice_clients row via the same
 // createClient Capacity Planning's add form uses. Validation lives in the pure
 // validateNewClient (clientsSync.js) so it's testable without rendering this.
-const EMPTY_NEW_CLIENT = { name: "", type: "package", hours: "", consultant: "", clickupFolder: "", startDate: "" };
+const EMPTY_NEW_CLIENT = { name: "", type: "package", hours: "", consultant: "", clickupFolder: "", startDate: "", state: "" };
 function AddClientPanel({ clients, folderList, onCreated, onCancel }) {
   const [form, setForm] = useState(EMPTY_NEW_CLIENT);
   const [saving, setSaving] = useState(false);
@@ -1087,6 +1113,10 @@ function AddClientPanel({ clients, folderList, onCreated, onCancel }) {
     setErr(null);
     try {
       await createClient(result.name, result.fields);
+      // The client row is already saved at this point -- a failed state save shouldn't
+      // undo that, it just leaves the client on its default state, fixable from the drawer.
+      try { await saveClientState(result.name, form.state || defaultClientState(result.name)); }
+      catch (e) { console.error("Couldn't save new client's state:", e); }
       setForm(EMPTY_NEW_CLIENT);
       await onCreated(result.name);
     } catch (e) {
@@ -1128,6 +1158,13 @@ function AddClientPanel({ clients, folderList, onCreated, onCancel }) {
           <datalist id="new-client-folders">{folderList.map((f) => <option key={f} value={f} />)}</datalist>
         </label>
         <label className="pg-field">
+          <span className="pg-field__label">State</span>
+          <select className="pg-input" value={form.state} onChange={set("state")}>
+            <option value="">{form.name.trim() ? `Suggested: ${defaultClientState(form.name)}` : "Pick state"}</option>
+            {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label className="pg-field">
           <span className="pg-field__label">Start date</span>
           <input className="pg-input" type="date" value={form.startDate} onChange={set("startDate")} />
         </label>
@@ -1167,6 +1204,15 @@ export default function Clients() {
   const [savingCostCentre, setSavingCostCentre] = useState(false);
   const [showAddClient, setShowAddClient] = useState(false);
   const [capPeople, setCapPeople] = useState(SEED_PEOPLE);
+  const [savedClientStates, setSavedClientStates] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    const loadStates = () => fetchClientStates().then((s) => { if (!cancelled) setSavedClientStates(s); }).catch((e) => console.error("Couldn't load client states:", e));
+    loadStates();
+    const onUpdate = (e) => { if (!e.detail || e.detail.key === CLIENT_STATES_KEY) loadStates(); };
+    window.addEventListener(PG_DATA_EVENT, onUpdate);
+    return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
+  }, []);
   // nameMatch.js's dynamic cost-centre rules are a module-level singleton (see
   // setDynamicCostCentres) fed by Shell.jsx, not React state -- costCentreInfo below reads
   // them via a plain function call, so it has no way to know they changed on its own. This
@@ -1367,9 +1413,12 @@ export default function Clients() {
     if (!clients) return { total: 0, byState: [] };
     const active = clients.filter((c) => c.status === "active");
     const byState = new Map();
-    active.forEach((c) => { const s = stateOf(c.client); byState.set(s, (byState.get(s) || 0) + 1); });
+    // Each client's saved state (Clients drawer / Cross-state Hours), falling back to the
+    // confirmed starting list -- replaces the old guess from a "(Qld)"/"(WA)" name suffix,
+    // which missed most clients and lumped them into "SA / Other".
+    active.forEach((c) => { const s = resolveClientState(c.client, savedClientStates).state; byState.set(s, (byState.get(s) || 0) + 1); });
     return { total: active.length, byState: [...byState.entries()].sort((a, b) => b[1] - a[1]) };
-  }, [clients]);
+  }, [clients, savedClientStates]);
 
   const openC = openClient ? filtered.find((c) => c.client === openClient) || (clients || []).find((c) => c.client === openClient) : null;
   const openCostCentreInfo = openC ? costCentreInfo.info.get(openC.client) : null;
@@ -1517,6 +1566,11 @@ export default function Clients() {
           onLogoSaved={(patch) => {
             setClients((prev) => prev.map((x) => (x.client !== openC.client ? x : { ...x, ...patch })));
             setEditingLogo(false);
+          }}
+          clientState={resolveClientState(openC.client, savedClientStates)}
+          onSetClientState={async (state) => {
+            await saveClientState(openC.client, state);
+            setSavedClientStates((prev) => ({ ...prev, [openC.client]: state }));
           }}
           onClose={() => setOpenClient(null)}
           onSaved={() => { load(); loadEvents(); }}
