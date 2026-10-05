@@ -457,6 +457,13 @@ describe("isNonClientSpace", () => {
   it("treats an unknown space as a client space", async () => {
     const { isNonClientSpace } = await import("./nameMatch.js");
     expect(isNonClientSpace(null)).toBe(false);
+    expect(isNonClientSpace(null, null, "Clarke Energy")).toBe(false);
+  });
+  it("falls back to the BDM folder names when the space is unknown", async () => {
+    const { isNonClientSpace } = await import("./nameMatch.js");
+    expect(isNonClientSpace(null, null, "CRM")).toBe(true);
+    expect(isNonClientSpace(null, null, "Events and Networking")).toBe(true);
+    expect(isNonClientSpace("90167546842", null, "CRM")).toBe(false); // a known client space wins
     expect(isNonClientSpace("", "")).toBe(false);
   });
 });

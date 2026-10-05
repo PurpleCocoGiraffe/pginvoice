@@ -208,7 +208,7 @@ export function parseClickupCsv(file, onDone, onErr) {
         const billableRaw = hBillable ? String(r[hBillable] || "").trim().toLowerCase() : "";
         const billable = ["true", "yes", "1", "billable"].includes(billableRaw);
         const startMonth = hStart ? parseStartTextMonth(r[hStart]) : null;
-        const nonClientSpace = isNonClientSpace(hSpaceId ? r[hSpaceId] : null, hSpaceName ? r[hSpaceName] : null);
+        const nonClientSpace = isNonClientSpace(hSpaceId ? r[hSpaceId] : null, hSpaceName ? r[hSpaceName] : null, folder);
         rows.push({
           folder,
           task: hTask ? String(r[hTask] || "").trim() || "Untitled" : "Untitled",

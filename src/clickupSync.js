@@ -57,7 +57,7 @@ async function fetchClickupPages(sinceMonthKey, columns) {
   if (!all.length) return null;
 
   const rawRows = all.map((r) => {
-    const nonClientSpace = isNonClientSpace(r.space_id);
+    const nonClientSpace = isNonClientSpace(r.space_id, null, r.folder);
     return {
     folder: r.folder,
     task: r.task,
