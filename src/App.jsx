@@ -25,7 +25,7 @@ import {
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY } from "./storageKeys.js";
-import { filterClientList, computePrimaryNameByGroup, searchMatchesInOtherTypes } from "./clientListFilter.js";
+import { filterClientList, computePrimaryNameByGroup, searchMatchesInOtherTypes, hasWorkedHours } from "./clientListFilter.js";
 import {
   folderKey, buildFolderCanonicalizer, newFolderEntry, aggregateMonthRows, billableMinutesByFolder,
   reconcileClientMonth, shouldSeedPackageMonth, sumCarry, lastMonthAccruedClients, lifetimeBudgetFor, isLifetimeBudgetType,
@@ -84,6 +84,7 @@ export default function PGReconciliation({ onNavigateClients }) {
   const [dataMonthKey, setDataMonthKey] = useState("");
   const [priorMonthKey, setPriorMonthKey] = useState("");
   const [billableOnly, setBillableOnly] = useState(true);
+  const [workedOnly, setWorkedOnly] = useState(false);
   const [nameMap, setNameMap] = useState({});
   const [search, setSearch] = useState("");
   const [drawerClientName, setDrawerClientName] = useState(null);
@@ -272,6 +273,7 @@ export default function PGReconciliation({ onNavigateClients }) {
           if (v.dataMonthKey != null) setDataMonthKey(v.dataMonthKey);
           if (v.priorMonthKey != null) setPriorMonthKey(v.priorMonthKey);
           if (v.billableOnly != null) setBillableOnly(v.billableOnly);
+          if (v.workedOnly != null) setWorkedOnly(v.workedOnly);
           if (v.clientTypeFilter != null) setClientTypeFilter(v.clientTypeFilter);
           if (v.consultantFilter != null) setConsultantFilter(v.consultantFilter);
           if (v.sortMode != null) setSortMode(v.sortMode);
@@ -350,11 +352,11 @@ export default function PGReconciliation({ onNavigateClients }) {
   useEffect(() => {
     if (!hydrated) return;
     if (viewSaveTimer.current) clearTimeout(viewSaveTimer.current);
-    const snapshot = { invoiceMonth, dataMonthKey, priorMonthKey, billableOnly, clientTypeFilter, consultantFilter, sortMode, search };
+    const snapshot = { invoiceMonth, dataMonthKey, priorMonthKey, billableOnly, workedOnly, clientTypeFilter, consultantFilter, sortMode, search };
     viewSaveTimer.current = setTimeout(() => {
       try { window.localStorage.setItem(VIEWSTATE_KEY, JSON.stringify(snapshot)); } catch (e) {}
     }, 400);
-  }, [hydrated, invoiceMonth, dataMonthKey, priorMonthKey, billableOnly, clientTypeFilter, consultantFilter, sortMode, search]);
+  }, [hydrated, invoiceMonth, dataMonthKey, priorMonthKey, billableOnly, workedOnly, clientTypeFilter, consultantFilter, sortMode, search]);
 
   useEffect(() => {
     if (!accrued) return;
@@ -1037,13 +1039,17 @@ export default function PGReconciliation({ onNavigateClients }) {
   // (capGroup-based siblings and nameMatch.js-tagged sub-projects) -- one lookup so the
   // six places below that need "what's nested under this client" don't each have to
   // remember to check both maps and merge/dedupe them by hand.
-  const allSiblingsFor = (name) => {
+  // Every nested row under `name`, whatever its hours this month.
+  const allSiblingsUnfiltered = (name) => {
     const a = siblingsByPrimaryName.get(name) || [];
     const b = costCentreSubProjectsByParentName.get(name) || [];
-    if (!a.length) return b;
-    if (!b.length) return a;
     const seen = new Set(a.map((s) => s.name));
     return [...a, ...b.filter((s) => !seen.has(s.name))];
+  };
+  const allSiblingsFor = (name) => {
+    const all = allSiblingsUnfiltered(name);
+    // "Worked only" hides nested rows with no hours too, not just top-level ones.
+    return workedOnly ? all.filter((s) => hasWorkedHours(s, consultantFilter)) : all;
   };
 
   function withConsultantFilter(c, consultant) {
@@ -1060,7 +1066,7 @@ export default function PGReconciliation({ onNavigateClients }) {
   // member of a multi-folder group is only ever shown nested under its primary
   // (see siblingsByPrimaryName above), never again as its own top-level card.
   const visible = useMemo(() => {
-    let list = filterClientList(clients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup });
+    let list = filterClientList(clients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup, workedOnly });
     list = list.map((c) => withConsultantFilter(c, consultantFilter));
     // sort
     if (sortMode === "alpha") {
@@ -1073,11 +1079,11 @@ export default function PGReconciliation({ onNavigateClients }) {
       });
     }
     return list;
-  }, [clients, clientTypeFilter, consultantFilter, search, sortMode, primaryNameByGroup]);
+  }, [clients, clientTypeFilter, consultantFilter, search, sortMode, primaryNameByGroup, workedOnly]);
   // Search matches hidden only by the type filter (see searchMatchesInOtherTypes).
   const otherTypeMatches = useMemo(
-    () => searchMatchesInOtherTypes(clients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup }),
-    [clients, clientTypeFilter, consultantFilter, search, primaryNameByGroup]
+    () => searchMatchesInOtherTypes(clients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup, workedOnly }),
+    [clients, clientTypeFilter, consultantFilter, search, primaryNameByGroup, workedOnly]
   );
 
   // Same filter pipeline as `visible` above, applied to prevClients — real,
@@ -1151,10 +1157,14 @@ export default function PGReconciliation({ onNavigateClients }) {
   const prevStats = useMemo(() => {
     let list;
     if (drawerClient) {
-      const sibNames = new Set(allSiblingsFor(drawerClient.name).map((s) => s.name));
-      list = prevClients.filter((c) => c.name === drawerClient.name || sibNames.has(c.name));
+      // Siblings are judged by last month's hours here, not this month's (allSiblingsFor
+      // would drop a sub-project worked last month but idle now), matching the
+      // drawer-closed path, where filterClientList sees prevClients' own hours.
+      const sibNames = new Set(allSiblingsUnfiltered(drawerClient.name).map((s) => s.name));
+      list = prevClients.filter((c) => c.name === drawerClient.name
+        || (sibNames.has(c.name) && (!workedOnly || hasWorkedHours(c, consultantFilter))));
     } else {
-      list = filterClientList(prevClients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup: prevPrimaryNameByGroup });
+      list = filterClientList(prevClients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup: prevPrimaryNameByGroup, workedOnly });
     }
     list = list.map((c) => withConsultantFilter(c, consultantFilter));
     const hrs = list.reduce((a, c) => a + (c.workedFiltered ?? c.worked), 0);
@@ -1164,7 +1174,7 @@ export default function PGReconciliation({ onNavigateClients }) {
     // "0 vs last month" would misleadingly read as a 100% drop rather than "no data".
     const available = !!(clickup && prevMonthDataKey && clickup.rows.some((r) => r.monthKey === prevMonthDataKey));
     return { hrs, count: list.length, over, carry, available };
-  }, [drawerClient, prevClients, clientTypeFilter, consultantFilter, search, prevPrimaryNameByGroup, siblingsByPrimaryName, costCentreSubProjectsByParentName, clickup, prevMonthDataKey]);
+  }, [drawerClient, prevClients, clientTypeFilter, consultantFilter, search, prevPrimaryNameByGroup, workedOnly, siblingsByPrimaryName, costCentreSubProjectsByParentName, clickup, prevMonthDataKey]);
 
   // Trailing up-to-6-month hours trend for the "Total billable hours" sparkline —
   // scoped to kpiScopeFolders above, so it tracks the same client(s) the KPI cards
@@ -1526,6 +1536,10 @@ export default function PGReconciliation({ onNavigateClients }) {
                 Billable only
               </label>
             )}
+            <label className="pg-pill pg-pill--checkbox" title="Hide clients with no hours logged this month">
+              <input type="checkbox" checked={workedOnly} onChange={(e) => setWorkedOnly(e.target.checked)} />
+              Worked only
+            </label>
             <label className="pg-pill pg-pill--search">
               <Search size={13} className="pg-pill__icon" />
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter clients…" title="Filters the currently visible, already-filtered client list below. To jump straight to any client regardless of filters, use the search bar in the header (⌘K)." />
@@ -1645,7 +1659,9 @@ export default function PGReconciliation({ onNavigateClients }) {
                   ? `${TYPE_LABELS[clientTypeFilter]} aren't tracked here yet, this bucket is a placeholder.`
                   : consultantFilter
                     ? `${consultantFilter} didn't work on any ${TYPE_LABELS[clientTypeFilter].toLowerCase()} this month.`
-                    : `No ${TYPE_LABELS[clientTypeFilter].toLowerCase()} in this view.`}
+                    : workedOnly
+                      ? `No ${TYPE_LABELS[clientTypeFilter].toLowerCase()} with hours logged this month. Untick "Worked only" to see them all.`
+                      : `No ${TYPE_LABELS[clientTypeFilter].toLowerCase()} in this view.`}
               </div>
             )}
             {otherTypeMatches.length > 0 && (
