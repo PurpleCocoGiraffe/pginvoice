@@ -418,6 +418,25 @@ export function multiFolderAccrualMatchesFor(name, allFolders, ownFolder) {
 // count like any other consultant's across all reports.
 // Case-insensitive substring match — deliberately broader than the guide's literal-case
 // example so folders like "Julia Onboarding & Induction" still match regardless of case.
+// Only the client spaces feed the client views: "Clients" (90167546842) and
+// "PG CLIENTS" (54751434). Time logged anywhere else -- BDM (CRM, Events and
+// Networking), PG Tower, PG HQ, PG Pipeline -- is Purple Giraffe's own work: kept for
+// Timesheets / Performance totals, but never shown as a client or an excluded folder.
+// An unknown space (rows synced before space_id existed, task-less entries, a CSV with
+// no Space column) is treated as a client space, i.e. today's behaviour.
+export const CLIENT_SPACE_IDS = new Set(["90167546842", "54751434"]);
+const CLIENT_SPACE_NAMES = new Set(["clients", "pg clients"]);
+// Fallback for rows whose space isn't known (synced before space_id existed, or a CSV
+// with no Space column): the folders of Purple Giraffe's own BDM space, by name.
+const NON_CLIENT_FOLDER_NAMES = new Set(["crm", "events and networking"]);
+export function isNonClientSpace(spaceId, spaceName, folder) {
+  const id = spaceId == null ? "" : String(spaceId).trim();
+  if (id) return !CLIENT_SPACE_IDS.has(id);
+  const name = spaceName == null ? "" : String(spaceName).trim().toLowerCase();
+  if (name) return !CLIENT_SPACE_NAMES.has(name);
+  return NON_CLIENT_FOLDER_NAMES.has(String(folder || "").trim().toLowerCase());
+}
+
 export const INTERNAL_KEYWORDS = ["onboarding", "induction", "offboarding", "handover", "wip"];
 export function isInternalFolder(folder) {
   const f = String(folder || "").toLowerCase();

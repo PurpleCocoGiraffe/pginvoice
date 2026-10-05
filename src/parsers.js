@@ -1,6 +1,6 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { isInternalFolder, splitTaskPrefixFolders } from "./nameMatch.js";
+import { isInternalFolder, splitTaskPrefixFolders, isNonClientSpace } from "./nameMatch.js";
 
 // ---------------------------- time text → minutes ----------------------------
 export function parseTimeTextToMinutes(raw) {
@@ -188,6 +188,10 @@ export function parseClickupCsv(file, onDone, onErr) {
       // Optional — only some ClickUp export presets include it. When present, lets task
       // rows link straight to the task in ClickUp, same as the live Supabase sync does.
       const hTaskId = findHeader(headers, "Task ID");
+      // Optional — which ClickUp space the entry came from (see isNonClientSpace).
+      const exactHeader = (want) => headers.find((h) => h.toLowerCase().replace(/[^a-z0-9]/g, "") === want) || null;
+      const hSpaceId = exactHeader("spaceid");
+      const hSpaceName = exactHeader("spacename");
       if (!hFolder) { onErr("Couldn't find a \"Folder Name\" column. This should be a ClickUp time-tracking export."); return; }
       let zeroCount = 0;
       const rows = [];
@@ -204,13 +208,15 @@ export function parseClickupCsv(file, onDone, onErr) {
         const billableRaw = hBillable ? String(r[hBillable] || "").trim().toLowerCase() : "";
         const billable = ["true", "yes", "1", "billable"].includes(billableRaw);
         const startMonth = hStart ? parseStartTextMonth(r[hStart]) : null;
+        const nonClientSpace = isNonClientSpace(hSpaceId ? r[hSpaceId] : null, hSpaceName ? r[hSpaceName] : null, folder);
         rows.push({
           folder,
           task: hTask ? String(r[hTask] || "").trim() || "Untitled" : "Untitled",
           taskId: hTaskId ? (String(r[hTaskId] || "").trim() || null) : null,
           minutes, billable, hasBillableCol: !!hBillable,
           user: hUser ? String(r[hUser] || "").trim() : "",
-          isInternal: isInternalFolder(folder),
+          isInternal: isInternalFolder(folder) || nonClientSpace,
+          nonClientSpace,
           monthKey: startMonth ? monthKey(startMonth.year, startMonth.month) : null,
           monthLabel: startMonth ? monthLabel(startMonth.year, startMonth.month) : null,
           dateKey: startMonth ? dateKeyStr(startMonth.year, startMonth.month, startMonth.day) : null,

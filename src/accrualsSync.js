@@ -588,7 +588,7 @@ export async function recomputeAccruals(clients) {
 
   const workedByFolderMonth = new Map(); // folder -> Map(monthKey -> minutes)
   for (const r of live.rows) {
-    if (isInternalFolder(r.folder)) continue;
+    if (isInternalFolder(r.folder) || r.nonClientSpace) continue;
     if (live.hasBillable && !r.billable) continue;
     if (!r.monthKey) continue;
     if (!workedByFolderMonth.has(r.folder)) workedByFolderMonth.set(r.folder, new Map());
