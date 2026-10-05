@@ -1039,11 +1039,15 @@ export default function PGReconciliation({ onNavigateClients }) {
   // (capGroup-based siblings and nameMatch.js-tagged sub-projects) -- one lookup so the
   // six places below that need "what's nested under this client" don't each have to
   // remember to check both maps and merge/dedupe them by hand.
-  const allSiblingsFor = (name) => {
+  // Every nested row under `name`, whatever its hours this month.
+  const allSiblingsUnfiltered = (name) => {
     const a = siblingsByPrimaryName.get(name) || [];
     const b = costCentreSubProjectsByParentName.get(name) || [];
     const seen = new Set(a.map((s) => s.name));
-    const all = [...a, ...b.filter((s) => !seen.has(s.name))];
+    return [...a, ...b.filter((s) => !seen.has(s.name))];
+  };
+  const allSiblingsFor = (name) => {
+    const all = allSiblingsUnfiltered(name);
     // "Worked only" hides nested rows with no hours too, not just top-level ones.
     return workedOnly ? all.filter((s) => hasWorkedHours(s, consultantFilter)) : all;
   };
@@ -1153,8 +1157,12 @@ export default function PGReconciliation({ onNavigateClients }) {
   const prevStats = useMemo(() => {
     let list;
     if (drawerClient) {
-      const sibNames = new Set(allSiblingsFor(drawerClient.name).map((s) => s.name));
-      list = prevClients.filter((c) => c.name === drawerClient.name || sibNames.has(c.name));
+      // Siblings are judged by last month's hours here, not this month's (allSiblingsFor
+      // would drop a sub-project worked last month but idle now), matching the
+      // drawer-closed path, where filterClientList sees prevClients' own hours.
+      const sibNames = new Set(allSiblingsUnfiltered(drawerClient.name).map((s) => s.name));
+      list = prevClients.filter((c) => c.name === drawerClient.name
+        || (sibNames.has(c.name) && (!workedOnly || hasWorkedHours(c, consultantFilter))));
     } else {
       list = filterClientList(prevClients, { clientTypeFilter, consultantFilter, search, primaryNameByGroup: prevPrimaryNameByGroup, workedOnly });
     }
