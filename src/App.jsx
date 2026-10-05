@@ -992,7 +992,7 @@ export default function PGReconciliation({ onNavigateClients }) {
     if (!clickup) return { total: 0, folders: [] };
     const byFolder = new Map();
     for (const r of clickup.rows) {
-      if (!r.isInternal) continue;
+      if (!r.isInternal || r.nonClientSpace) continue; // Purple Giraffe's own spaces aren't listed at all
       if (clickup.hasBillable && billableOnly && !r.billable) continue;
       if (dataMonthKey && r.monthKey && r.monthKey !== dataMonthKey) continue;
       byFolder.set(r.folder, (byFolder.get(r.folder) || 0) + r.minutes);

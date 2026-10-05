@@ -374,7 +374,7 @@ export function computeDynamicAverages(clickupData, clients) {
   const perFolderMonth = new Map();
   const folders = new Set();
   for (const r of clickupData.rows) {
-    if (isInternalFolder(r.folder)) continue;
+    if (isInternalFolder(r.folder) || r.nonClientSpace) continue;
     if (clickupData.hasBillable && !r.billable) continue;
     folders.add(r.folder);
     if (!r.monthKey || !monthSet.has(r.monthKey)) continue;

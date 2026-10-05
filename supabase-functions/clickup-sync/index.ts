@@ -194,6 +194,17 @@ function resolveFolderName(entry: any): string {
 function resolveTaskName(entry: any): string {
   return entry.task?.name || (typeof entry.description === "string" && entry.description.trim()) || "Untitled (no task selected)";
 }
+// The ClickUp space an entry's task lives in. The frontend uses it to keep Purple
+// Giraffe's own spaces (BDM's CRM / Events and Networking, PG Tower, PG HQ, ...) out of
+// the client views while Timesheets still count them -- see CLIENT_SPACE_IDS in
+// src/nameMatch.js. null for a task-less entry (no task_location at all).
+// Needs the column first (run once in the Supabase SQL editor, BEFORE deploying this):
+//   alter table public.pginvoice_clickup_entries add column if not exists space_id text;
+// Older months get their space_id when re-synced ({"monthOffset": 2}, 3, ...).
+function resolveSpaceId(entry: any): string | null {
+  const id = entry.task_location?.space_id ?? entry.space?.id ?? null;
+  return id != null && String(id) !== "" ? String(id) : null;
+}
 function resolveUserName(entry: any): string {
   return entry.user?.username || entry.user?.email || "";
 }
@@ -286,6 +297,7 @@ Deno.serve(async (req: Request) => {
         folder,
         task: resolveTaskName(entry),
         task_id: resolveTaskId(entry),
+        space_id: resolveSpaceId(entry),
         minutes,
         billable: !!entry.billable,
         has_billable_col: true,

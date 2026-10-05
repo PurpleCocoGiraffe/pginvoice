@@ -4,7 +4,7 @@
 // Planning, Performance, Timesheet Summary) needs zero changes; they already
 // just read `clickup.rows` regardless of where it came from.
 import { supabase } from "./supabaseClient.js";
-import { splitTaskPrefixFolders } from "./nameMatch.js";
+import { splitTaskPrefixFolders, isNonClientSpace } from "./nameMatch.js";
 
 const PAGE_SIZE = 1000; // PostgREST's default row cap per request — paginate past it
 
@@ -20,13 +20,26 @@ export const LIVE_SYNC_LABEL = "Live sync from ClickUp";
 // paginating through all of it (at 1000 rows/request, sequentially) is the single
 // biggest cost in loading anything that reads this. Callers that genuinely need
 // full history (Client Invoicing's month picker, recomputeAccruals) omit it.
+const ENTRY_COLUMNS = "folder, task, task_id, minutes, billable, has_billable_col, user_name, is_internal, month_key, month_label, date_key";
+
 export async function fetchClickupFromSupabase(sinceMonthKey) {
+  try {
+    return await fetchClickupPages(sinceMonthKey, `${ENTRY_COLUMNS}, space_id`);
+  } catch (err) {
+    // space_id is a newer column -- until its migration has run, read the table as before
+    // rather than blanking every module that depends on this data.
+    if (!/space_id/.test(String(err?.message || ""))) throw err;
+    return fetchClickupPages(sinceMonthKey, ENTRY_COLUMNS);
+  }
+}
+
+async function fetchClickupPages(sinceMonthKey, columns) {
   let all = [];
   let from = 0;
   while (true) {
     let q = supabase
       .from("pginvoice_clickup_entries")
-      .select("folder, task, task_id, minutes, billable, has_billable_col, user_name, is_internal, month_key, month_label, date_key")
+      .select(columns)
       // entry_start alone isn't unique (hundreds of real entries share a start instant),
       // and without a unique tie-breaker Postgres may order tied rows differently on each
       // page request -- rows silently skipped or duplicated across page boundaries.
@@ -43,7 +56,9 @@ export async function fetchClickupFromSupabase(sinceMonthKey) {
   }
   if (!all.length) return null;
 
-  const rawRows = all.map((r) => ({
+  const rawRows = all.map((r) => {
+    const nonClientSpace = isNonClientSpace(r.space_id);
+    return {
     folder: r.folder,
     task: r.task,
     // Real ClickUp task id, when this entry was linked to an actual task -- lets the UI
@@ -54,11 +69,15 @@ export async function fetchClickupFromSupabase(sinceMonthKey) {
     billable: !!r.billable,
     hasBillableCol: !!r.has_billable_col,
     user: r.user_name || "",
-    isInternal: !!r.is_internal,
+    // A non-client space's time is internal to every client view (see isNonClientSpace);
+    // `nonClientSpace` additionally keeps it out of the "excluded as internal" list.
+    isInternal: !!r.is_internal || nonClientSpace,
+    nonClientSpace,
     monthKey: r.month_key || null,
     monthLabel: r.month_label || null,
     dateKey: r.date_key || null,
-  }));
+    };
+  });
   // Rewrites a task-prefix-split client's rows (see nameMatch.js) from their real,
   // shared ClickUp folder to the synthetic per-cost-centre identity a task's name
   // prefix maps to -- everything downstream keys off `row.folder`, so this is the one

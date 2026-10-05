@@ -208,7 +208,7 @@ function PerformanceInner() {
     const folders = new Set();
     if (clickup?.rows?.length) {
       for (const r of clickup.rows) {
-        if (isInternalFolder(r.folder)) continue;
+        if (isInternalFolder(r.folder) || r.nonClientSpace) continue;
         if (clickup.hasBillable && !r.billable) continue;
         if (!r.monthKey) continue;
         folders.add(r.folder);

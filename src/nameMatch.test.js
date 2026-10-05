@@ -439,3 +439,24 @@ describe("folder-name drift -- registered folder matched case/whitespace-insensi
     expect(multiFolderMatchesFor("GPEx", ["gpex", "GPEx Website Project"], "GPEX ")).toEqual(["GPEx Website Project", "gpex"]);
   });
 });
+
+// Purple Giraffe's own spaces (BDM's CRM / Events and Networking, PG Tower, ...) must stay
+// out of every client view, while rows with no known space keep today's behaviour.
+describe("isNonClientSpace", () => {
+  it("keeps the Clients and PG CLIENTS spaces", async () => {
+    const { isNonClientSpace } = await import("./nameMatch.js");
+    expect(isNonClientSpace("90167546842")).toBe(false);
+    expect(isNonClientSpace(54751434)).toBe(false);
+    expect(isNonClientSpace(null, "PG CLIENTS")).toBe(false);
+  });
+  it("flags any other space (BDM, PG Tower)", async () => {
+    const { isNonClientSpace } = await import("./nameMatch.js");
+    expect(isNonClientSpace("90167737049")).toBe(true);
+    expect(isNonClientSpace("", "BDM")).toBe(true);
+  });
+  it("treats an unknown space as a client space", async () => {
+    const { isNonClientSpace } = await import("./nameMatch.js");
+    expect(isNonClientSpace(null)).toBe(false);
+    expect(isNonClientSpace("", "")).toBe(false);
+  });
+});
