@@ -924,7 +924,12 @@ export default function PGReconciliation({ onNavigateClients }) {
         const seg = profile ? typeForMonth(profile, pgClientEvents, monthKey) : null;
         if (!shouldSeedPackageMonth(a, monthKey, seg?.type ?? null, seg?.agreedHours ?? null)) continue;
         if (profile && monthInEndPeriods(endPeriodsFor(profile, pgClientEvents), monthKey)) continue;
-        out.push(buildClientObj({ ...newFolderEntry(a.name), costCentreAccruedName: a.name, seeded: true }));
+        const seededObj = buildClientObj({ ...newFolderEntry(a.name), costCentreAccruedName: a.name, seeded: true });
+        // Offboarded in Capacity Planning for this month (e.g. Adelaide Direct Stationers,
+        // offboarded Aug 2025, still carrying agreed hours in the ledger): nobody worked, so
+        // a phantom 0h row would only show a package it no longer has.
+        if (seededObj.isOffboarded) continue;
+        out.push(seededObj);
       }
     }
     return out;
