@@ -178,7 +178,10 @@ const MULTI_FOLDER_CLIENTS = [
   // included in the accrual, not excluded like a billed-separately sub-project.
   { key: "brisbane alarm monitoring", prefixes: ["brisbane alarm monitoring", "bamss"] },
   { key: "clarke energy", prefixes: ["cea "], exact: ["clarke energy"] },
-  { key: "magain", prefixes: ["magain "] },
+  // Since the ClickUp restructure the main project folder (lists "Magain Operations/HO …")
+  // is named just "Magain" inside the Magain parent folder -- the "magain " prefix alone
+  // missed it, splitting Magain Real Estate into two rows.
+  { key: "magain", prefixes: ["magain "], exact: ["magain"] },
   { key: "majestic plumbing", prefixes: ["majestic plumbing", "mp "], excludeFromAccrual: ["majestic plumbing quoted web project"] },
   // "Warrina Homes - Employee Guide (Quoted Project)" used to fuzzy-match "Warrina Homes"
   // on its own (via findMatch's token-similarity fallback), showing as a second,
