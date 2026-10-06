@@ -149,6 +149,11 @@ describe("multiFolderMatchesFor", () => {
     expect(matches).toEqual(["Aus3C Cyber Battle", "Aus3C IRAP"]);
   });
 
+  it("rolls Magain's own \"Magain\" folder in with its agent folders (post-restructure)", () => {
+    const folders = ["Magain", "Magain Nadine Stenzel", "Magain Team Turner", "Majestic Plumbing (WA)"];
+    expect(multiFolderMatchesFor("Magain Real Estate", folders)).toEqual(["Magain", "Magain Nadine Stenzel", "Magain Team Turner"]);
+  });
+
   it("returns null for a non-multi-folder name", () => {
     expect(multiFolderMatchesFor("Purple Giraffe", ["Purple Giraffe", "Aus3C Cyber Battle"])).toBeNull();
   });
