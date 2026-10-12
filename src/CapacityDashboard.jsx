@@ -14,7 +14,6 @@ import {
   computeDynamicAverages, demandFor, demandForGroup,
 } from "./capacityData.js";
 import { useDismissable } from "./useDismissable.js";
-import { LeaveEditor } from "./LeaveEditor.jsx";
 import { syncCapacityLeads } from "./usersSync.js";
 import {
   CLICKUP_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, CAP_SUPPORT_KEY,
@@ -156,6 +155,18 @@ function CapacityDashboardInner({ onNavigateTeam }) {
     return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
   }, []);
 
+  // Leave totals are written by Consultants (TeamDashboard); pick up its saves live, the
+  // same way TeamDashboard listens for cap_leaves. A failed reload keeps the last good copy.
+  useEffect(() => {
+    let cancelled = false;
+    const onUpdate = (e) => {
+      if (e.detail && e.detail.key !== CAP_LEAVES_KEY) return;
+      loadKey(CAP_LEAVES_KEY, {}).then((v) => { if (!cancelled) setLeaves(v); }, (err) => console.error("Couldn't reload leave totals:", err));
+    };
+    window.addEventListener(PG_DATA_EVENT, onUpdate);
+    return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
+  }, []);
+
   // The Clients module (pginvoice_clients, Supabase) is the single source of truth for a
   // client's status and consultant/owner -- reload it here too so Capacity Planning shows
   // the same active/inactive state and the same consultant assignment, and stays in sync
@@ -261,12 +272,15 @@ function CapacityDashboardInner({ onNavigateTeam }) {
   }, [clients, loaded]);
   useEffect(() => { if (loaded) guardedSave(CAP_SUPPORT_KEY, support); }, [support, loaded, guardedSave]);
   useEffect(() => { if (loaded) guardedSave(CAP_NOTES_KEY, notes); }, [notes, loaded, guardedSave]);
-  useEffect(() => { if (loaded) guardedSave(CAP_LEAVES_KEY, leaves); }, [leaves, loaded, guardedSave]);
+  // No save-effect for cap_leaves: leave is read-only here (typed leave is entered in
+  // Consultants, which owns writes to cap_leaves). Writing our copy back would overwrite
+  // a newer total entered there.
   useEffect(() => { if (loaded) guardedSave(CAP_OVERRIDES_KEY, overrides); }, [overrides, loaded, guardedSave]);
 
   const resetSample = useCallback(() => {
-    if (!window.confirm("Reset to sample data? This replaces every current person, client, support allocation, note, leave entry, and override with the seed data — this cannot be undone.")) return;
-    setPeople(SEED_PEOPLE); setClients(SEED_CLIENTS); setSupport(SEED_SUPPORT); setNotes([]); setLeaves({}); setOverrides({});
+    // Leave (cap_leaves) is deliberately left alone: it's payroll input owned by Consultants.
+    if (!window.confirm("Reset to sample data? This replaces every current person, client, support allocation, note and override with the seed data — this cannot be undone. Leave hours are not affected.")) return;
+    setPeople(SEED_PEOPLE); setClients(SEED_CLIENTS); setSupport(SEED_SUPPORT); setNotes([]); setOverrides({});
   }, []);
   const addNote = () => {
     if (!noteDraft.trim()) return;
@@ -278,7 +292,6 @@ function CapacityDashboardInner({ onNavigateTeam }) {
     setNotes((ns) => ns.filter((n) => n.id !== id));
   };
   const leaveFor = (personId) => Number(leaves[`${personId}_${month}`] || 0);
-  const setLeaveFor = (personId, hrs) => setLeaves((prev) => ({ ...prev, [`${personId}_${month}`]: hrs === "" ? 0 : Number(hrs) }));
 
   /* ---------- capacity math ----------
      Delegates the actual per-person formula to computeMonthlyAvailability, the same
@@ -1063,7 +1076,10 @@ function CapacityDashboardInner({ onNavigateTeam }) {
                           {editRoster ? (
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
                               <span className="pg-footnote" style={{ margin: 0 }}>Leave hrs</span>
-                              <LeaveEditor person={p} hours={leaveFor(p.id)} onChange={(hrs) => setLeaveFor(p.id, hrs)} />
+                              {/* Read-only: typed leave (annual / sick-personal / LWOP) is entered in
+                                  Consultants, which rolls the total back into cap_leaves. */}
+                              <span className="pg-footnote" style={{ margin: 0, fontFamily: "var(--font-mono)", color: "var(--fg-primary)" }}>{leaveFor(p.id)} h</span>
+                              <span className="pg-footnote" style={{ margin: 0 }}>(edit in Consultants)</span>
                             </div>
                           ) : (
                             <p className="pg-footnote" style={{ margin: "4px 0 0", textAlign: "center" }}>{allocated.toFixed(1)} / {capacity.toFixed(1)} hrs billable</p>

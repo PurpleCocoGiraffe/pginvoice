@@ -3,7 +3,7 @@ import {
   agreedAt, computeMonthlyAvailability, resignationStatus,
   demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys,
 } from "./capacityData.js";
-import { adelaideLocalMidnightUtcMs } from "./dateMath.js";
+import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor } from "./dateMath.js";
 
 describe("agreedAt", () => {
   it("returns the base agreed hours when there is no history", () => {
@@ -216,5 +216,22 @@ describe("adelaideLocalMidnightUtcMs", () => {
     const start = adelaideLocalMidnightUtcMs(2026, 7, 1);
     const end = adelaideLocalMidnightUtcMs(2026, 8, 1);
     expect(end).toBeGreaterThan(start);
+  });
+});
+
+describe("Adelaide month helpers", () => {
+  // 2026-08-31 15:00 UTC is already 1 Sep 00:30 in Adelaide (UTC+9:30, before DST).
+  const lateAug = new Date(Date.UTC(2026, 7, 31, 15, 0));
+  it("adelaideMonthKey / adelaideDayOfMonth use Adelaide time, not UTC", () => {
+    expect(adelaideMonthKey(lateAug)).toBe("2026-09");
+    expect(adelaideDayOfMonth(lateAug)).toBe(1);
+    expect(adelaideMonthKey(new Date(Date.UTC(2026, 7, 31, 14, 0)))).toBe("2026-08");
+  });
+
+  it("monthOffsetFor counts months back from the Adelaide month, across years", () => {
+    expect(monthOffsetFor("2026-09", lateAug)).toBe(0);
+    expect(monthOffsetFor("2026-08", lateAug)).toBe(1);
+    expect(monthOffsetFor("2025-12", lateAug)).toBe(9);
+    expect(monthOffsetFor("2026-10", lateAug)).toBe(-1);
   });
 });

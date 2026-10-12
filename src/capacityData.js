@@ -10,6 +10,7 @@
 // from a real shared module, instead of one secretly depending on the other.
 import { loadState, saveState } from "./capacityStore.js";
 import { findMatch, multiFolderMatchesFor, folderVariants, isInternalFolder } from "./nameMatch.js";
+import { PUBLIC_HOLIDAYS } from "./publicHolidays.js";
 
 /* ============================================================
    MONTHS / CONSTANTS
@@ -40,53 +41,9 @@ export const MONTH_LABELS = Object.fromEntries(MONTHS.map((mk) => {
   return [mk, monthLabelAt(y, m - 1)];
 }));
 
-// Real, named public holidays for SA/WA/QLD, weekdays only (weekend-falling holidays
-// with no substitute don't affect working-day capacity, so they're excluded here — e.g.
-// ANZAC Day 2026 falls on a Saturday and SA/QLD give no substitute day).
-// Sourced from each state's official 2026 public holiday calendar (Dec 2025 included for
-// months prior to Jan 2026). Verify before relying on this for payroll purposes.
-export const PUBLIC_HOLIDAYS = {
-  SA: [
-    { date: "2025-12-25", name: "Christmas Day" },
-    { date: "2025-12-26", name: "Proclamation Day" },
-    { date: "2026-01-01", name: "New Year's Day" },
-    { date: "2026-01-26", name: "Australia Day" },
-    { date: "2026-03-09", name: "Adelaide Cup Day" },
-    { date: "2026-04-03", name: "Good Friday" },
-    { date: "2026-04-06", name: "Easter Monday" },
-    { date: "2026-06-08", name: "King's Birthday" },
-    { date: "2026-10-05", name: "Labour Day" },
-    { date: "2026-12-25", name: "Christmas Day" },
-    { date: "2026-12-28", name: "Proclamation Day (in lieu)" },
-  ],
-  WA: [
-    { date: "2025-12-25", name: "Christmas Day" },
-    { date: "2025-12-26", name: "Boxing Day" },
-    { date: "2026-01-01", name: "New Year's Day" },
-    { date: "2026-01-26", name: "Australia Day" },
-    { date: "2026-03-02", name: "Labour Day" },
-    { date: "2026-04-03", name: "Good Friday" },
-    { date: "2026-04-06", name: "Easter Monday" },
-    { date: "2026-04-27", name: "ANZAC Day (in lieu)" },
-    { date: "2026-06-01", name: "Western Australia Day" },
-    { date: "2026-09-28", name: "King's Birthday" },
-    { date: "2026-12-25", name: "Christmas Day" },
-    { date: "2026-12-28", name: "Boxing Day (in lieu)" },
-  ],
-  QLD: [
-    { date: "2025-12-25", name: "Christmas Day" },
-    { date: "2025-12-26", name: "Boxing Day" },
-    { date: "2026-01-01", name: "New Year's Day" },
-    { date: "2026-01-26", name: "Australia Day" },
-    { date: "2026-04-03", name: "Good Friday" },
-    { date: "2026-04-06", name: "Easter Monday" },
-    { date: "2026-05-04", name: "Labour Day" },
-    { date: "2026-08-12", name: "Royal Queensland Show (Ekka, Brisbane)" },
-    { date: "2026-10-05", name: "King's Birthday" },
-    { date: "2026-12-25", name: "Christmas Day" },
-    { date: "2026-12-28", name: "Boxing Day (in lieu)" },
-  ],
-};
+// Public holidays now live in publicHolidays.js (shared with Wages review); re-exported
+// here so existing `import { PUBLIC_HOLIDAYS } from "./capacityData.js"` consumers keep working.
+export { PUBLIC_HOLIDAYS } from "./publicHolidays.js";
 
 // Exact count of Mon-Fri weekdays in a given "YYYY-MM" month — computed directly
 // from the calendar rather than a flat assumption, so short/long months are accurate.

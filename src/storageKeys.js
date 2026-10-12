@@ -13,3 +13,8 @@ export const CAP_OVERRIDES_KEY = "cap_overrides";
 export const PG_CLIENTS_KEY = "pg_clients";
 export const PG_COST_CENTRES_KEY = "pg_cost_centres";
 export const PG_ACCRUALS_KEY = "pg_accruals";
+// pginvoice_leave_entries (typed leave per person per month, see leaveSync.js). The
+// per-person monthly total is still mirrored into CAP_LEAVES_KEY for Capacity Planning.
+export const LEAVE_ENTRIES_KEY = "leave_entries";
+// Wages review module: filters + cards/table view, persisted per browser (localStorage).
+export const WAGES_PREFS_KEY = "pg-wages-prefs";
