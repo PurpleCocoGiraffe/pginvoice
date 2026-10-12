@@ -893,8 +893,20 @@ export default function PGReconciliation({ onNavigateClients }) {
       const capMatch = findMatch(c.name, capGroupNames);
       clientObj.isMap = capMatch ? capTypeByGroup.get(capMatch.name) === "map" : false;
       const offboarded = capMatch ? capOffboardedByGroup.get(capMatch.name) : null;
-      clientObj.isOffboarded = !!offboarded && (!monthKey || !offboarded.offboardedFrom || monthKey >= offboarded.offboardedFrom);
-      clientObj.offboardNote = offboarded?.note || "";
+      // The Clients module is where a client's status lifecycle is edited, so a client with
+      // a profile there is offboarded exactly when the viewed month falls inside one of its
+      // end periods (dated offboarding events, or a status set offboarded/archived directly)
+      // -- the same rule seeding and the accrual replay use. Capacity Planning's own saved
+      // status is only the fallback for a client with no profile: reading it first meant a
+      // status changed in the Clients module never reached this tag (or the seed skip below).
+      if (pgProfile && !isSubProject) {
+        clientObj.isOffboarded = monthKey
+          ? monthInEndPeriods(endPeriodsFor(pgProfile, pgClientEvents), monthKey, { hasEvidence: billableWorked > 0 })
+          : pgProfile.status === "offboarded" || pgProfile.status === "archived";
+      } else {
+        clientObj.isOffboarded = !!offboarded && (!monthKey || !offboarded.offboardedFrom || monthKey >= offboarded.offboardedFrom);
+      }
+      clientObj.offboardNote = clientObj.isOffboarded ? (offboarded?.note || "") : "";
       if (!clientObj.capGroup && capMatch) clientObj.capGroup = capMatch.name;
       // Logo set in the Clients module (uploaded, or auto-fetched from the client's
       // website favicon) — purely cosmetic, falls back to initials when absent.
