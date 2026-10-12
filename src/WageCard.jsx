@@ -297,10 +297,13 @@ function Donut({ pct, tone, label }) {
   );
 }
 
-function DonutCard({ title, tone, total, totalLabel, billable, billableLabel, nonBillable, nonBillableLabel }) {
-  const pct = total > 0 ? billable / total : null;
-  const aria = total > 0
-    ? `${title}: ${Math.round(pct * 100)}% billable. ${totalLabel} ${fmtH(total)}, ${billableLabel} ${fmtH(billable)}, ${nonBillableLabel} ${fmtH(nonBillable)}`
+// `base` is the percentage's denominator: every donut is a share of the person's whole
+// ClickUp time (H), so PG % + Client % = Total % (owner's rule: client billable / total
+// time logged), not a share of that donut's own PG or client total.
+function DonutCard({ title, tone, base, total, totalLabel, billable, billableLabel, nonBillable, nonBillableLabel }) {
+  const pct = base > 0 ? billable / base : null;
+  const aria = base > 0
+    ? `${title}: ${billableLabel} is ${Math.round(pct * 100)}% of all ClickUp time. ${totalLabel} ${fmtH(total)}, ${billableLabel} ${fmtH(billable)}, ${nonBillableLabel} ${fmtH(nonBillable)}`
     : `${title}: no time tracked`;
   return (
     <div className="wr-dcard">
@@ -323,14 +326,15 @@ export function BillableSection({ line }) {
   const clientNon = Number(sp.clientNonBillable) || 0;
   const E = Number(line.E) || 0;
   const F = Number(line.F) || 0;
+  const H = Number(line.H) || 0;
   return (
     <Section icon={BarChart3} title="Billable breakdown">
       <div className="wr-donuts">
-        <DonutCard title="Total time" tone="purple" total={Number(line.H) || 0} totalLabel="Total Worked"
+        <DonutCard title="Total time" tone="purple" base={H} total={H} totalLabel="Total Worked"
           billable={Number(line.D) || 0} billableLabel="Billable" nonBillable={Number(line.G) || 0} nonBillableLabel="Unbillable" />
-        <DonutCard title="PG time" tone="purple" total={round2(E + pgNon)} totalLabel="Total PG Time"
+        <DonutCard title="PG time" tone="purple" base={H} total={round2(E + pgNon)} totalLabel="Total PG Time"
           billable={E} billableLabel="PG Billable" nonBillable={pgNon} nonBillableLabel="PG Non-billable" />
-        <DonutCard title="Client time" tone="green" total={round2(F + clientNon)} totalLabel="Total Client Time"
+        <DonutCard title="Client time" tone="green" base={H} total={round2(F + clientNon)} totalLabel="Total Client Time"
           billable={F} billableLabel="Client Billable" nonBillable={clientNon} nonBillableLabel="Client Non-billable" />
       </div>
       {sp.taskless > 0 && <p className="wr-sec__foot wr-sec__foot--small">of which no task (Private): {fmtH(sp.taskless)}</p>}
