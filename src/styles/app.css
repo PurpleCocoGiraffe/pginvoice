@@ -37,6 +37,11 @@
   /* Error TEXT on the card background: coral itself is too light for small text on
      white, so the light theme darkens it (red 700). */
   --status-over-text: var(--status-over);
+  /* Same idea for the healthy/warning hues used as small text (status words,
+     variance values): emerald 500 / amber 500 are fine on the dark card but
+     under 4.5:1 on white, so the light theme darkens them (green 700 / amber 800). */
+  --status-ok-text:   var(--status-ok);
+  --status-warn-text: var(--status-warn);
   /* Scrim behind modal drawers/dialogs (same in both themes). */
   --overlay-scrim:    rgba(23, 23, 23, 0.32);
 
@@ -94,6 +99,8 @@
      the same way Overview's cards already work. */
   --bg-base:     rgb(255, 255, 255);   /* #FFFFFF */
   --status-over-text: rgb(185, 28, 28);
+  --status-ok-text:   rgb(21, 128, 61);
+  --status-warn-text: rgb(146, 64, 14);
   --bg-card:     rgb(255, 255, 255);   /* #FFFFFF */
   --bg-elevated: rgb(238, 232, 255);   /* Purple 100 — used sparingly for active surfaces */
   --bg-nav:      rgba(255, 255, 255, 0.85);
@@ -148,6 +155,9 @@
    bumps it, for the mono uppercase labels/footnotes that lean on it).
    ============================================================================ */
 :root[data-theme="dark"] {
+  /* Emerald 600 is ~4.4:1 on its own soft tint over the dark card; one step
+     lighter keeps status words/values at >= 4.5:1. */
+  --status-ok-text: rgb(34, 197, 94);
   --bg-base:     rgb(19, 19, 19);      /* #131313 */
   --bg-card:     rgb(27, 27, 28);      /* #1B1B1C */
   --bg-elevated: rgb(42, 42, 42);      /* #2A2A2A — used sparingly for active surfaces */

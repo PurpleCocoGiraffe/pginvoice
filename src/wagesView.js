@@ -381,6 +381,20 @@ const LIVE_DIFF_FIELDS = [
 // before Xero is entered (S = Xero, not known yet).
 export const hasExpected = (line) => line?.S != null;
 
+// The card's "Adjusted expected hours": S less every leave column and public holidays,
+// i.e. the hours Xero should show. null whenever S is null (never a fabricated 0).
+// L − adjusted is exactly T (= R − S), so the variance box shows line.T against it.
+export function adjustedExpected(line) {
+  if (line?.S == null) return null;
+  return round2(num(line.S) - num(line.N) - num(line.O) - num(line.P) - num(line.unspecified) - num(line.Q));
+}
+// T as a fraction of the adjusted expected hours; null when T or adjusted is unknown/0.
+export function variancePctOfAdjusted(line) {
+  const adj = adjustedExpected(line);
+  if (line?.T == null || !adj) return null;
+  return Math.round((num(line.T) / adj) * 10000) / 10000;
+}
+
 // ---------------------------------------------------------------- grouping / filters ----
 export const STATUS_GROUPS = [
   { key: "attention", title: "Needs attention", statuses: ATTENTION_STATUSES },
