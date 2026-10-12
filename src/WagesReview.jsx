@@ -275,6 +275,7 @@ function WagesReviewInner() {
   const [sources, setSources] = useState({ month: null, data: {} });
   const [loading, setLoading] = useState(true);
   const [drawerId, setDrawerId] = useState(null);
+  const [drawerTab, setDrawerTab] = useState("recon");
   const [dialog, setDialog] = useState(null); // "paste" | "close" | "reopen"
   const [action, setAction] = useState({ busy: false, error: null });
   const [reopenReason, setReopenReason] = useState("");
@@ -450,8 +451,9 @@ function WagesReviewInner() {
     const wp = wagePeople.find((x) => x.person_id === l.person_id);
     return { person_id: l.person_id, full_name: l.name, display_name: l.name, xero_name: wp?.xero_name || null, clickup_user_names: wp?.clickup_user_names || [] };
   });
-  const openDrawer = (personId) => {
+  const openDrawer = (personId, tab = "recon") => {
     if (!drawerId) drawerTrigger.current = document.activeElement;
+    setDrawerTab(tab);
     setDrawerId(personId);
   };
   const closeDrawer = () => {
@@ -678,7 +680,7 @@ function WagesReviewInner() {
       {drawerLine && view && (
         <WageDrawer
           key={drawerLine.person_id}
-          line={drawerLine} view={view} monthText={monthText} closed={closed}
+          line={drawerLine} view={view} monthText={monthText} closed={closed} initialTab={drawerTab}
           position={drawerIdx >= 0 ? `${drawerIdx + 1} of ${ordered.length}` : ""}
           onClose={closeDrawer}
           onPrev={drawerIdx > 0 ? () => setDrawerId(ordered[drawerIdx - 1].person_id) : null}

@@ -5,10 +5,11 @@ vi.mock("./supabaseClient.js", () => ({ supabase: {} }));
 
 import {
   buildMonthView, buildSnapshot, computeTotals, groupLines, filterLines, normaliseSettings, typeShort,
-  hasExpected, toWorkbookRows, WORKBOOK_HEADINGS, REVIEW_FIELDS, COMMENT_FIELDS,
+  hasExpected, adjustedExpected, variancePctOfAdjusted, toWorkbookRows, WORKBOOK_HEADINGS, REVIEW_FIELDS, COMMENT_FIELDS,
 } from "./wagesView.js";
 import { expectedFor, computeLine } from "./wagesCalc.js";
 
+const round = (v) => Math.round(v * 100) / 100;
 const CLIENTS = "90167546842";
 const PG_HQ = "90160000001";
 const MONTH = "2026-10"; // 22 weekdays; SA + QLD Labour/King's Birthday Mon 5 Oct, WA none
@@ -248,6 +249,16 @@ describe("helpers", () => {
   it("normaliseSettings coerces numeric strings and fills defaults", () => {
     expect(normaliseSettings({ hours_per_day: "7.25" }).hours_per_day).toBe(7.25);
     expect(normaliseSettings(null).xero_tolerance_h).toBe(0.25);
+  });
+
+  it("adjustedExpected is S less leave and public holidays, null when S is null; T is L minus it", () => {
+    const line = { S: 167.2, N: 15.2, O: 7.6, P: 0, unspecified: 1, Q: 7.6, L: 140, T: 4.2 };
+    expect(adjustedExpected(line)).toBe(135.8);
+    expect(round(line.L - adjustedExpected(line))).toBe(line.T);
+    expect(variancePctOfAdjusted(line)).toBe(0.0309);
+    expect(adjustedExpected({ S: null, N: 7.6, Q: 7.6 })).toBeNull();
+    expect(variancePctOfAdjusted({ S: null, T: null })).toBeNull();
+    expect(variancePctOfAdjusted({ S: 160, N: 0, Q: 0, T: null })).toBeNull();
   });
 
   it("typeShort shortens workbook labels", () => {

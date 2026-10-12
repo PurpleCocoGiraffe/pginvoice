@@ -142,8 +142,8 @@ const TABS = [
 
 // The drawer remounts per person (keyed by person_id), so the page restores focus to the
 // card/row that opened it on close; this only moves focus in and keeps Tab inside.
-export function WageDrawer({ line, view, monthText, closed, position, onClose, onPrev, onNext, onSaveLine }) {
-  const [tab, setTab] = useState("recon");
+export function WageDrawer({ line, view, monthText, closed, initialTab = "recon", position, onClose, onPrev, onNext, onSaveLine }) {
+  const [tab, setTab] = useState(initialTab);
   const closeRef = useRef(null);
   const dialogRef = useFocusTrap({ initialFocusRef: closeRef, restoreFocus: false });
   useEscape(onClose);
@@ -176,7 +176,7 @@ export function WageDrawer({ line, view, monthText, closed, position, onClose, o
 
         {tab === "recon" && (
           <div className="wr-drawer__body" {...tabPanelProps(idp, "recon")}>
-            <LeaveSection line={line} month={monthText} />
+            <LeaveSection line={line} month={monthText} perDay={view.perDay} />
             <ReconSection line={line} settings={view.settings} />
             <BillableSection line={line} />
             <HoursSection line={line} view={view} />
