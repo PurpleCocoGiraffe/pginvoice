@@ -14,7 +14,6 @@ import {
   computeDynamicAverages, demandFor, demandForGroup,
 } from "./capacityData.js";
 import { useDismissable } from "./useDismissable.js";
-import { LeaveEditor } from "./LeaveEditor.jsx";
 import { syncCapacityLeads } from "./usersSync.js";
 import {
   CLICKUP_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, CAP_SUPPORT_KEY,
@@ -278,7 +277,6 @@ function CapacityDashboardInner({ onNavigateTeam }) {
     setNotes((ns) => ns.filter((n) => n.id !== id));
   };
   const leaveFor = (personId) => Number(leaves[`${personId}_${month}`] || 0);
-  const setLeaveFor = (personId, hrs) => setLeaves((prev) => ({ ...prev, [`${personId}_${month}`]: hrs === "" ? 0 : Number(hrs) }));
 
   /* ---------- capacity math ----------
      Delegates the actual per-person formula to computeMonthlyAvailability, the same
@@ -1063,7 +1061,9 @@ function CapacityDashboardInner({ onNavigateTeam }) {
                           {editRoster ? (
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
                               <span className="pg-footnote" style={{ margin: 0 }}>Leave hrs</span>
-                              <LeaveEditor person={p} hours={leaveFor(p.id)} onChange={(hrs) => setLeaveFor(p.id, hrs)} />
+                              {/* Read-only: typed leave (annual / sick-personal / LWOP) is entered in
+                                  Consultants, which rolls the total back into cap_leaves. */}
+                              <span className="pg-footnote" style={{ margin: 0, fontFamily: "var(--font-mono)", color: "var(--fg-primary)", cursor: "help" }} title="Edit leave by type in Consultants">{leaveFor(p.id)} h</span>
                             </div>
                           ) : (
                             <p className="pg-footnote" style={{ margin: "4px 0 0", textAlign: "center" }}>{allocated.toFixed(1)} / {capacity.toFixed(1)} hrs billable</p>

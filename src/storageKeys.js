@@ -16,3 +16,5 @@ export const PG_ACCRUALS_KEY = "pg_accruals";
 // pginvoice_leave_entries (typed leave per person per month, see leaveSync.js). The
 // per-person monthly total is still mirrored into CAP_LEAVES_KEY for Capacity Planning.
 export const LEAVE_ENTRIES_KEY = "leave_entries";
+// Wages review module: filters + cards/table view, persisted per browser (localStorage).
+export const WAGES_PREFS_KEY = "pg-wages-prefs";

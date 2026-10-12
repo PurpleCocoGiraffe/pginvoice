@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, Plug, HelpCircle, Menu, X, MoreHorizontal, Handshake } from "lucide-react";
+import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, Plug, HelpCircle, Menu, X, MoreHorizontal, Handshake, Wallet } from "lucide-react";
 import Overview from "./Overview.jsx";
 import PlaceholderPage from "./PlaceholderPage.jsx";
 import PGReconciliation from "./App.jsx";
@@ -11,6 +11,7 @@ import Clients from "./Clients.jsx";
 import TeamDashboard from "./TeamDashboard.jsx";
 import SettingsPage from "./Settings.jsx";
 import UsersPage from "./Users.jsx";
+import WagesReview from "./WagesReview.jsx";
 import ForcePasswordChange from "./ForcePasswordChange.jsx";
 import { supabase } from "./supabaseClient.js";
 import { fetchCostCentres } from "./clientsSync.js";
@@ -31,8 +32,11 @@ const MODULES = [
   { key: "timesheet", label: "Timesheets", icon: CalendarDays },
   { key: "accruals", label: "Client Accruals", icon: Clock },
   { key: "performance", label: "Reporting", icon: TrendingUp },
+  { key: "wages", label: "Wages review", icon: Wallet },
   { key: "bdm", label: "BDM", icon: Handshake },
 ];
+// Payroll-adjacent: Super Admin + Admin only (the wage tables' RLS is admin tier too).
+const ADMIN_ONLY_MODULE_KEYS = new Set(["wages"]);
 // What Consultant/Coordinator can see: Overview, Clients, Client Accruals,
 // Reporting only — real enforcement is the RLS scoping to their assigned
 // clients (usersSync/pginvoice_rbac migration), this is just matching nav to it.
@@ -205,13 +209,16 @@ export default function Shell() {
   const isClientScoped = CLIENT_SCOPED_ROLES.has(profile.role);
   const isAdminTier = ADMIN_TIER_ROLES.has(profile.role);
   const isSuperAdmin = profile.role === "super_admin";
-  const visibleModules = isClientScoped ? MODULES.filter((m) => CLIENT_SCOPED_MODULE_KEYS.has(m.key)) : MODULES;
+  const visibleModules = isClientScoped
+    ? MODULES.filter((m) => CLIENT_SCOPED_MODULE_KEYS.has(m.key))
+    : MODULES.filter((m) => isAdminTier || !ADMIN_ONLY_MODULE_KEYS.has(m.key));
   const visibleBottomNav = isClientScoped ? BOTTOM_NAV_MODULES.filter((m) => CLIENT_SCOPED_MODULE_KEYS.has(m.key)) : BOTTOM_NAV_MODULES;
   const visibleSecondary = isClientScoped
     ? []
     : SECONDARY_MODULES.filter((m) => m.key !== "integrations" || isSuperAdmin);
   if (isAdminTier) visibleSecondary.push(USERS_MODULE);
   if (isClientScoped && !CLIENT_SCOPED_MODULE_KEYS.has(active)) { setActive("overview"); return null; }
+  if (!isAdminTier && ADMIN_ONLY_MODULE_KEYS.has(active)) { setActive("overview"); return null; }
 
   const username = session.user?.email?.split("@")[0] || "Account";
   const logOut = () => { supabase.auth.signOut(); };
@@ -331,6 +338,7 @@ export default function Shell() {
           <div style={{ display: active === "help" ? "block" : "none" }}>
             <PlaceholderPage title="Help." subtitle="Documentation and support aren't built yet." icon={HelpCircle} empty="Help module coming soon." />
           </div>
+          {isAdminTier && <div style={{ display: active === "wages" ? "block" : "none" }}><WagesReview /></div>}
           {isAdminTier && <div style={{ display: active === "users" ? "block" : "none" }}><UsersPage ownRole={profile.role} ownUserId={profile.userId} /></div>}
         </>}
       </main>
