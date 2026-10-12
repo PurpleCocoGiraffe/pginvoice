@@ -606,7 +606,12 @@ export default function PGReconciliation({ onNavigateClients }) {
         // under it (e.g. ARAS's own folder never gets renamed off of "Aged Rights
         // Advocacy Services", so its Website Optimisation Project sub-project silently
         // has nowhere to attach).
-        if (ownFolder && map.has(ownFolder) && !map.get(ownFolder).costCentreParentAccName) {
+        // Only the folder's owner per pgProfileByFolder (the active record, when more than
+        // one points at the same folder) may claim it -- otherwise the last name in this
+        // loop wins, which is how offboarded "Comunet (HTSA  project)" took over the live
+        // Comunet row, hiding its logo and blanking its package.
+        const folderOwner = ownFolderRaw ? pgProfileByFolder.get(folderKey(ownFolderRaw))?.client : null;
+        if (ownFolder && map.has(ownFolder) && !map.get(ownFolder).costCentreParentAccName && folderOwner === accName) {
           const entry = map.get(ownFolder);
           entry.name = accName;
           entry.costCentreAccruedName = accName;
