@@ -371,7 +371,7 @@ export function computeLine({ clickup, leave, xeroHours, expected, overrides = {
 // instead of silently becoming 1525. A monthly value over MONTHLY_HOURS_WARN is allowed
 // but comes back with a warning. Returns { ok, value, error?, warning? }.
 export const MONTHLY_HOURS_WARN = 400;
-const THOUSANDS_RE = /^\d{1,3}(,\d{3})+(\.\d+)?$/;
+const THOUSANDS_RE = /^[1-9]\d{0,2}(,\d{3})+(\.\d+)?$/;
 const PLAIN_NUMBER_RE = /^(\d+(\.\d*)?|\.\d+)$/;
 export function parseHoursInput(text) {
   const t = String(text ?? "").trim();
@@ -435,6 +435,9 @@ function lineTokens(line) {
   const trimmed = line.trim();
   const dc = line.match(DECIMAL_COMMA_RE);
   if (dc) return [{ kind: "error", raw: trimmed, message: `Use a dot for decimals: ${dc[1]},${dc[2]} → ${dc[1]}.${dc[2]}` }];
+  // "1,234.5" would otherwise be split on the comma into "1" and "234.5" -- and if the
+  // admin ticked "ignore unreadable lines", that person would be saved at 1 h.
+  if (/\d,\d{3}\b/.test(line)) return [{ kind: "error", raw: trimmed, message: "Remove thousands separators from hours (1,234.5 → 1234.5)" }];
   const tabbed = line.includes("\t");
   const chunks = (tabbed ? line.split("\t") : line.split(/,|\s{2,}/)).map((c) => c.trim()).filter(Boolean);
   if (!chunks.length || chunks.every(isHeaderChunk)) return [];

@@ -316,10 +316,14 @@ function TeamDashboardInner() {
       // The user moved to another month mid-write -- get this month's truth from the server.
       monthEntries = await fetchLeaveEntries(monthKey);
     }
-    await setLeaveFor(personId, totalLeaveHours(entriesForPerson(monthEntries, personId, monthKey)), monthKey);
-    // Our own state is already up to date; just tell other modules (dispatch is synchronous).
-    ownWriteLeaveEntries.current = true;
-    try { notifyLeaveEntriesChanged(); } finally { ownWriteLeaveEntries.current = false; }
+    try {
+      await setLeaveFor(personId, totalLeaveHours(entriesForPerson(monthEntries, personId, monthKey)), monthKey);
+    } finally {
+      // The typed entry is saved even if the total write failed, so other modules (Wages)
+      // must still hear about it. Our own state is already up to date (dispatch is synchronous).
+      ownWriteLeaveEntries.current = true;
+      try { notifyLeaveEntriesChanged(); } finally { ownWriteLeaveEntries.current = false; }
+    }
   }, [commitLeaveEntries, setLeaveFor]);
 
   // Every failure is also put in the page's saveError banner: the editor shows it inline

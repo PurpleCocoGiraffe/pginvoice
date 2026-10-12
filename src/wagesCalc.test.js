@@ -555,6 +555,13 @@ describe("parseHoursInput", () => {
 
   it("accepts a real thousands separator (and warns: over 400 h)", () => {
     expect(parseHoursInput("1,234.5")).toMatchObject({ ok: true, value: 1234.5, warning: expect.any(String) });
+    expect(parseHoursInput("00,123").ok).toBe(false);
+  });
+
+  it("refuses a pasted line with a thousands separator rather than reading 1,234.5 as 1 h", () => {
+    const { rows, errors } = parseXeroPaste("Jane Smith 1,234.5");
+    expect(rows).toEqual([]);
+    expect(errors[0].message).toMatch(/thousands/);
   });
 
   it("warns (doesn't block) over 400 h in a month", () => {
