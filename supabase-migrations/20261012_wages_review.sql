@@ -1,3 +1,8 @@
+-- RECORD OF WHAT WAS APPLIED -- NOT IDEMPOTENT. Do not re-run this file: the tables,
+-- policies and triggers below already exist on the project and several statements
+-- (CREATE TABLE / CREATE POLICY / CREATE TRIGGER) fail or duplicate on a second run.
+-- Make further schema changes as a new migration.
+--
 -- Wages review module + typed leave entries.
 -- Applied to project fzvlnzlecchsubkpsmew via the Supabase MCP as migrations
 -- wages_review_tables / _policies / _summary_rpc / _touch_trigger / _lock_guard;

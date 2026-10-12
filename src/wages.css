@@ -5,6 +5,11 @@
    app's own tokens so it reads correctly in BOTH themes (light is the default),
    with no neon/glow. Status colours are used only for icons and soft fills;
    text stays --fg-primary/--fg-secondary so it holds contrast on white.
+
+   Why wr-banner / wr-drawer / wr-modal exist next to app.css's pg-banner-warn /
+   pg-drawer: this page needs four banner tones (warn / error / ok / info, via
+   --wr-tone) where pg-banner-warn has one, and its drawer is a modal overlay with a
+   scrim (--overlay-scrim) and focus trap, where pg-drawer is an in-flow/push panel.
    ============================================================================ */
 
 .wr {
@@ -181,6 +186,7 @@
 .wr-table__person { position: sticky; left: 0; z-index: 1; background: var(--bg-card); box-shadow: inset -1px 0 0 var(--border-subtle); min-width: 180px; }
 .wr-table thead th:first-child { left: 0; z-index: 3; }
 .wr-table td { white-space: nowrap; }
+.wr-table .wr-dots { flex-wrap: nowrap; }
 .wr-table tfoot td, .wr-table tfoot th { position: sticky; bottom: 0; background: var(--bg-card); font-weight: 600; color: var(--fg-primary); box-shadow: inset 0 1px 0 var(--fg-tertiary); }
 .wr-table tfoot th.wr-table__person { z-index: 3; }
 .wr-table__name { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 4px 0; cursor: pointer; font: inherit; color: var(--fg-primary); text-align: left; }
@@ -191,11 +197,12 @@
 .wr-hours-input--compact .pg-input { width: 84px; padding: 5px 8px; }
 .wr-hours-input .pg-input:disabled { opacity: 0.6; cursor: not-allowed; }
 .wr-field-state { font-family: var(--font-body); font-size: 11px; color: var(--fg-tertiary); }
-.wr-field-state--error { color: var(--status-over); font-weight: 600; white-space: normal; }
-:root[data-theme="light"] .wr-field-state--error { color: rgb(185, 28, 28); }
+.wr-field-state--error { color: var(--status-over-text); font-weight: 600; white-space: normal; }
+.wr-field-state--warn { color: var(--fg-secondary); white-space: normal; }
+.wr .wr-checkbox, .wr-modal .wr-checkbox { margin-top: 6px; }
 
 /* ---- drawer + modal -------------------------------------------------------------- */
-.wr-drawer-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(23, 23, 23, 0.32); animation: wr-fade 0.2s var(--ease); }
+.wr-drawer-backdrop { position: fixed; inset: 0; z-index: 60; background: var(--overlay-scrim); animation: wr-fade 0.2s var(--ease); }
 @keyframes wr-fade { from { opacity: 0; } to { opacity: 1; } }
 .wr-drawer {
   position: fixed; z-index: 61; top: 12px; right: 12px; bottom: 12px; width: 640px; max-width: calc(100vw - 24px);
@@ -299,4 +306,3 @@
   .wr-iconbtn { width: 44px; height: 44px; }
   .wr-people__cu { display: none; }
 }
-.wr-table .wr-dots { flex-wrap: nowrap; }

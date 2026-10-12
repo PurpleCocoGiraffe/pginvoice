@@ -8,27 +8,49 @@
 // recompute: ClickUp edits, rule changes or a roster edit after closing must not move
 // numbers Kelly already signed off. Comments stay live (they're editable after close),
 // so they're merged from the current wage_lines rows over the snapshot's copy.
+//
+// LEAVE_TYPES comes from leaveSync.js, which creates (but here never calls) the Supabase
+// client -- tests mock supabaseClient.js.
 import {
   classifyClickup, attributeToPeople, expectedFor, computeLine, standardMonthHours,
-  weekdaysInMonth, STANDARD_DAY_HOURS,
+  wageWeekdaysInMonth, round2, num, normName,
+  STANDARD_DAY_HOURS, DEFAULT_XERO_TOLERANCE_H, DEFAULT_VARIANCE_THRESHOLD_H,
 } from "./wagesCalc.js";
-import { holidaysFor } from "./publicHolidays.js";
+import { holidaysFor, HOLIDAY_COVERAGE_END } from "./publicHolidays.js";
+import { LEAVE_TYPES } from "./leaveSync.js";
 
 export const SNAPSHOT_VERSION = 1;
 export const WAGE_STATES = ["SA", "WA", "QLD"];
-export const COMMENT_FIELDS = ["pg_comment", "kw_comment", "ls_comment", "phil_comment", "kw2_comment"];
+
+// Workbook review/comment columns U-Y, in workbook order. key = wage_lines column,
+// short = card/table dot label, label = drawer field label, heading = workbook heading.
+export const REVIEW_FIELDS = [
+  { key: "pg_comment", short: "PG", label: "PG note", heading: "PG" },
+  { key: "kw_comment", short: "KW", label: "Kelly (KW)", heading: "KW" },
+  { key: "ls_comment", short: "LS", label: "Lynda (LS)", heading: "LS" },
+  { key: "phil_comment", short: "Phil", label: "Phil", heading: "Phil" },
+  { key: "kw2_comment", short: "KW2", label: "Kelly round 2 (KW2)", heading: "KW comment round 2" },
+];
+export const COMMENT_FIELDS = REVIEW_FIELDS.map((f) => f.key);
+// The reviewer sign-off dots (everything but the PG note).
+export const REVIEWER_FIELDS = REVIEW_FIELDS.filter((f) => f.key !== "pg_comment");
+
+// Typed leave keys (annual / personal / lwop / unspecified) -- the leave columns N/O/P + untyped.
+const LEAVE_KEYS = LEAVE_TYPES.map((t) => t.key);
+const TYPED_LEAVE_KEYS = LEAVE_KEYS.filter((k) => k !== "unspecified");
+
+// Statuses that put a person in "Needs attention" (and the "attention" filter).
+export const ATTENTION_STATUSES = ["check_sync", "over", "under"];
 
 export const DEFAULT_WAGE_SETTINGS = {
   hours_per_day: STANDARD_DAY_HOURS,
-  xero_tolerance_h: 0.25,
-  variance_threshold_h: 3.8,
+  xero_tolerance_h: DEFAULT_XERO_TOLERANCE_H,
+  variance_threshold_h: DEFAULT_VARIANCE_THRESHOLD_H,
   pg_folders: ["Purple Giraffe"],
   ignored_clickup_users: ["Purple Giraffe"],
   xero_name_map: {},
 };
 
-const round2 = (n) => Math.round(n * 100) / 100;
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const numOrNull = (v) => (v == null || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
 const dateKey = (v) => (v ? String(v).slice(0, 10) : null);
 
@@ -60,10 +82,11 @@ export const typeShort = (label) => String(label || "").replace(/F\/T/g, "FT").r
 // total as "unspecified" -- dropping it would silently understate column R.
 function leaveByPerson(entries, capLeaves, monthKey, personIds) {
   const out = {};
-  const blank = () => ({ annual: 0, personal: 0, lwop: 0, unspecified: 0, days: { annual: 0, personal: 0, lwop: 0, unspecified: 0 }, legacy: false });
+  const zeros = () => Object.fromEntries(LEAVE_KEYS.map((k) => [k, 0]));
+  const blank = () => ({ ...zeros(), days: zeros(), legacy: false });
   for (const e of entries || []) {
     if (e.month_key && e.month_key !== monthKey) continue;
-    const t = ["annual", "personal", "lwop"].includes(e.leave_type) ? e.leave_type : "unspecified";
+    const t = TYPED_LEAVE_KEYS.includes(e.leave_type) ? e.leave_type : "unspecified";
     const b = out[e.person_id] || (out[e.person_id] = blank());
     b[t] = round2(b[t] + num(e.hours));
     if (e.days != null) b.days[t] = round2(b.days[t] + num(e.days));
@@ -81,7 +104,7 @@ function leaveByPerson(entries, capLeaves, monthKey, personIds) {
 function hoursByFolder(buckets) {
   const map = new Map();
   for (const f of buckets?.byFolder || []) {
-    const k = `${f.pg ? "pg" : "client"}|${String(f.folder ?? "").trim().toLowerCase()}`;
+    const k = `${f.pg ? "pg" : "client"}|${normName(f.folder)}`;
     const row = map.get(k) || { folder: f.folder || "(No folder)", pg: f.pg, billableH: 0, nonBillableH: 0 };
     if (f.billable) row.billableH += f.minutes / 60; else row.nonBillableH += f.minutes / 60;
     map.set(k, row);
@@ -206,6 +229,9 @@ export function computeLiveView(sources, monthKey) {
       outsideWindow,
       orphanWagePeople,
       unknownSpaceHours: round2(unknownSpaceMinutes / 60),
+      // publicHolidays.js only lists dates up to HOLIDAY_COVERAGE_END; past that, Q would
+      // silently be 0 for everyone.
+      holidaysNotLoaded: first > HOLIDAY_COVERAGE_END,
     },
   };
 }
@@ -249,12 +275,21 @@ export function computeTotals(lines) {
   };
 }
 
+// Line fields that are display-only and not needed to render a closed month: photo is a
+// base64 data URL (tens of KB per person -- re-read from the live roster instead),
+// stateHolidays isn't rendered at all.
+const SNAPSHOT_DROP_FIELDS = ["photo", "stateHolidays"];
+
 // Frozen at close: lines + the config that produced them. Plain JSON.
 export function buildSnapshot(view, computedAt = new Date().toISOString()) {
   return {
     version: SNAPSHOT_VERSION,
     computed_at: computedAt,
-    lines: view.lines,
+    lines: view.lines.map((l) => {
+      const out = { ...l };
+      for (const k of SNAPSHOT_DROP_FIELDS) delete out[k];
+      return out;
+    }),
     settings: view.settings,
     standardHours: view.standardHours,
     weekdays: view.weekdays,
@@ -274,24 +309,33 @@ export function buildMonthView(sources, monthKey) {
 
   if (snap) {
     const liveRows = new Map((sources.lines || []).map((l) => [l.person_id, l]));
+    // Photos aren't frozen (see buildSnapshot); take the current one when the roster loaded.
+    const photoById = new Map((sources.roster || []).map((p) => [p.id, p.photo || ""]));
     const lines = snap.lines.map((l) => {
       const row = liveRows.get(l.person_id);
-      return row ? { ...l, ...commentsOf(row) } : l;
+      const merged = row ? { ...l, ...commentsOf(row) } : { ...l };
+      if (merged.photo == null) merged.photo = photoById.get(l.person_id) || "";
+      return merged;
     });
     let liveDiffers = [];
     if (liveAvailable) {
       const live = computeLiveView(sources, monthKey);
       const liveById = new Map(live.lines.map((l) => [l.person_id, l]));
-      liveDiffers = lines
-        .map((l) => ({ person_id: l.person_id, name: l.name, snapshotH: l.H, liveH: liveById.get(l.person_id)?.H ?? null }))
-        .filter((d) => d.liveH == null || Math.abs(num(d.liveH) - num(d.snapshotH)) > 0.1);
+      liveDiffers = lines.map((l) => {
+        const lv = liveById.get(l.person_id);
+        const fields = lv
+          ? LIVE_DIFF_FIELDS.filter((f) => Math.abs(num(lv[f.key]) - num(l[f.key])) > 0.1)
+            .map((f) => ({ key: f.key, label: f.label, snapshot: l[f.key] ?? null, live: lv[f.key] ?? null }))
+          : [];
+        return { person_id: l.person_id, name: l.name, missing: !lv, fields };
+      }).filter((d) => d.missing || d.fields.length);
     }
     const settings = normaliseSettings(snap.settings);
     return {
       monthKey, closed: true, fromSnapshot: true, monthRow, settings,
       computedAt: snap.computed_at || null,
       perDay: settings.hours_per_day,
-      weekdays: snap.weekdays ?? weekdaysInMonth(monthKey),
+      weekdays: snap.weekdays ?? wageWeekdaysInMonth(monthKey),
       standardHours: snap.standardHours ?? standardMonthHours(monthKey, settings.hours_per_day),
       holidaysByState: snap.holidaysByState || holidaysByState(monthKey),
       lines,
@@ -307,7 +351,7 @@ export function buildMonthView(sources, monthKey) {
     settings: live.settings,
     computedAt: null,
     perDay: live.settings.hours_per_day,
-    weekdays: weekdaysInMonth(monthKey),
+    weekdays: wageWeekdaysInMonth(monthKey),
     standardHours: standardMonthHours(monthKey, live.settings.hours_per_day),
     holidaysByState: holidaysByState(monthKey),
     lines: live.lines,
@@ -318,12 +362,28 @@ export function buildMonthView(sources, monthKey) {
 }
 
 function emptyWarnings() {
-  return { unmapped: [], conflicts: [], needsSetup: [], noRule: [], untypedLeave: [], outsideWindow: [], orphanWagePeople: [], unknownSpaceHours: 0 };
+  return { unmapped: [], conflicts: [], needsSetup: [], noRule: [], untypedLeave: [], outsideWindow: [], orphanWagePeople: [], unknownSpaceHours: 0, holidaysNotLoaded: false };
 }
+
+// Inputs that can move after close and that the closed-month banner compares (> 0.1 h):
+// ClickUp total, the three typed leave columns, untyped leave, public holidays.
+const LIVE_DIFF_FIELDS = [
+  { key: "H", label: "ClickUp" },
+  { key: "N", label: "Annual leave" },
+  { key: "O", label: "Sick / Personal" },
+  { key: "P", label: "LWOP" },
+  { key: "unspecified", label: "Untyped leave" },
+  { key: "Q", label: "Public holiday" },
+];
+
+// Whether the line has an expected figure S to show/sum: false for a person with no hours
+// rule covering the month (S null, never a fabricated 0) and for an all-casual month
+// before Xero is entered (S = Xero, not known yet).
+export const hasExpected = (line) => line?.S != null;
 
 // ---------------------------------------------------------------- grouping / filters ----
 export const STATUS_GROUPS = [
-  { key: "attention", title: "Needs attention", statuses: ["check_sync", "over", "under"] },
+  { key: "attention", title: "Needs attention", statuses: ATTENTION_STATUSES },
   { key: "awaiting", title: "Awaiting Xero", statuses: ["awaiting_xero"] },
   { key: "ok", title: "Within tolerance", statuses: ["ok"] },
   { key: "not_assessed", title: "Not assessed (casual / no rule)", statuses: ["not_assessed"] },
@@ -347,9 +407,41 @@ export function filterLines(lines, filters = {}) {
     if (filters.state && filters.state !== "all" && l.state !== filters.state) return false;
     if (filters.type && filters.type !== "all" && !String(l.typeShort || typeShort(l.type)).includes(filters.type)) return false;
     if (filters.status && filters.status !== "all") {
-      if (filters.status === "attention") return ["check_sync", "over", "under"].includes(l.status);
+      if (filters.status === "attention") return ATTENTION_STATUSES.includes(l.status);
       if (l.status !== filters.status) return false;
     }
     return true;
+  });
+}
+
+// ---------------------------------------------------------------- workbook export -------
+// Columns A-Y of Kelly's workbook, in order. U-Y come from REVIEW_FIELDS.
+export const WORKBOOK_HEADINGS = [
+  "Employee", "State", "Type", "ClickUp total billed (with PG)", "PG billed", "Client billed",
+  "ClickUp unbilled", "ClickUp total", "% billed total", "% billed client", "% billed (with PG)",
+  "Xero", "ClickUp Total Xero Total Variance", "AL", "Sick / Personal", "LWOP", "Public Holiday",
+  "Total", "Should be", "Variance",
+  ...REVIEW_FIELDS.map((f) => f.heading),
+];
+
+// lines: [{ person_id, ...computeLine(...) result, <REVIEW_FIELDS keys> }]. people:
+// [{ person_id, display_name, state, type? }] (type overrides the basis-derived label).
+// Nulls become "" so the cell stays blank; percentages stay as fractions (format the
+// column as % in the sheet). Variance (T) is blank unless it's assessable or the month is
+// all casual-equals-Xero (T = 0 there, as in the workbook) -- a mixed or no-rule month's
+// R - S isn't a real over/under. Column I ("% billed total") is in the workbook's layout
+// but not used in the workbook, so it's always blank here.
+export function toWorkbookRows(lines, people) {
+  const byId = new Map((people || []).map((p) => [p.person_id, p]));
+  const blank = (v) => (v == null ? "" : v);
+  return (lines || []).map((l) => {
+    const p = byId.get(l.person_id) || {};
+    const T = l.varianceApplicable || l.allCasualXero ? l.T : null;
+    const vals = [
+      p.display_name ?? p.full_name ?? l.person_id, p.state ?? "", p.type ?? l.type ?? "",
+      l.D, l.E, l.F, l.G, l.H, "", l.J, l.K, l.L, l.M, l.N, l.O, l.P, l.Q, l.R, hasExpected(l) ? l.S : null, T,
+      ...REVIEW_FIELDS.map((f) => l[f.key]),
+    ];
+    return Object.fromEntries(WORKBOOK_HEADINGS.map((h, i) => [h, blank(vals[i])]));
   });
 }

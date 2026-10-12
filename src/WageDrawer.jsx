@@ -1,41 +1,36 @@
 import React, { useState, useEffect, useRef } from "react";
 import { X, ChevronLeft, ChevronRight, Lock, AlertTriangle } from "lucide-react";
 import { PersonAvatar } from "./avatar.jsx";
-import { useEscape } from "./useDismissable.js";
+import { useEscape, useFocusTrap } from "./useDismissable.js";
+import { parseHoursInput } from "./wagesCalc.js";
+import { REVIEW_FIELDS } from "./wagesView.js";
+import { fmtH, fmtNum } from "./wagesFormat.js";
 import {
-  StatusPill, PersonChips, LeaveSection, ReconSection, BillableSection, HoursSection,
-  fmtH, fmtNum,
+  StatusPill, PersonChips, LeaveSection, ReconSection, BillableSection, HoursSection, TabBar, tabPanelProps,
 } from "./WageCard.jsx";
 
-// Parses an hours field: "" -> null (cleared), otherwise a finite number >= 0.
-export function parseHoursInput(text) {
-  const t = String(text ?? "").trim();
-  if (t === "") return { ok: true, value: null };
-  const n = Number(t.replace(/,/g, ""));
-  if (!Number.isFinite(n) || n < 0 || n > 9999) return { ok: false, value: null };
-  return { ok: true, value: Math.round(n * 100) / 100 };
-}
-
 // Number input that saves on blur / Enter (Escape reverts). Clearing it saves null,
-// never 0. Shows its own saving/error state so a failed write is never silent.
+// never 0. Shows its own saving/error state so a failed write is never silent; a value
+// parseHoursInput warns about (> 400 h) still saves, with the warning shown alongside.
 export function HoursInput({ value, onSave, disabled, label, placeholder, compact, id }) {
   const fmt = (v) => (v == null ? "" : String(Number(v)));
   const [text, setText] = useState(fmt(value));
-  const [state, setState] = useState({ saving: false, error: null });
+  const [state, setState] = useState({ saving: false, error: null, warning: null });
   const focused = useRef(false);
   useEffect(() => { if (!focused.current) setText(fmt(value)); }, [value]);
 
   const commit = async () => {
     const parsed = parseHoursInput(text);
-    if (!parsed.ok) { setState({ saving: false, error: "Enter hours as a number, e.g. 152.5" }); return; }
+    if (!parsed.ok) { setState({ saving: false, error: parsed.error, warning: null }); return; }
+    const warning = parsed.warning || null;
     const current = value == null ? null : Number(value);
-    if (parsed.value === current) { setState({ saving: false, error: null }); setText(fmt(value)); return; }
-    setState({ saving: true, error: null });
+    if (parsed.value === current) { setState({ saving: false, error: null, warning }); setText(fmt(value)); return; }
+    setState({ saving: true, error: null, warning });
     try {
       await onSave(parsed.value);
-      setState({ saving: false, error: null });
+      setState({ saving: false, error: null, warning });
     } catch (e) {
-      setState({ saving: false, error: e?.message || String(e) });
+      setState({ saving: false, error: e?.message || String(e), warning });
     }
   };
   return (
@@ -55,11 +50,12 @@ export function HoursInput({ value, onSave, disabled, label, placeholder, compac
         onBlur={() => { focused.current = false; commit(); }}
         onKeyDown={(e) => {
           if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
-          if (e.key === "Escape") { e.stopPropagation(); setText(fmt(value)); setState({ saving: false, error: null }); }
+          if (e.key === "Escape") { e.stopPropagation(); setText(fmt(value)); setState({ saving: false, error: null, warning: null }); }
         }}
       />
       {state.saving && <span className="wr-field-state">Saving…</span>}
       {state.error && <span className="wr-field-state wr-field-state--error" role="alert">{state.error}</span>}
+      {!state.error && state.warning && <span className="wr-field-state wr-field-state--warn" role="status">{state.warning}</span>}
     </span>
   );
 }
@@ -129,7 +125,8 @@ function ExpectedOverride({ line, disabled, onSave }) {
           <button type="button" className="pg-btn-ghost" disabled={disabled || state.saving} onClick={() => save(true)}>Clear override</button>
         )}
         {needsReason && <span className="wr-field-state wr-field-state--error">A reason is required.</span>}
-        {!parsed.ok && <span className="wr-field-state wr-field-state--error">Enter hours as a number.</span>}
+        {!parsed.ok && <span className="wr-field-state wr-field-state--error">{parsed.error}</span>}
+        {parsed.ok && parsed.warning && <span className="wr-field-state wr-field-state--warn">{parsed.warning}</span>}
         {state.saving && <span className="wr-field-state">Saving…</span>}
         {state.error && <span className="wr-field-state wr-field-state--error" role="alert">Couldn't save: {state.error}</span>}
       </div>
@@ -143,11 +140,13 @@ const TABS = [
   { key: "review", label: "Review" },
 ];
 
+// The drawer remounts per person (keyed by person_id), so the page restores focus to the
+// card/row that opened it on close; this only moves focus in and keeps Tab inside.
 export function WageDrawer({ line, view, monthText, closed, position, onClose, onPrev, onNext, onSaveLine }) {
   const [tab, setTab] = useState("recon");
   const closeRef = useRef(null);
+  const dialogRef = useFocusTrap({ initialFocusRef: closeRef, restoreFocus: false });
   useEscape(onClose);
-  useEffect(() => { closeRef.current?.focus(); }, []);
   const save = (patch) => onSaveLine(line.person_id, patch);
   const idp = `wr-${line.person_id}`;
   const lv = line.leave || {};
@@ -155,7 +154,7 @@ export function WageDrawer({ line, view, monthText, closed, position, onClose, o
   return (
     <>
       <div className="wr-drawer-backdrop" onClick={onClose} aria-hidden="true" />
-      <aside className="wr-drawer" role="dialog" aria-modal="true" aria-label={`${line.name}: ${monthText} wage reconciliation`}>
+      <aside ref={dialogRef} tabIndex={-1} className="wr-drawer" role="dialog" aria-modal="true" aria-label={`${line.name}: ${monthText} wage reconciliation`}>
         <div className="wr-drawer__bar">
           <button type="button" className="wr-iconbtn" onClick={onPrev} disabled={!onPrev} aria-label="Previous person"><ChevronLeft size={16} /></button>
           <span className="wr-drawer__pos">{position}</span>
@@ -173,15 +172,10 @@ export function WageDrawer({ line, view, monthText, closed, position, onClose, o
         <PersonChips line={line} />
         {closed && <p className="wr-chip"><Lock size={11} aria-hidden="true" /> Month closed: hours are locked, comments stay editable.</p>}
 
-        <div className="pg-tabs" role="tablist">
-          {TABS.map((t) => (
-            <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
-              className={"pg-tab" + (tab === t.key ? " pg-tab--active" : "")} onClick={() => setTab(t.key)}>{t.label}</button>
-          ))}
-        </div>
+        <TabBar tabs={TABS} active={tab} onChange={setTab} idBase={idp} label={`${line.name} details`} />
 
         {tab === "recon" && (
-          <div className="wr-drawer__body">
+          <div className="wr-drawer__body" {...tabPanelProps(idp, "recon")}>
             <LeaveSection line={line} month={monthText} />
             <ReconSection line={line} settings={view.settings} />
             <BillableSection line={line} />
@@ -200,13 +194,13 @@ export function WageDrawer({ line, view, monthText, closed, position, onClose, o
                   </table>
                 </div>
               )}
-              {line.split?.unknownSpace > 0 && <p className="wr-note"><AlertTriangle size={11} aria-hidden="true" /> {fmtH(line.split.unknownSpace)} synced before space tracking: classified as client time; re-sync the month to confirm.</p>}
+              {line.split?.unknownSpace > 0 && <p className="wr-note"><AlertTriangle size={11} aria-hidden="true" /> {fmtH(line.split.unknownSpace)} synced before space tracking: classified by folder name; re-sync the month to confirm.</p>}
             </section>
           </div>
         )}
 
         {tab === "inputs" && (
-          <div className="wr-drawer__body">
+          <div className="wr-drawer__body" {...tabPanelProps(idp, "inputs")}>
             <section className="wr-sec">
               <header className="wr-sec__head"><h3 className="wr-sec__title">Xero hours (L)</h3></header>
               <div className="wr-inline">
@@ -242,13 +236,14 @@ export function WageDrawer({ line, view, monthText, closed, position, onClose, o
         )}
 
         {tab === "review" && (
-          <div className="wr-drawer__body wr-review">
-            <CommentField id={`${idp}-pg`} label="PG note" value={line.pg_comment} onSave={(v) => save({ pg_comment: v })} />
-            <CommentField id={`${idp}-kw`} label="Kelly (KW)" value={line.kw_comment} onSave={(v) => save({ kw_comment: v })} />
-            <CommentField id={`${idp}-ls`} label="Lynda (LS)" value={line.ls_comment} onSave={(v) => save({ ls_comment: v })} />
-            <CommentField id={`${idp}-phil`} label="Phil" value={line.phil_comment} onSave={(v) => save({ phil_comment: v })} />
-            <PhilCheckbox line={line} onSave={save} />
-            <CommentField id={`${idp}-kw2`} label="Kelly round 2 (KW2)" value={line.kw2_comment} onSave={(v) => save({ kw2_comment: v })} />
+          <div className="wr-drawer__body wr-review" {...tabPanelProps(idp, "review")}>
+            {REVIEW_FIELDS.map((f) => (
+              <React.Fragment key={f.key}>
+                <CommentField id={`${idp}-${f.key}`} label={f.label} value={line[f.key]} onSave={(v) => save({ [f.key]: v })} />
+                {/* Phil's sign-off checkbox sits under his comment, as in the workbook. */}
+                {f.key === "phil_comment" && <PhilCheckbox line={line} onSave={save} />}
+              </React.Fragment>
+            ))}
           </div>
         )}
       </aside>

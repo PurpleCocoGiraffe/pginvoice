@@ -2,29 +2,28 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Plus, X, AlertTriangle } from "lucide-react";
 import { useDismissable } from "./useDismissable.js";
-import { SELECTABLE_LEAVE_TYPES, leaveTypeLabel, totalLeaveHours, deriveLeaveRows } from "./leaveSync.js";
+import { SELECTABLE_LEAVE_TYPES, leaveTypeLabel, totalLeaveHours, deriveLeaveRows, leaveDayHours } from "./leaveSync.js";
+import { round2 } from "./wagesCalc.js";
 
-// Rounds for display only, to avoid floating-point round-trip jitter (e.g. 38/5 = 7.6)
-// making the Days/Hrs fields visually disagree with each other.
+// Rounds for display only, to avoid floating-point round-trip jitter making the Days/Hrs
+// fields visually disagree with each other.
 const round1 = (n) => Math.round(n * 10) / 10;
-const round2 = (n) => Math.round(n * 100) / 100;
 // "" -> 0, garbage -> NaN (caller decides what to do with NaN).
 const parseNum = (v) => (v === "" ? 0 : Number(v));
 
-/* ============================================================
-   LEAVE EDITOR — Days/Hrs popover for a person's leave in one month.
+const MENU_WIDTH = 380;
+const EST_MENU_HEIGHT = 320;
 
-   Two modes:
-   - Typed (pass `typed`, used by the Consultants module): lists the person's
-     typed leave entries (pginvoice_leave_entries) with type / days / hrs, an
-     "+ Add leave" row, and the total. The caller persists each change and
-     re-derives the cap_leaves total from the entries.
-   - Simple (no `typed`, used by Capacity Planning): the original single hours
-     number, passed back via onChange.
+/* ============================================================
+   LEAVE EDITOR — typed-leave popover for one person in one month (Consultants).
+
+   Lists the person's typed leave entries (pginvoice_leave_entries) with type / days /
+   hrs, an "+ Add leave" row, and the total. The caller (TeamDashboard) persists each
+   change and re-derives the person's cap_leaves total from the entries; Capacity
+   Planning only displays that total.
 ============================================================ */
-export function LeaveEditor({ person, hours, onChange, typed }) {
-  const dailyHrs = person && person.contracted ? person.contracted / 5 : 0;
-  const menuWidth = typed ? 380 : 240;
+export function LeaveEditor({ person, hours, typed }) {
+  const dailyHrs = leaveDayHours(person);
 
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
@@ -32,17 +31,26 @@ export function LeaveEditor({ person, hours, onChange, typed }) {
 
   const openMenu = () => {
     const r = btnRef.current.getBoundingClientRect();
-    let left = r.right - menuWidth;
+    let left = r.right - MENU_WIDTH;
     if (left < 8) left = 8;
     let top = r.bottom + 4;
-    const estMenuHeight = typed ? 320 : 170;
-    if (top + estMenuHeight > window.innerHeight - 8) top = Math.max(8, r.top - estMenuHeight - 4);
+    if (top + EST_MENU_HEIGHT > window.innerHeight - 8) top = Math.max(8, r.top - EST_MENU_HEIGHT - 4);
     setPos({ top, left });
     setOpen(true);
   };
 
   const dismiss = useCallback(() => setOpen(false), []);
   const menuRef = useDismissable(dismiss, { extraRef: btnRef, onReposition: dismiss });
+
+  // Keyboard users land on the first field when the popover opens (and again once the
+  // entries finish loading, if focus is still on the Done button).
+  useEffect(() => {
+    if (!open || !menuRef.current) return;
+    const active = document.activeElement;
+    if (menuRef.current.contains(active) && active.tagName !== "BUTTON") return;
+    const first = menuRef.current.querySelector("select:not([disabled]), input:not([disabled])") || menuRef.current.querySelector("button:not([disabled])");
+    first?.focus();
+  }, [open, typed.status, menuRef]);
 
   const label = hours ? `${round1(hours)} h` : "—";
 
@@ -51,20 +59,18 @@ export function LeaveEditor({ person, hours, onChange, typed }) {
       <button
         ref={btnRef} type="button" className="pg-btn-ghost" style={{ padding: "2px 7px", fontSize: 11 }}
         onClick={(e) => { e.stopPropagation(); open ? setOpen(false) : openMenu(); }}
-        title={`Total hours of leave taken this month, not a day count -- a full day off for ${person.name} is ${round1(dailyHrs)} hrs.`}
+        title={`Total hours of leave taken this month for ${person.name}, not a day count.`}
         aria-haspopup="dialog" aria-expanded={open}
       >
         {label}
       </button>
       {open && createPortal(
         <div
-          ref={menuRef} className="pg-menu" role="dialog" aria-label={`Leave for ${person.name}`}
-          style={{ position: "fixed", top: pos.top, left: pos.left, right: "auto", margin: 0, minWidth: menuWidth, maxWidth: menuWidth, padding: 12, zIndex: 1000 }}
+          ref={menuRef} className="pg-menu pg-leave-popover" role="dialog" aria-label={`Leave for ${person.name}`}
+          style={{ position: "fixed", top: pos.top, left: pos.left, right: "auto", margin: 0, minWidth: MENU_WIDTH, maxWidth: MENU_WIDTH, zIndex: 1000 }}
         >
-          {typed
-            ? <TypedLeaveBody person={person} hours={hours} dailyHrs={dailyHrs} typed={typed} />
-            : <SimpleLeaveBody person={person} hours={hours} dailyHrs={dailyHrs} onChange={onChange} />}
-          <button className="pg-btn" style={{ marginTop: 10, width: "100%", justifyContent: "center" }} onClick={() => setOpen(false)}>Done</button>
+          <TypedLeaveBody person={person} hours={hours} dailyHrs={dailyHrs} typed={typed} />
+          <button className="pg-btn" style={{ marginTop: 10, width: "100%", justifyContent: "center" }} onClick={() => { setOpen(false); btnRef.current?.focus(); }}>Done</button>
         </div>,
         document.body
       )}
@@ -74,78 +80,15 @@ export function LeaveEditor({ person, hours, onChange, typed }) {
 
 function DailyHoursNote({ person, dailyHrs }) {
   return (
-    <p className="pg-footnote" style={{ marginTop: 8, marginBottom: 0, paddingBottom: 0 }}>
+    <p className="pg-footnote pg-leave-text pg-leave-text--spaced">
       {dailyHrs
-        ? `1 day off ≈ ${round1(dailyHrs)} hrs for ${person.name}, based on their ${person.contracted} hrs/week.`
-        : `${person.name} has no contracted hours/week set, so days can't be converted -- enter hours directly.`}
+        ? `1 day off = ${round1(dailyHrs)} hrs for ${person.name} (full-time, ${person.contracted} hrs/week).`
+        : "Enter hours — days vary for part-time/casual staff."}
     </p>
   );
 }
 
-/* ---------- Simple mode: one hours number (Capacity Planning) ---------- */
-function SimpleLeaveBody({ person, hours, dailyHrs, onChange }) {
-  const hoursForDays = (days) => days * dailyHrs;
-  const daysForHours = (hrs) => (dailyHrs ? hrs / dailyHrs : 0);
-
-  const [daysStr, setDaysStr] = useState(String(round1(daysForHours(hours))));
-  const [hrsStr, setHrsStr] = useState(String(round1(hours)));
-
-  // `hours` prop is always the source of truth (the stored number) -- if it changes
-  // externally (e.g. another module/tab updates cap_leaves and it echoes back via
-  // PG_DATA_EVENT), resync local fields rather than holding a stale copy.
-  useEffect(() => {
-    setDaysStr(String(round1(daysForHours(hours))));
-    setHrsStr(String(round1(hours)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hours, dailyHrs]);
-
-  const onDaysChange = (v) => {
-    setDaysStr(v);
-    const days = parseNum(v);
-    if (Number.isNaN(days)) return;
-    const newHours = round1(hoursForDays(days));
-    setHrsStr(String(newHours));
-    onChange(newHours);
-  };
-
-  const onHrsChange = (v) => {
-    setHrsStr(v);
-    const hrs = parseNum(v);
-    if (Number.isNaN(hrs)) return;
-    setDaysStr(String(round1(daysForHours(hrs))));
-    onChange(hrs);
-  };
-
-  return (
-    <>
-      <div className="pg-field__label">Leave this month</div>
-      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-        <label style={{ flex: 1 }}>
-          <div className="pg-footnote" style={{ margin: "0 0 2px", padding: 0 }}>Days</div>
-          <input
-            className="pg-input" type="number" min="0" step="0.5" style={{ width: "100%" }}
-            value={daysStr} disabled={!dailyHrs}
-            onChange={(e) => onDaysChange(e.target.value)}
-          />
-        </label>
-        <label style={{ flex: 1 }}>
-          <div className="pg-footnote" style={{ margin: "0 0 2px", padding: 0 }}>Hrs</div>
-          <input
-            className="pg-input" type="number" min="0" step="any" style={{ width: "100%" }}
-            value={hrsStr}
-            onChange={(e) => onHrsChange(e.target.value)}
-          />
-        </label>
-      </div>
-      <DailyHoursNote person={person} dailyHrs={dailyHrs} />
-    </>
-  );
-}
-
-/* ---------- Typed mode (Consultants) ---------- */
-
-const GRID = { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 58px 64px 26px", gap: 6, alignItems: "center" };
-const CELL_INPUT = { width: "100%", padding: "4px 6px", fontSize: 12 };
+/* ---------- body ---------- */
 
 // `typed`: { status: 'loading'|'ready'|'error', error, entries (this person + month),
 //            onAdd(fields), onUpdate(id, patch), onDelete(id), onDeleteLegacy(), onSyncTotal(total) }
@@ -172,24 +115,24 @@ function TypedLeaveBody({ person, hours, dailyHrs, typed }) {
     return (
       <>
         <div className="pg-field__label">Leave this month</div>
-        <p className="pg-footnote" style={{ margin: "6px 0 0", padding: 0 }}>Loading leave entries…</p>
+        <p className="pg-footnote pg-leave-text pg-leave-text--spaced">Loading leave entries…</p>
       </>
     );
   }
 
   if (typed.status === "error") {
-    // Typed entries couldn't be loaded, so we can't know whether the stored total is
-    // typed or legacy -- show it read-only and write nothing.
+    // Typed entries (or the cap_leaves totals) couldn't be loaded, so we can't know whether
+    // the stored total is typed or legacy, or safely rewrite it -- show it read-only.
     return (
       <>
         <div className="pg-field__label">Leave this month</div>
-        <div className="pg-banner-warn" role="alert" style={{ marginTop: 6, padding: "8px 10px", fontSize: 11 }}>
-          <AlertTriangle size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
-          Couldn't load leave types: {typed.error}. Leave is read-only until this loads.
+        <div className="pg-banner-warn pg-leave-alert" role="alert">
+          <AlertTriangle size={11} aria-hidden="true" />
+          {typed.error}. Leave is read-only until this loads.
         </div>
         <label style={{ display: "block", marginTop: 8 }}>
-          <div className="pg-footnote" style={{ margin: "0 0 2px", padding: 0 }}>Total hrs (saved)</div>
-          <input className="pg-input" type="number" style={CELL_INPUT} value={round2(hours)} disabled readOnly />
+          <div className="pg-footnote pg-leave-text">Total hrs (saved)</div>
+          <input className="pg-input pg-leave-input" type="number" value={round2(hours)} disabled readOnly />
         </label>
       </>
     );
@@ -208,10 +151,10 @@ function TypedLeaveBody({ person, hours, dailyHrs, typed }) {
       <div className="pg-field__label">Leave this month</div>
 
       {rows.length > 0 && (
-        <div style={{ ...GRID, marginTop: 6 }} aria-hidden="true">
-          <span className="pg-footnote" style={{ margin: 0, padding: 0 }}>Type</span>
-          <span className="pg-footnote" style={{ margin: 0, padding: 0 }}>Days</span>
-          <span className="pg-footnote" style={{ margin: 0, padding: 0 }}>Hrs</span>
+        <div className="pg-leave-grid" style={{ marginTop: 6 }} aria-hidden="true">
+          <span className="pg-footnote pg-leave-text">Type</span>
+          <span className="pg-footnote pg-leave-text">Days</span>
+          <span className="pg-footnote pg-leave-text">Hrs</span>
           <span />
         </div>
       )}
@@ -234,26 +177,26 @@ function TypedLeaveBody({ person, hours, dailyHrs, typed }) {
       ))}
 
       {hasLegacy && (
-        <p className="pg-footnote" style={{ margin: "4px 0 0", padding: 0, color: "var(--status-warn)" }}>
+        <p className="pg-footnote pg-leave-text" style={{ marginTop: 4, color: "var(--status-warn)" }}>
           Set a type for these hours — they were entered before leave types existed.
         </p>
       )}
 
       <AddLeaveRow person={person} dailyHrs={dailyHrs} disabled={busy || hasLegacy} onAdd={(fields) => run(() => typed.onAdd(fields))} />
       {hasLegacy && (
-        <p className="pg-footnote" style={{ margin: "2px 0 0", padding: 0 }}>Type the untyped hours above before adding more leave.</p>
+        <p className="pg-footnote pg-leave-text" style={{ marginTop: 2 }}>Type the untyped hours above before adding more leave.</p>
       )}
 
       {error && (
-        <div className="pg-banner-warn" role="alert" style={{ marginTop: 8, padding: "8px 10px", fontSize: 11 }}>
-          <AlertTriangle size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+        <div className="pg-banner-warn pg-leave-alert" role="alert">
+          <AlertTriangle size={11} aria-hidden="true" />
           Couldn't save leave: {error}
         </div>
       )}
 
       {totalMismatch && (
-        <div className="pg-banner-warn" style={{ marginTop: 8, padding: "8px 10px", fontSize: 11 }}>
-          <AlertTriangle size={11} style={{ verticalAlign: -1, marginRight: 4 }} />
+        <div className="pg-banner-warn pg-leave-alert">
+          <AlertTriangle size={11} aria-hidden="true" />
           The saved total ({round2(hours)} h) differs from these entries ({typedTotal} h) — it may have been edited in Capacity Planning.
           <button type="button" className="pg-btn-ghost" style={{ marginTop: 6, padding: "3px 7px", fontSize: 11 }} disabled={busy} onClick={() => run(() => typed.onSyncTotal(typedTotal))}>
             Set total to {typedTotal} h
@@ -261,15 +204,15 @@ function TypedLeaveBody({ person, hours, dailyHrs, typed }) {
         </div>
       )}
 
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border-subtle)", fontSize: 12 }}>
+      <div className="pg-leave-total">
         <span className="pg-field__label" style={{ margin: 0 }}>Total</span>
         <b className="num">
-          {shownTotal} h{dailyHrs ? <span style={{ fontWeight: 400, color: "var(--fg-tertiary)" }}> · {round1(shownTotal / dailyHrs)} d</span> : null}
+          {shownTotal} h{dailyHrs ? <span className="pg-leave-total__days"> · {round1(shownTotal / dailyHrs)} d</span> : null}
         </b>
       </div>
 
       <DailyHoursNote person={person} dailyHrs={dailyHrs} />
-      <p className="pg-footnote" style={{ marginTop: 2, marginBottom: 0, paddingBottom: 0 }}>Public holidays are added automatically.</p>
+      <p className="pg-footnote pg-leave-text" style={{ marginTop: 2 }}>Public holidays are added automatically.</p>
     </>
   );
 }
@@ -328,9 +271,9 @@ function LeaveEntryRow({ row, person, dailyHrs, disabled, onCommit, onDelete }) 
 
   const typeName = leaveTypeLabel(row.leave_type);
   return (
-    <div style={{ ...GRID, marginTop: 4 }}>
+    <div className="pg-leave-grid" style={{ marginTop: 4 }}>
       <select
-        className="pg-select" style={CELL_INPUT} value={row.leave_type} disabled={disabled}
+        className="pg-select pg-leave-input" value={row.leave_type} disabled={disabled}
         aria-label={row.legacy ? `Set a type for ${person.name}'s untyped leave` : `Leave type (${typeName})`}
         onChange={(e) => { if (e.target.value !== row.leave_type) onCommit({ leave_type: e.target.value }); }}
       >
@@ -338,12 +281,12 @@ function LeaveEntryRow({ row, person, dailyHrs, disabled, onCommit, onDelete }) 
         {SELECTABLE_LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
       </select>
       <input
-        className="pg-input" type="number" min="0" step="0.5" style={CELL_INPUT}
+        className="pg-input pg-leave-input" type="number" min="0" step="0.5"
         aria-label={`${typeName} days`} value={daysStr} disabled={disabled || row.legacy || !dailyHrs}
         onChange={(e) => onDaysChange(e.target.value)} onBlur={commit} onKeyDown={onKeyDown}
       />
       <input
-        className="pg-input" type="number" min="0" step="any" style={CELL_INPUT}
+        className="pg-input pg-leave-input" type="number" min="0" step="any"
         aria-label={`${typeName} hours`} value={hrsStr} disabled={disabled || row.legacy}
         onChange={(e) => onHrsChange(e.target.value)} onBlur={commit} onKeyDown={onKeyDown}
       />
@@ -391,18 +334,18 @@ function AddLeaveRow({ person, dailyHrs, disabled, onAdd }) {
 
   return (
     <div style={{ marginTop: 10 }}>
-      <div className="pg-footnote" style={{ margin: "0 0 2px", padding: 0 }} id={`add-leave-${person.id}`}>Add leave</div>
-      <div style={GRID} role="group" aria-labelledby={`add-leave-${person.id}`}>
-        <select className="pg-select" style={CELL_INPUT} value={type} disabled={disabled} aria-label="New leave type" onChange={(e) => setType(e.target.value)}>
+      <div className="pg-footnote pg-leave-text" style={{ marginBottom: 2 }} id={`add-leave-${person.id}`}>Add leave</div>
+      <div className="pg-leave-grid" role="group" aria-labelledby={`add-leave-${person.id}`}>
+        <select className="pg-select pg-leave-input" value={type} disabled={disabled} aria-label="New leave type" onChange={(e) => setType(e.target.value)}>
           {SELECTABLE_LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
         </select>
         <input
-          className="pg-input" type="number" min="0" step="0.5" style={CELL_INPUT} placeholder="Days"
+          className="pg-input pg-leave-input" type="number" min="0" step="0.5" placeholder="Days"
           aria-label="New leave days" value={daysStr} disabled={disabled || !dailyHrs}
           onChange={(e) => onDaysChange(e.target.value)} onKeyDown={onKeyDown}
         />
         <input
-          className="pg-input" type="number" min="0" step="any" style={CELL_INPUT} placeholder="Hrs"
+          className="pg-input pg-leave-input" type="number" min="0" step="any" placeholder="Hrs"
           aria-label="New leave hours" value={hrsStr} disabled={disabled}
           onChange={(e) => onHrsChange(e.target.value)} onKeyDown={onKeyDown}
         />

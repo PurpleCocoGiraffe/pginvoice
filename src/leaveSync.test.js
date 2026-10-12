@@ -3,7 +3,8 @@ import { describe, it, expect, vi } from "vitest";
 // leaveSync imports the real Supabase client; the pure helpers under test never touch it.
 vi.mock("./supabaseClient.js", () => ({ supabase: {} }));
 
-import { totalLeaveHours, deriveLeaveRows, entriesForPerson, LEAVE_TYPES, SELECTABLE_LEAVE_TYPES, round2 } from "./leaveSync.js";
+import { totalLeaveHours, deriveLeaveRows, entriesForPerson, LEAVE_TYPES, SELECTABLE_LEAVE_TYPES, leaveDayHours } from "./leaveSync.js";
+import { round2 } from "./wagesCalc.js";
 
 const e = (id, person_id, month_key, leave_type, hours) => ({ id, person_id, month_key, leave_type, hours, days: null });
 
@@ -50,5 +51,19 @@ describe("deriveLeaveRows", () => {
   it("shows nothing for a zero / missing total", () => {
     expect(deriveLeaveRows([], 0)).toEqual([]);
     expect(deriveLeaveRows([], undefined)).toEqual([]);
+  });
+});
+
+describe("leaveDayHours", () => {
+  it("full-time (38 h/week) converts days at 7.6 h", () => {
+    expect(leaveDayHours({ contracted: 38 })).toBe(7.6);
+    expect(leaveDayHours({ contracted: "38" })).toBe(7.6);
+  });
+
+  it("part-time / casual / unset get 0 (enter hours; days vary)", () => {
+    expect(leaveDayHours({ contracted: 22.8 })).toBe(0);
+    expect(leaveDayHours({ contracted: 0 })).toBe(0);
+    expect(leaveDayHours({})).toBe(0);
+    expect(leaveDayHours(null)).toBe(0);
   });
 });

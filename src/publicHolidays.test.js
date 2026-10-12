@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PUBLIC_HOLIDAYS, holidaysFor } from "./publicHolidays.js";
+import { PUBLIC_HOLIDAYS, holidaysFor, HOLIDAY_COVERAGE_END } from "./publicHolidays.js";
 import { PUBLIC_HOLIDAYS as FROM_CAPACITY, publicHolidayDays } from "./capacityData.js";
 
 const dow = (date) => {
@@ -94,5 +94,12 @@ describe("holidaysFor", () => {
   it("returns copies so callers can't mutate the shared table", () => {
     holidaysFor("SA", "2026-10")[0].name = "changed";
     expect(holidaysFor("SA", "2026-10")[0].name).toBe("Labour Day");
+  });
+});
+
+describe("HOLIDAY_COVERAGE_END", () => {
+  it("is the last covered date and no listed holiday is after it", () => {
+    expect(HOLIDAY_COVERAGE_END).toBe("2027-12-31");
+    for (const list of Object.values(PUBLIC_HOLIDAYS)) for (const h of list) expect(h.date <= HOLIDAY_COVERAGE_END).toBe(true);
   });
 });

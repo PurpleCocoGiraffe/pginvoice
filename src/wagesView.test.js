@@ -1,12 +1,20 @@
-import { describe, it, expect } from "vitest";
-import { buildMonthView, buildSnapshot, computeTotals, groupLines, filterLines, normaliseSettings, typeShort } from "./wagesView.js";
+import { describe, it, expect, vi } from "vitest";
+
+// wagesView imports LEAVE_TYPES from leaveSync, which creates the real Supabase client.
+vi.mock("./supabaseClient.js", () => ({ supabase: {} }));
+
+import {
+  buildMonthView, buildSnapshot, computeTotals, groupLines, filterLines, normaliseSettings, typeShort,
+  hasExpected, toWorkbookRows, WORKBOOK_HEADINGS, REVIEW_FIELDS, COMMENT_FIELDS,
+} from "./wagesView.js";
+import { expectedFor, computeLine } from "./wagesCalc.js";
 
 const CLIENTS = "90167546842";
 const PG_HQ = "90160000001";
 const MONTH = "2026-10"; // 22 weekdays; SA + QLD Labour/King's Birthday Mon 5 Oct, WA none
 
 const roster = [
-  { id: "p1", name: "Holly", role: "Consultant", state: "SA", photo: "" },
+  { id: "p1", name: "Holly", role: "Consultant", state: "SA", photo: "data:image/jpeg;base64,AAAA" },
   { id: "p2", name: "Lucy", role: "Consultant", state: "QLD" },
   { id: "p3", name: "Chloe", role: "Coordinator", state: "SA" },
   { id: "p4", name: "Alice", role: "Consultant", state: "WA" },
@@ -115,6 +123,21 @@ describe("buildMonthView (draft month)", () => {
     expect(view.warnings.outsideWindow).toEqual([{ person_id: "p7", name: "Leaver", hours: 2 }]);
     expect(view.warnings.conflicts).toEqual([]);
     expect(view.warnings.unknownSpaceHours).toBe(0);
+    expect(view.warnings.holidaysNotLoaded).toBe(false);
+  });
+
+  it("a person with no hours rule has S null (not 0) and no variance", () => {
+    const alice = byId(view, "p4");
+    expect(alice.S).toBeNull();
+    expect(alice.T).toBeNull();
+    expect(hasExpected(alice)).toBe(false);
+    expect(hasExpected(byId(view, "p1"))).toBe(true);
+  });
+
+  it("warns when the month is past the public holiday table's coverage", () => {
+    const v = buildMonthView(sources({ lines: [], leaveEntries: [], clickupSummary: [] }), "2028-01");
+    expect(v.warnings.holidaysNotLoaded).toBe(true);
+    expect(buildMonthView(sources(), "2027-12").warnings.holidaysNotLoaded).toBe(false);
   });
 
   it("flags ClickUp names claimed by two people as conflicts", () => {
@@ -163,7 +186,27 @@ describe("buildMonthView (closed month)", () => {
 
   it("reports people whose live ClickUp total moved by more than 0.1 h", () => {
     const v = buildMonthView(sources({ monthRow, clickupSummary: clickupSummary.filter((r) => r.user_name !== "Lucy W") }), MONTH);
-    expect(v.liveDiffers).toEqual([{ person_id: "p2", name: "Lucy", snapshotH: 80, liveH: 0 }]);
+    expect(v.liveDiffers).toEqual([{ person_id: "p2", name: "Lucy", missing: false, fields: [{ key: "H", label: "ClickUp", snapshot: 80, live: 0 }] }]);
+  });
+
+  it("also reports leave (N/O/P/untyped) and public holiday (Q) changes, naming each field", () => {
+    const moreLeave = [...leaveEntries, { person_id: "p1", month_key: MONTH, leave_type: "lwop", hours: 7.6, days: 1 }];
+    const v = buildMonthView(sources({ monthRow, leaveEntries: moreLeave, capLeaves: {} }), MONTH);
+    expect(v.liveDiffers).toEqual([
+      { person_id: "p4", name: "Alice", missing: false, fields: [{ key: "unspecified", label: "Untyped leave", snapshot: 7.6, live: 0 }] },
+      { person_id: "p1", name: "Holly", missing: false, fields: [{ key: "P", label: "LWOP", snapshot: 0, live: 7.6 }] },
+    ]);
+    const qMoved = buildMonthView(sources({ monthRow, lines: [{ ...lines[0], ph_override_h: 0 }, lines[1]] }), MONTH);
+    expect(qMoved.liveDiffers).toEqual([{ person_id: "p1", name: "Holly", missing: false, fields: [{ key: "Q", label: "Public holiday", snapshot: 7.6, live: 0 }] }]);
+  });
+
+  it("the snapshot drops the photo and other display-only bulk; the live roster photo is merged back", () => {
+    expect(snapshot.lines.find((l) => l.person_id === "p1")).not.toHaveProperty("photo");
+    expect(snapshot.lines[0]).not.toHaveProperty("stateHolidays");
+    expect(snapshot.lines[0]).toHaveProperty("byFolder");
+    const v = buildMonthView(sources({ monthRow }), MONTH);
+    expect(byId(v, "p1").photo).toBe("data:image/jpeg;base64,AAAA");
+    expect(byId(buildMonthView({ monthRow, lines }, MONTH), "p1").photo).toBe("");
   });
 
   it("works with only the month row and lines (live sources failed)", () => {
@@ -217,5 +260,57 @@ describe("helpers", () => {
     expect(t.L).toBeNull();
     expect(t.netT).toBeNull();
     expect(t.J).toBeNull();
+  });
+});
+
+describe("toWorkbookRows", () => {
+  const ft = { effective_from: "2020-01-01", basis: "ft", daily_hours: 7.6 };
+  const LINE_SETTINGS = { xero_tolerance_h: 0.25, variance_threshold_h: 3.8 };
+  const line = (rules, xeroHours, monthKey = "2026-10") => {
+    const e = expectedFor({ monthKey, person: { state: "SA" }, rules });
+    return { person_id: "p1", ...computeLine({ clickup: null, leave: null, xeroHours, expected: e, settings: LINE_SETTINGS }) };
+  };
+  const people = [{ person_id: "p1", display_name: "Jane Smith", state: "SA" }];
+
+  it("emits the workbook headings A–Y in order, blanks for nulls", () => {
+    const [row] = toWorkbookRows([{ ...line([ft], null), kw_comment: "chasing Xero" }], people);
+    expect(Object.keys(row)).toEqual(WORKBOOK_HEADINGS);
+    expect(WORKBOOK_HEADINGS).toHaveLength(25);
+    expect(WORKBOOK_HEADINGS.slice(20)).toEqual(["PG", "KW", "LS", "Phil", "KW comment round 2"]);
+    expect(row.Employee).toBe("Jane Smith");
+    expect(row.State).toBe("SA");
+    expect(row.Type).toBe("F/T");
+    expect(row["% billed total"]).toBe("");
+    expect(row.Xero).toBe("");
+    expect(row["Public Holiday"]).toBe(7.6);
+    expect(row["Should be"]).toBe(167.2);
+    expect(row.Variance).toBe("");
+    expect(row.KW).toBe("chasing Xero");
+    expect(row.LS).toBe("");
+  });
+
+  it("REVIEW_FIELDS drives the comment columns and COMMENT_FIELDS", () => {
+    expect(COMMENT_FIELDS).toEqual(REVIEW_FIELDS.map((f) => f.key));
+    const [row] = toWorkbookRows([{ ...line([ft], 0), kw2_comment: "ok now" }], people);
+    expect(row["KW comment round 2"]).toBe("ok now");
+  });
+
+  it("blanks S and T for a person with no hours rule", () => {
+    const [row] = toWorkbookRows([line([], 100)], people);
+    expect(row["Should be"]).toBe("");
+    expect(row.Variance).toBe("");
+    expect(row.Total).toBe(107.6 - 7.6); // R is still known (no PH without a rule)
+  });
+
+  it("blanks T for a mixed FT → casual_xero month even when R and S exist", () => {
+    const [row] = toWorkbookRows([line([ft, { effective_from: "2026-07-16", basis: "casual_xero" }], 100, "2026-07")], people);
+    expect(row["Should be"]).toBe(83.6);
+    expect(row.Variance).toBe("");
+  });
+
+  it("keeps T = 0 for an all casual_xero month once Xero is in", () => {
+    const [row] = toWorkbookRows([line([{ effective_from: "2020-01-01", basis: "casual_xero" }], 100)], people);
+    expect(row["Should be"]).toBe(100);
+    expect(row.Variance).toBe(0);
   });
 });

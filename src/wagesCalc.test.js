@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  monthDays, weekdaysInMonth, standardMonthHours, classifyClickup, attributeToPeople,
-  expectedFor, computeLine, parseXeroPaste, parseXeroTime, matchXeroNames, normaliseXeroName,
-  toWorkbookRows, WORKBOOK_HEADINGS, typeLabelFor,
+  monthDays, wageWeekdaysInMonth, standardMonthHours, classifyClickup, attributeToPeople,
+  expectedFor, computeLine, parseXeroPaste, parseXeroTime, matchXeroNames, normName,
+  typeLabelFor, parseHoursInput,
 } from "./wagesCalc.js";
 
 const PG_CLIENTS = "54751434";
@@ -28,7 +28,7 @@ describe("calendar helpers", () => {
   });
 
   it("Jul 2026 has 23 weekdays and a 174.8 hour standard month", () => {
-    expect(weekdaysInMonth("2026-07")).toBe(23);
+    expect(wageWeekdaysInMonth("2026-07")).toBe(23);
     expect(standardMonthHours("2026-07")).toBe(174.8);
   });
 
@@ -89,16 +89,19 @@ describe("classifyClickup", () => {
     expect(perUser["Jane Smith"].pgBillable).toBe(60);
   });
 
-  it("unknown-space rows with a task use the legacy folder rule and are surfaced", () => {
+  it("unknown-space rows with a task use nameMatch's folder rule and are surfaced", () => {
     const { perUser, unknownSpaceMinutes } = classifyClickup([
       row({ space_id: null, minutes: 20 }),
       row({ space_id: "", folder: "Purple Giraffe", minutes: 10 }),
+      // BDM-space folders (isNonClientSpace's name fallback) are PG, not assumed client.
+      row({ space_id: null, folder: "CRM", minutes: 5 }),
+      row({ space_id: null, folder: "Events and Networking", minutes: 7 }),
     ], SETTINGS);
     const b = perUser["Jane Smith"];
     expect(b.clientBillable).toBe(20);
-    expect(b.pgBillable).toBe(10);
-    expect(b.unknownSpace).toBe(30);
-    expect(unknownSpaceMinutes).toBe(30);
+    expect(b.pgBillable).toBe(22);
+    expect(b.unknownSpace).toBe(42);
+    expect(unknownSpaceMinutes).toBe(42);
   });
 
   it("drops ignored users (case-insensitive) into the ignored bucket", () => {
@@ -254,6 +257,16 @@ describe("expectedFor", () => {
     expect(expectedFor({ monthKey: "2026-07", person: { state: "SA" }, rules: [] }).missingRule).toBe(true);
   });
 
+  it("S is null (not 0) when no rule covers any employed day", () => {
+    const none = expectedFor({ monthKey: "2026-07", person: { state: "SA" }, rules: [] });
+    expect(none.S).toBeNull();
+    expect(none.segments).toEqual([]);
+    expect(none.allCasualXero).toBe(false);
+    const later = expectedFor({ monthKey: "2026-07", person: { state: "SA" }, rules: [ft("2026-08-01")] });
+    expect(later.S).toBeNull();
+    expect(later.missingRule).toBe(true);
+  });
+
   it("an unknown state gets no public holidays and is flagged", () => {
     const e = expectedFor({ monthKey: "2026-10", person: { state: "NSW" }, rules: [ft()] });
     expect(e.Q).toBe(0);
@@ -340,10 +353,32 @@ describe("computeLine", () => {
     expect(pending.status).toBe("awaiting_xero");
   });
 
-  it("missing rule → not_assessed even when T is large", () => {
+  it("missing rule → not_assessed with S and T null (never 0 / a fake variance)", () => {
     const e = expectedFor({ monthKey: "2026-10", person: { state: "SA" }, rules: [] });
     const l = computeLine({ clickup, leave: null, xeroHours: 130, expected: e, settings: LINE_SETTINGS });
     expect(l.flags.missingRule).toBe(true);
+    expect(l.status).toBe("not_assessed");
+    expect(l.S).toBeNull();
+    expect(l.T).toBeNull();
+    expect(l.Tpct).toBeNull();
+  });
+
+  it("a partial rule (some days uncovered) keeps S but blanks T", () => {
+    const e = expectedFor({ monthKey: "2026-10", person: { state: "SA" }, rules: [ft("2026-10-16")] });
+    const l = computeLine({ clickup, leave: null, xeroHours: 130, expected: e, settings: LINE_SETTINGS });
+    expect(l.S).toBe(e.S);
+    expect(l.R).toBe(130);
+    expect(l.T).toBeNull();
+    expect(l.status).toBe("not_assessed");
+  });
+
+  it("mixed FT → casual_xero month: T blank even once Xero is in", () => {
+    const e = expectedFor({ monthKey: "2026-07", person: { state: "SA" }, rules: [ft("2025-01-01"), { effective_from: "2026-07-16", basis: "casual_xero" }] });
+    const l = computeLine({ clickup, leave: null, xeroHours: 130, expected: e, settings: LINE_SETTINGS });
+    expect(l.S).toBe(83.6);
+    expect(l.T).toBeNull();
+    expect(l.Tpct).toBeNull();
+    expect(l.allCasualXero).toBe(false);
     expect(l.status).toBe("not_assessed");
   });
 
@@ -402,10 +437,51 @@ describe("parseXeroPaste", () => {
     expect(parseXeroTime("abc")).toBeNull();
   });
 
-  it("treats a comma as a separator, not a decimal point", () => {
+  it("reports a decimal comma instead of splitting it into two numbers", () => {
     const r = parseXeroPaste("Jane Smith, 142,5");
-    expect(r.rows).toEqual([{ name: "Jane Smith", hours: 142, raw: "Jane Smith 142" }]);
+    expect(r.rows).toEqual([]);
+    expect(r.errors).toEqual([{ raw: "Jane Smith, 142,5", message: "Use a dot for decimals: 142,5 → 142.5" }]);
+  });
+
+  it("scratch: 'Jane Smith<TAB>152,5' is a decimal-comma error, not 152 h", () => {
+    const r = parseXeroPaste("Jane Smith\t152,5\nBob Jones\t160");
+    expect(r.rows).toEqual([{ name: "Bob Jones", hours: 160, raw: "Bob Jones 160" }]);
     expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].message).toBe("Use a dot for decimals: 152,5 → 152.5");
+  });
+
+  it("scratch: 'Jane Smith 2<TAB>40' splits on the tab: name 'Jane Smith 2', 40 h", () => {
+    const r = parseXeroPaste("Jane Smith 2\t40");
+    expect(r.rows).toEqual([{ name: "Jane Smith 2", hours: 40, raw: "Jane Smith 2 40" }]);
+    expect(r.errors).toEqual([]);
+  });
+
+  it("scratch: 'Smith, Jane<TAB>152.5' keeps the whole name and doesn't first-name match Jane", () => {
+    const r = parseXeroPaste("Smith, Jane\t152.5");
+    expect(r.rows).toEqual([{ name: "Smith, Jane", hours: 152.5, raw: "Smith, Jane 152.5" }]);
+    const [m] = matchXeroNames(r.rows, [{ person_id: "p1", display_name: "Jane Smith", full_name: "Jane Smith", clickup_user_names: [] }], {});
+    expect(m.person_id).toBeNull();
+    expect(m.method).toBe("unmatched");
+  });
+
+  it("'Smith, Jane 152.5' with no tab is reported, not read as Jane", () => {
+    const r = parseXeroPaste("Smith, Jane 152.5");
+    expect(r.rows).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].message).toMatch(/put a tab between the name and the hours/);
+  });
+
+  it("scratch: 'Jane\\nSmith\\n152.5' gives one row for Smith and an error for Jane", () => {
+    const r = parseXeroPaste("Jane\nSmith\n152.5");
+    expect(r.rows).toEqual([{ name: "Smith", hours: 152.5, raw: "Smith 152.5" }]);
+    expect(r.errors).toEqual([{ raw: "Jane", message: 'No hours found for "Jane"' }]);
+  });
+
+  it("alternating layout with a decimal-comma hours line reports one error for the pair", () => {
+    const r = parseXeroPaste("Jane Smith\n152,5");
+    expect(r.rows).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0].message).toBe("Jane Smith: Use a dot for decimals: 152,5 → 152.5");
   });
 
   it("reports unparseable chunks", () => {
@@ -430,7 +506,7 @@ describe("matchXeroNames", () => {
   const match = (name, map) => matchXeroNames([{ name, hours: 1 }], people, map)[0];
 
   it("uses the remembered map first", () => {
-    expect(match("Bobby", { [normaliseXeroName("  BOBBY ")]: "p2" })).toMatchObject({ person_id: "p2", method: "remembered" });
+    expect(match("Bobby", { [normName("  BOBBY ")]: "p2" })).toMatchObject({ person_id: "p2", method: "remembered", needsConfirm: false });
   });
 
   it("ignores a remembered id for someone no longer in the list", () => {
@@ -444,8 +520,9 @@ describe("matchXeroNames", () => {
     expect(match("Jane S")).toMatchObject({ person_id: "p1", method: "name" });
   });
 
-  it("falls back to a unique first name", () => {
-    expect(match("Robert J")).toMatchObject({ person_id: "p2", method: "first_name" });
+  it("falls back to a unique first name, as a suggestion that needs confirming", () => {
+    expect(match("Robert J")).toMatchObject({ person_id: "p2", method: "first_name", needsConfirm: true });
+    expect(match("Robert Jones")).toMatchObject({ method: "name", needsConfirm: false });
   });
 
   it("refuses an ambiguous first name", () => {
@@ -454,26 +531,38 @@ describe("matchXeroNames", () => {
   });
 
   it("keeps the pasted name and hours", () => {
-    expect(matchXeroNames([{ name: "Amy Lee", hours: 99.5 }], people, {})).toEqual([{ name: "Amy Lee", hours: 99.5, person_id: "p3", method: "name" }]);
+    expect(matchXeroNames([{ name: "Amy Lee", hours: 99.5 }], people, {})).toEqual([{ name: "Amy Lee", hours: 99.5, person_id: "p3", method: "name", needsConfirm: false }]);
   });
 });
 
-describe("toWorkbookRows", () => {
-  it("emits the workbook headings A–Y in order, blanks for nulls", () => {
-    const e = expectedFor({ monthKey: "2026-10", person: { state: "SA" }, rules: [ft()] });
-    const calc = computeLine({ clickup: null, leave: null, xeroHours: null, expected: e, settings: LINE_SETTINGS });
-    const [row] = toWorkbookRows([{ person_id: "p1", ...calc, kw_comment: "chasing Xero" }], [{ person_id: "p1", display_name: "Jane Smith", state: "SA" }]);
-    expect(Object.keys(row)).toEqual(WORKBOOK_HEADINGS);
-    expect(WORKBOOK_HEADINGS).toHaveLength(25);
-    expect(row.Employee).toBe("Jane Smith");
-    expect(row.State).toBe("SA");
-    expect(row.Type).toBe("F/T");
-    expect(row["% billed total"]).toBe("");
-    expect(row.Xero).toBe("");
-    expect(row["Public Holiday"]).toBe(7.6);
-    expect(row["Should be"]).toBe(167.2);
-    expect(row.Variance).toBe("");
-    expect(row.KW).toBe("chasing Xero");
-    expect(row.LS).toBe("");
+describe("parseHoursInput", () => {
+  it("blank clears to null, never 0", () => {
+    expect(parseHoursInput("")).toEqual({ ok: true, value: null });
+    expect(parseHoursInput("   ")).toEqual({ ok: true, value: null });
+    expect(parseHoursInput("0")).toEqual({ ok: true, value: 0 });
+  });
+
+  it("reads plain numbers and rounds to 2dp", () => {
+    expect(parseHoursInput(" 152.5 ")).toEqual({ ok: true, value: 152.5 });
+    expect(parseHoursInput("152.456")).toEqual({ ok: true, value: 152.46 });
+    expect(parseHoursInput(".5")).toEqual({ ok: true, value: 0.5 });
+  });
+
+  it("refuses a decimal comma with a hint instead of reading 152,5 as 1525", () => {
+    expect(parseHoursInput("152,5")).toEqual({ ok: false, value: null, error: "Use a dot for decimals: 152,5 → 152.5" });
+    expect(parseHoursInput("1,5,0").ok).toBe(false);
+  });
+
+  it("accepts a real thousands separator (and warns: over 400 h)", () => {
+    expect(parseHoursInput("1,234.5")).toMatchObject({ ok: true, value: 1234.5, warning: expect.any(String) });
+  });
+
+  it("warns (doesn't block) over 400 h in a month", () => {
+    expect(parseHoursInput("400")).toEqual({ ok: true, value: 400 });
+    expect(parseHoursInput("400.5")).toMatchObject({ ok: true, value: 400.5, warning: expect.stringMatching(/400/) });
+  });
+
+  it("rejects negatives, garbage, exponents and absurd values", () => {
+    for (const t of ["-1", "abc", "1e3", "12h", "10000"]) expect(parseHoursInput(t).ok).toBe(false);
   });
 });

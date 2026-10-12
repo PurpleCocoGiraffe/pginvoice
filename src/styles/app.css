@@ -34,6 +34,11 @@
   --status-warn-soft: rgb(255, 248, 232);
   --status-info:      rgb(129, 162, 184);   /* muted slate — Queensland (prv)   */
   --status-info-soft: rgba(129, 162, 184, 0.14);
+  /* Error TEXT on the card background: coral itself is too light for small text on
+     white, so the light theme darkens it (red 700). */
+  --status-over-text: var(--status-over);
+  /* Scrim behind modal drawers/dialogs (same in both themes). */
+  --overlay-scrim:    rgba(23, 23, 23, 0.32);
 
   /* One typeface everywhere, per client request (overrides colors_and_type.css).
      Inter has real tabular figures (font-variant-numeric: tabular-nums, already
@@ -88,6 +93,7 @@
      between page and card now comes from --shadow-sm/--border-subtle alone,
      the same way Overview's cards already work. */
   --bg-base:     rgb(255, 255, 255);   /* #FFFFFF */
+  --status-over-text: rgb(185, 28, 28);
   --bg-card:     rgb(255, 255, 255);   /* #FFFFFF */
   --bg-elevated: rgb(238, 232, 255);   /* Purple 100 — used sparingly for active surfaces */
   --bg-nav:      rgba(255, 255, 255, 0.85);
@@ -1326,3 +1332,15 @@ button { font: inherit; }
   border-bottom: 2px solid transparent;
 }
 .pg-drawer-tabs__tab--active { color: var(--fg-primary); border-bottom-color: var(--accent); }
+
+/* ---- leave editor popover (LeaveEditor.jsx, Consultants) ------------------- */
+.pg-leave-popover { padding: 12px; }
+.pg-leave-grid { display: grid; grid-template-columns: minmax(0, 1fr) 58px 64px 26px; gap: 6px; align-items: center; }
+.pg-leave-input { width: 100%; padding: 4px 6px; font-size: 12px; }
+/* Tight footnote text inside the popover (.pg-footnote's page-level margins don't apply). */
+.pg-footnote.pg-leave-text { margin: 0; padding: 0; }
+.pg-footnote.pg-leave-text--spaced { margin-top: 6px; }
+.pg-banner-warn.pg-leave-alert { margin-top: 8px; padding: 8px 10px; font-size: 11px; }
+.pg-leave-alert svg { vertical-align: -1px; margin-right: 4px; }
+.pg-leave-total { display: flex; justify-content: space-between; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-subtle); font-size: 12px; }
+.pg-leave-total__days { font-weight: 400; color: var(--fg-tertiary); }

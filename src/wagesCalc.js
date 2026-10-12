@@ -6,19 +6,46 @@
 // workbook outputs are HOURS rounded to 2dp (ratios to 4dp). Dates are "YYYY-MM-DD"
 // string keys built with Date.UTC/getUTCDay -- never toISOString on a local date.
 // null always means "not entered / not applicable" and is kept distinct from 0.
-import { CLIENT_SPACE_IDS, isInternalFolder } from "./nameMatch.js";
+import { CLIENT_SPACE_IDS, isInternalFolder, isNonClientSpace } from "./nameMatch.js";
 import { holidaysFor, PUBLIC_HOLIDAYS } from "./publicHolidays.js";
 
+// Default global settings (pginvoice_wage_settings). The single source for these numbers:
+// wagesView's DEFAULT_WAGE_SETTINGS, computeLine's fallbacks and the Settings form all
+// import them from here.
 export const STANDARD_DAY_HOURS = 7.6;
+export const DEFAULT_XERO_TOLERANCE_H = 0.25;
+export const DEFAULT_VARIANCE_THRESHOLD_H = 3.8;
 
-const round2 = (n) => Math.round(n * 100) / 100;
+export const round2 = (n) => Math.round(n * 100) / 100;
 const round4 = (n) => Math.round(n * 10000) / 10000;
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+// Coerces to a finite number; anything else (null, "", "abc") is 0. Use only where a
+// missing value genuinely means zero -- null-vs-0 matters for Xero hours.
+export const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const pad2 = (n) => String(n).padStart(2, "0");
+// Trimmed, single-spaced, lower-case: the one key used to compare ClickUp user names,
+// folder names and pasted Xero names.
+export const normName = (s) => String(s ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 // Hours for human-readable workings: at least 1dp ("114.0"), up to 2dp ("78.26").
-const fmtH = (n) => { const r = round2(n); return Number.isInteger(r * 10) ? r.toFixed(1) : r.toFixed(2); };
+const fmtWorkingHours = (n) => { const r = round2(n); return Number.isInteger(r * 10) ? r.toFixed(1) : r.toFixed(2); };
 const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const PATTERN_KEYS = ["sun_h", "mon_h", "tue_h", "wed_h", "thu_h", "fri_h", "sat_h"]; // indexed by getUTCDay()
+
+// Weekly-pattern columns on pginvoice_wage_rules, in display order (Mon first).
+// `dow` is the getUTCDay() index the column applies to.
+export const PATTERN_DAYS = [
+  { key: "mon_h", label: "Mon", dow: 1 }, { key: "tue_h", label: "Tue", dow: 2 }, { key: "wed_h", label: "Wed", dow: 3 },
+  { key: "thu_h", label: "Thu", dow: 4 }, { key: "fri_h", label: "Fri", dow: 5 }, { key: "sat_h", label: "Sat", dow: 6 },
+  { key: "sun_h", label: "Sun", dow: 0 },
+];
+
+// Employment bases (pginvoice_wage_rules.basis). short = workbook column C label,
+// long = settings/working label, help = one-line explanation in the rule editor.
+export const BASES = {
+  ft: { short: "F/T", long: "Full-time", help: "Standard days × hours per day" },
+  pt_pattern: { short: "P/T", long: "Part-time pattern", help: "Hours per weekday" },
+  casual_xero: { short: "Casual", long: "Casual (expected = Xero)", help: "Expected = Xero (no over/under)" },
+  casual_pattern: { short: "Casual", long: "Casual pattern", help: "Agreed weekly pattern" },
+  casual_target: { short: "Casual", long: "Casual monthly target", help: "Monthly target" },
+};
 
 // ---------------------------------------------------------------- calendar --------------
 export function monthDays(monthKey) {
@@ -32,19 +59,18 @@ export function monthDays(monthKey) {
 }
 const isWeekday = (dow) => dow >= 1 && dow <= 5;
 
-export function weekdaysInMonth(monthKey) {
+// Named apart from capacityData's weekdaysInMonth (same answer, different module) so an
+// auto-import can't silently pick the wrong one.
+export function wageWeekdaysInMonth(monthKey) {
   return monthDays(monthKey).filter((d) => isWeekday(d.dow)).length;
 }
 
 // The workbook's "standard hours" note: weekdays × 7.6 (Jul 2026: 23 × 7.6 = 174.8).
 export function standardMonthHours(monthKey, perDay = STANDARD_DAY_HOURS) {
-  return round2(weekdaysInMonth(monthKey) * perDay);
+  return round2(wageWeekdaysInMonth(monthKey) * perDay);
 }
 
 // ---------------------------------------------------------------- ClickUp ---------------
-const normFolder = (s) => String(s ?? "").trim().replace(/\s+/g, " ").toLowerCase();
-const normUser = (s) => String(s ?? "").trim().replace(/\s+/g, " ").toLowerCase();
-
 function emptyBuckets() {
   return { pgBillable: 0, pgNonBillable: 0, clientBillable: 0, clientNonBillable: 0, taskless: 0, unknownSpace: 0, total: 0, byFolder: [] };
 }
@@ -55,7 +81,7 @@ function addSlice(b, { folder, pg, billable, minutes }) {
   if (pg) b[billable ? "pgBillable" : "pgNonBillable"] += minutes;
   else b[billable ? "clientBillable" : "clientNonBillable"] += minutes;
   b.total += minutes;
-  const hit = b.byFolder.find((f) => normFolder(f.folder) === normFolder(folder) && f.pg === pg && f.billable === billable);
+  const hit = b.byFolder.find((f) => normName(f.folder) === normName(folder) && f.pg === pg && f.billable === billable);
   if (hit) hit.minutes += minutes;
   else b.byFolder.push({ folder, pg, billable, minutes });
 }
@@ -67,13 +93,14 @@ function addSlice(b, { folder, pg, billable, minutes }) {
 //   PG     = everything else (Purple Giraffe folder, internal folders, PG HQ / BDM / any
 //            other space, task-less "Private" entries).
 // Rows with no space_id that DO have a task were synced before the space column existed:
-// they're classified as if in a client space (legacy behaviour) but their minutes are also
-// counted in `unknownSpace` / `unknownSpaceMinutes` so the UI can warn.
+// they fall back to nameMatch's folder-name rule (isNonClientSpace(null, null, folder):
+// BDM-space folders such as "CRM" are non-client, anything else is assumed client), and
+// their minutes are also counted in `unknownSpace` / `unknownSpaceMinutes` so the UI can warn.
 // `taskless` and `unknownSpace` are informational subsets of `total`, not extra time.
 // Returns { perUser: { [userName]: buckets }, ignored: { [userName]: buckets }, unknownSpaceMinutes }.
 export function classifyClickup(summaryRows, settings = {}) {
-  const pgFolders = new Set((settings.pg_folders || []).map(normFolder));
-  const ignoredUsers = new Set((settings.ignored_clickup_users || []).map(normUser));
+  const pgFolders = new Set((settings.pg_folders || []).map(normName));
+  const ignoredUsers = new Set((settings.ignored_clickup_users || []).map(normName));
   const perUser = {};
   const ignored = {};
   let unknownSpaceMinutes = 0;
@@ -84,9 +111,9 @@ export function classifyClickup(summaryRows, settings = {}) {
     const taskless = !!r.taskless;
     const unknownSpace = !spaceId && !taskless;
     const folder = r.folder ?? "";
-    const clientSpace = unknownSpace || CLIENT_SPACE_IDS.has(spaceId);
-    const isClient = clientSpace && !taskless && !pgFolders.has(normFolder(folder)) && !isInternalFolder(folder);
-    const target = ignoredUsers.has(normUser(user)) ? ignored : perUser;
+    const clientSpace = spaceId ? CLIENT_SPACE_IDS.has(spaceId) : !isNonClientSpace(null, null, folder);
+    const isClient = clientSpace && !taskless && !pgFolders.has(normName(folder)) && !isInternalFolder(folder);
+    const target = ignoredUsers.has(normName(user)) ? ignored : perUser;
     const b = target[user] || (target[user] = emptyBuckets());
     addSlice(b, { folder, pg: !isClient, billable: !!r.billable, minutes });
     if (taskless) b.taskless += minutes;
@@ -107,7 +134,7 @@ export function attributeToPeople(perUser, people) {
   const owners = new Map(); // normalised clickup name -> Set(person_id)
   for (const p of people || []) {
     for (const n of p.clickup_user_names || []) {
-      const k = normUser(n);
+      const k = normName(n);
       if (!k) continue;
       if (!owners.has(k)) owners.set(k, new Set());
       owners.get(k).add(p.person_id);
@@ -117,7 +144,7 @@ export function attributeToPeople(perUser, people) {
   const unmapped = [];
   const conflicts = [];
   for (const [userName, b] of Object.entries(perUser || {})) {
-    const ids = owners.get(normUser(userName));
+    const ids = owners.get(normName(userName));
     if (!ids || ids.size === 0) { unmapped.push({ user_name: userName, minutes: b.total }); continue; }
     if (ids.size > 1) { conflicts.push({ user_name: userName, person_ids: [...ids], minutes: b.total }); continue; }
     const [pid] = ids;
@@ -129,9 +156,12 @@ export function attributeToPeople(perUser, people) {
 }
 
 // ---------------------------------------------------------------- expected hours (S, Q) --
-const BASIS_LABEL = { ft: "F/T", pt_pattern: "P/T", casual_pattern: "Casual", casual_target: "Casual", casual_xero: "Casual" };
-
-function patternOf(rule) { return PATTERN_KEYS.map((k) => num(rule[k])); }
+// Indexed by getUTCDay(): pattern[dow] = hours that weekday.
+function patternOf(rule) {
+  const out = [0, 0, 0, 0, 0, 0, 0];
+  for (const d of PATTERN_DAYS) out[d.dow] = num(rule[d.key]);
+  return out;
+}
 
 function segmentCalc({ rule, days, phDates, monthWeekdays, perDay }) {
   const weekdays = days.filter((d) => isWeekday(d.dow));
@@ -144,8 +174,8 @@ function segmentCalc({ rule, days, phDates, monthWeekdays, perDay }) {
     const Q = phWeekdays.length * dh;
     return {
       S, Q, counted: phWeekdays,
-      working: `${weekdays.length} weekdays × ${fmtH(dh)} = ${fmtH(S)}`,
-      qWorking: `${phWeekdays.length} public holiday${phWeekdays.length === 1 ? "" : "s"} × ${fmtH(dh)} = ${fmtH(Q)}`,
+      working: `${weekdays.length} weekdays × ${fmtWorkingHours(dh)} = ${fmtWorkingHours(S)}`,
+      qWorking: `${phWeekdays.length} public holiday${phWeekdays.length === 1 ? "" : "s"} × ${fmtWorkingHours(dh)} = ${fmtWorkingHours(Q)}`,
     };
   }
   if (basis === "pt_pattern" || basis === "casual_pattern") {
@@ -158,16 +188,16 @@ function segmentCalc({ rule, days, phDates, monthWeekdays, perDay }) {
     for (const dow of [1, 2, 3, 4, 5, 6, 0]) {
       if (!pattern[dow] || !counts[dow]) continue;
       S += counts[dow] * pattern[dow];
-      parts.push(`${counts[dow]} ${DOW_SHORT[dow]} × ${fmtH(pattern[dow])}`);
+      parts.push(`${counts[dow]} ${DOW_SHORT[dow]} × ${fmtWorkingHours(pattern[dow])}`);
     }
     const phWorked = phDays.filter((d) => pattern[d.dow] > 0);
-    let working = `${parts.length ? parts.join(" + ") : "no pattern days"} = ${fmtH(S)}`;
+    let working = `${parts.length ? parts.join(" + ") : "no pattern days"} = ${fmtWorkingHours(S)}`;
     if (excludePh && phWorked.length) working += ` (excl. ${phWorked.length} public holiday${phWorked.length === 1 ? "" : "s"})`;
     if (excludePh) return { S, Q: 0, counted: [], working, qWorking: "Casual: no public holiday pay" };
     const Q = phWorked.reduce((s, d) => s + pattern[d.dow], 0);
     return {
       S, Q, counted: phWorked, working,
-      qWorking: phWorked.length ? `${phWorked.map((d) => `${DOW_SHORT[d.dow]} ${d.date.slice(8)} × ${fmtH(pattern[d.dow])}`).join(" + ")} = ${fmtH(Q)}` : "no public holidays on working days",
+      qWorking: phWorked.length ? `${phWorked.map((d) => `${DOW_SHORT[d.dow]} ${d.date.slice(8)} × ${fmtWorkingHours(pattern[d.dow])}`).join(" + ")} = ${fmtWorkingHours(Q)}` : "no public holidays on working days",
     };
   }
   if (basis === "casual_target") {
@@ -176,8 +206,8 @@ function segmentCalc({ rule, days, phDates, monthWeekdays, perDay }) {
     return {
       S, Q: 0, counted: [],
       working: weekdays.length === monthWeekdays
-        ? `monthly target ${fmtH(target)}`
-        : `${fmtH(target)} × ${weekdays.length}/${monthWeekdays} weekdays = ${fmtH(S)}`,
+        ? `monthly target ${fmtWorkingHours(target)}`
+        : `${fmtWorkingHours(target)} × ${weekdays.length}/${monthWeekdays} weekdays = ${fmtWorkingHours(S)}`,
       qWorking: "Casual: no public holiday pay",
     };
   }
@@ -191,8 +221,9 @@ function segmentCalc({ rule, days, phDates, monthWeekdays, perDay }) {
 // The month is split into segments by employment window ∩ rule windows (a rule applies
 // from effective_from until the day before the next rule's effective_from).
 // casual_xero segments have S = null ("equals Xero"). If ANY segment is casual_xero,
-// varianceApplicable is false and S is the sum of the other segments (null only when every
-// segment is casual_xero). A missing rule for any employed day also sets
+// varianceApplicable is false and S is the sum of the other segments. S is null (never a
+// fabricated 0) when no segment produces an expected figure: every segment casual_xero,
+// or no rule covers any employed day. A missing rule for any employed day also sets
 // varianceApplicable false (S would be understated, so over/under would be misleading).
 // unknownState: the person's state isn't SA/WA/QLD, so no public holidays were applied.
 export function expectedFor({ monthKey, person = {}, rules = [], holidays, perDay = STANDARD_DAY_HOURS }) {
@@ -227,12 +258,12 @@ export function expectedFor({ monthKey, person = {}, rules = [], holidays, perDa
 
   const segments = [];
   const counted = [];
-  let sSum = 0, Q = 0, anyXero = false, allXero = runs.length > 0;
+  let sSum = 0, Q = 0, anyXero = false, anyExpected = false, allXero = runs.length > 0;
   for (const run of runs) {
     const rule = sorted[run.idx];
     const calc = segmentCalc({ rule, days: run.days, phDates, monthWeekdays, perDay });
     if (!calc) { missingRule = true; allXero = false; continue; }
-    if (rule.basis === "casual_xero") anyXero = true; else { allXero = false; sSum += calc.S; }
+    if (rule.basis === "casual_xero") anyXero = true; else { allXero = false; anyExpected = true; sSum += calc.S; }
     Q += calc.Q;
     counted.push(...calc.counted);
     segments.push({
@@ -242,7 +273,7 @@ export function expectedFor({ monthKey, person = {}, rules = [], holidays, perDa
   }
 
   return {
-    S: allXero ? null : round2(sSum),
+    S: anyExpected ? round2(sSum) : null,
     Q: round2(Q),
     varianceApplicable: !anyXero && !missingRule,
     allCasualXero: allXero,
@@ -258,7 +289,7 @@ export function expectedFor({ monthKey, person = {}, rules = [], holidays, perDa
 export function typeLabelFor(segments) {
   const labels = [];
   for (const s of segments || []) {
-    const l = BASIS_LABEL[s.basis];
+    const l = BASES[s.basis]?.short;
     if (l && labels[labels.length - 1] !== l) labels.push(l);
   }
   return labels.join(" → ");
@@ -271,11 +302,14 @@ export function typeLabelFor(segments) {
 // casual_xero (expected.S null) where S = R so the variance is 0 once Xero is in.
 // An expected_override_h makes the variance assessable even for casual / missing-rule
 // rows -- the admin has stated what the person should have worked.
+// T (and Tpct) is null whenever the variance isn't assessable (mixed casual_xero month,
+// missing rule) -- a partial S would make R - S look like a real over/under. The one
+// exception is an all-casual_xero month, where T = 0 once Xero is in (as the workbook has it).
 export function computeLine({ clickup, leave, xeroHours, expected, overrides = {}, settings = {} }) {
   const c = clickup || emptyBuckets();
   const exp = expected || { S: null, Q: 0, varianceApplicable: false, missingRule: true, allCasualXero: false, segments: [] };
-  const tol = num(settings.xero_tolerance_h ?? 0.25);
-  const thr = num(settings.variance_threshold_h ?? 3.8);
+  const tol = num(settings.xero_tolerance_h ?? DEFAULT_XERO_TOLERANCE_H);
+  const thr = num(settings.variance_threshold_h ?? DEFAULT_VARIANCE_THRESHOLD_H);
 
   const D = round2((num(c.pgBillable) + num(c.clientBillable)) / 60);
   const E = round2(num(c.pgBillable) / 60);
@@ -296,14 +330,14 @@ export function computeLine({ clickup, leave, xeroHours, expected, overrides = {
   const R = L == null ? null : round2(L + N + O + P + unspecified + Q);
 
   const overridden = overrides?.expected_override_h != null;
-  const allXero = exp.allCasualXero ?? (exp.S == null);
+  const allXero = !!exp.allCasualXero;
   let S;
   if (overridden) S = round2(num(overrides.expected_override_h));
   else if (exp.S == null && allXero) S = R;
   else S = exp.S == null ? null : round2(exp.S);
   const varianceApplicable = overridden || !!exp.varianceApplicable;
 
-  const T = R == null || S == null ? null : round2(R - S);
+  const T = R == null || S == null || (!varianceApplicable && !allXero) ? null : round2(R - S);
   const Tpct = T != null && S ? round4(T / S) : null;
 
   const flags = {
@@ -326,15 +360,50 @@ export function computeLine({ clickup, leave, xeroHours, expected, overrides = {
 
   return {
     D, E, F, G, H, J, K, L, M, N, O, P, unspecified, Q, R, S, T, Tpct,
-    varianceApplicable, flags, status, type: typeLabelFor(exp.segments),
+    varianceApplicable, allCasualXero: allXero, flags, status, type: typeLabelFor(exp.segments),
   };
+}
+
+// ---------------------------------------------------------------- hours input -----------
+// Parses a typed hours field (Xero hours L, PH / expected overrides): "" -> null (cleared,
+// never 0), otherwise a number 0..9999 rounded to 2dp. A comma is accepted ONLY as a real
+// thousands separator ("1,234.5"); "152,5" is a decimal comma and is refused with a hint
+// instead of silently becoming 1525. A monthly value over MONTHLY_HOURS_WARN is allowed
+// but comes back with a warning. Returns { ok, value, error?, warning? }.
+export const MONTHLY_HOURS_WARN = 400;
+const THOUSANDS_RE = /^\d{1,3}(,\d{3})+(\.\d+)?$/;
+const PLAIN_NUMBER_RE = /^(\d+(\.\d*)?|\.\d+)$/;
+export function parseHoursInput(text) {
+  const t = String(text ?? "").trim();
+  if (t === "") return { ok: true, value: null };
+  let clean = t;
+  if (t.includes(",")) {
+    if (!THOUSANDS_RE.test(t)) {
+      const dc = t.match(/^(\d+),(\d+)$/);
+      return { ok: false, value: null, error: dc ? `Use a dot for decimals: ${t} → ${dc[1]}.${dc[2]}` : "Enter hours as a number, e.g. 152.5" };
+    }
+    clean = t.replace(/,/g, "");
+  }
+  if (!PLAIN_NUMBER_RE.test(clean)) return { ok: false, value: null, error: "Enter hours as a number, e.g. 152.5" };
+  const n = Number(clean);
+  if (!Number.isFinite(n) || n > 9999) return { ok: false, value: null, error: "Enter hours between 0 and 9999" };
+  const value = round2(n);
+  return value > MONTHLY_HOURS_WARN
+    ? { ok: true, value, warning: `Over ${MONTHLY_HOURS_WARN} h in a month: check this is right` }
+    : { ok: true, value };
 }
 
 // ---------------------------------------------------------------- Xero paste ------------
 // Kelly pastes "name, hours" pairs for the whole team from Xero. Accepted shapes:
-//   "Jane Smith\t142.5" / "Jane Smith, 142.5" / "Jane Smith   142.5" / "Jane Smith 142.5"
+//   "Jane Smith\t142.5" -- a line containing a tab is split on tabs ONLY, and each cell is
+//                          either a time or, whole, a name: "Jane Smith 2\t40" is name
+//                          "Jane Smith 2" with 40 h, never "Jane Smith" with 2 h.
+//   "Jane Smith, 142.5" / "Jane Smith   142.5" / "Jane Smith 142.5" (no tab)
 //   alternating lines (name, then hours), or one line "Jane, 142.5, Bob, 166.2".
-// Times: 142.5, 142:30, 142h 30m, 142 hrs. A comma is always a separator, never a decimal.
+// Times: 142.5, 142:30, 142h 30m, 142 hrs. A comma is never a decimal point: a line with
+// a decimal comma ("152,5") is reported ("Use a dot for decimals") instead of being split
+// into 152 and 5. A tab-less line that reads as name, name, hours ("Smith, Jane 152.5") is
+// reported too -- "Surname, First" can't be told apart from two names.
 // Header-ish lines ("Employee  Hours") are skipped. Returns { rows: [{name, hours, raw}], errors: [{raw, message}] }.
 const T_HM = String.raw`\d+\s*h(?:rs?|ours?)?\s*\d{1,2}\s*m(?:ins?|inutes?)?`;
 const T_COLON = String.raw`\d+:\d{1,2}`;
@@ -342,6 +411,7 @@ const T_DEC = String.raw`\d+(?:\.\d+)?(?:\s*(?:h|hrs?|hours?))?`;
 const TIME_ALT = `(?:${T_HM}|${T_COLON}|${T_DEC})`;
 const TIME_ONLY_RE = new RegExp(`^${TIME_ALT}$`, "i");
 const NAME_THEN_TIME_RE = new RegExp(`^(.*?[A-Za-z].*?)\\s+(${TIME_ALT})$`, "i");
+const DECIMAL_COMMA_RE = /(\d+),(\d{1,2})(?![\d:])/;
 const HEADER_WORDS = new Set(["employee", "employees", "name", "names", "staff", "hours", "hrs", "time", "total", "totals", "worked", "ordinary"]);
 
 export function parseXeroTime(s) {
@@ -360,48 +430,70 @@ const isHeaderChunk = (s) => {
   return words.length > 0 && words.every((w) => HEADER_WORDS.has(w));
 };
 
-export function parseXeroPaste(text) {
-  const tokens = []; // {kind: "name"|"time", value, raw}
-  for (const line of String(text ?? "").split(/\r?\n/)) {
-    const chunks = line.split(/\t|,|\s{2,}/).map((c) => c.trim()).filter(Boolean);
-    if (!chunks.length || chunks.every(isHeaderChunk)) continue;
-    for (const chunk of chunks) {
-      const hours = parseXeroTime(chunk);
-      if (hours != null) { tokens.push({ kind: "time", value: hours, raw: chunk }); continue; }
+// One line -> tokens {kind: "name"|"time"|"junk"|"error", value?, raw, message?}.
+function lineTokens(line) {
+  const trimmed = line.trim();
+  const dc = line.match(DECIMAL_COMMA_RE);
+  if (dc) return [{ kind: "error", raw: trimmed, message: `Use a dot for decimals: ${dc[1]},${dc[2]} → ${dc[1]}.${dc[2]}` }];
+  const tabbed = line.includes("\t");
+  const chunks = (tabbed ? line.split("\t") : line.split(/,|\s{2,}/)).map((c) => c.trim()).filter(Boolean);
+  if (!chunks.length || chunks.every(isHeaderChunk)) return [];
+  const out = [];
+  for (const chunk of chunks) {
+    const hours = parseXeroTime(chunk);
+    if (hours != null) { out.push({ kind: "time", value: hours, raw: chunk }); continue; }
+    if (!tabbed) {
       const m = chunk.match(NAME_THEN_TIME_RE);
       const trailing = m ? parseXeroTime(m[2]) : null;
       if (m && trailing != null) {
-        tokens.push({ kind: "name", value: m[1].trim(), raw: m[1].trim() });
-        tokens.push({ kind: "time", value: trailing, raw: m[2] });
+        out.push({ kind: "name", value: m[1].trim().replace(/\s+/g, " "), raw: m[1].trim() });
+        out.push({ kind: "time", value: trailing, raw: m[2] });
         continue;
       }
-      if (/[A-Za-z]/.test(chunk) && !/\d/.test(chunk)) tokens.push({ kind: "name", value: chunk.replace(/\s+/g, " "), raw: chunk });
-      else tokens.push({ kind: "junk", raw: chunk });
     }
+    // In a tab cell the whole text is the name (digits included); otherwise a name has no digits.
+    if (/[A-Za-z]/.test(chunk) && (tabbed || !/\d/.test(chunk))) out.push({ kind: "name", value: chunk.replace(/\s+/g, " "), raw: chunk });
+    else out.push({ kind: "junk", raw: chunk });
   }
+  if (!tabbed && out.length === 3 && out[0].kind === "name" && out[1].kind === "name" && out[2].kind === "time") {
+    return [{ kind: "error", raw: trimmed, message: `Can't tell where the name ends in "${trimmed}": put a tab between the name and the hours` }];
+  }
+  return out;
+}
+
+export function parseXeroPaste(text) {
+  const tokens = [];
+  for (const line of String(text ?? "").split(/\r?\n/)) tokens.push(...lineTokens(line));
   const rows = [];
   const errors = [];
   for (let i = 0; i < tokens.length; i++) {
     const tk = tokens[i];
-    if (tk.kind === "name" && tokens[i + 1]?.kind === "time") {
-      rows.push({ name: tk.value, hours: tokens[i + 1].value, raw: `${tk.raw} ${tokens[i + 1].raw}` });
+    const next = tokens[i + 1];
+    if (tk.kind === "name" && next?.kind === "time") {
+      rows.push({ name: tk.value, hours: next.value, raw: `${tk.raw} ${next.raw}` });
+      i++;
+    } else if (tk.kind === "name" && next?.kind === "error") {
+      // Alternating layout with an unreadable hours line: one error for the pair.
+      errors.push({ raw: `${tk.raw} ${next.raw}`, message: `${tk.raw}: ${next.message}` });
       i++;
     } else if (tk.kind === "name") errors.push({ raw: tk.raw, message: `No hours found for "${tk.raw}"` });
     else if (tk.kind === "time") errors.push({ raw: tk.raw, message: `Hours "${tk.raw}" have no name before them` });
+    else if (tk.kind === "error") errors.push({ raw: tk.raw, message: tk.message });
     else errors.push({ raw: tk.raw, message: `Couldn't read "${tk.raw}"` });
   }
   return { rows, errors };
 }
 
 // ---------------------------------------------------------------- Xero name matching ----
-// Key used for the remembered settings.xero_name_map ({ normalisedPastedName: person_id }).
-export const normaliseXeroName = (s) => String(s ?? "").trim().replace(/\s+/g, " ").toLowerCase();
-const firstName = (s) => normaliseXeroName(s).split(" ")[0] || "";
+// settings.xero_name_map is keyed by normName(pastedName) -> person_id.
+const firstName = (s) => normName(s).split(" ")[0] || "";
 
 // Match order: remembered map -> exact xero_name -> exact full/display/ClickUp name ->
 // first name shared by exactly one person -> unmatched. A tier where the name hits
 // several people is skipped rather than guessed. method: "remembered" | "xero_name" |
-// "name" | "first_name" | "ambiguous" | "unmatched".
+// "name" | "first_name" | "ambiguous" | "unmatched". A first-name hit is only a
+// suggestion (needsConfirm: true): the dialog preselects it but treats the row as
+// unresolved until someone confirms it -- "Jane" could be a different Jane.
 export function matchXeroNames(parsed, people, nameMap = {}) {
   const list = people || [];
   const known = new Set(list.map((p) => p.person_id));
@@ -410,46 +502,20 @@ export function matchXeroNames(parsed, people, nameMap = {}) {
     return hits.length === 1 ? hits[0].person_id : hits.length > 1 ? "__ambiguous" : null;
   };
   return (parsed || []).map(({ name, hours }) => {
-    const n = normaliseXeroName(name);
+    const n = normName(name);
     const remembered = nameMap?.[n];
-    if (remembered != null && known.has(remembered)) return { name, hours, person_id: remembered, method: "remembered" };
+    if (remembered != null && known.has(remembered)) return { name, hours, person_id: remembered, method: "remembered", needsConfirm: false };
     let ambiguous = false;
     const tiers = [
-      ["xero_name", (p) => p.xero_name && normaliseXeroName(p.xero_name) === n],
-      ["name", (p) => [p.full_name, p.display_name, ...(p.clickup_user_names || [])].some((x) => x && normaliseXeroName(x) === n)],
+      ["xero_name", (p) => p.xero_name && normName(p.xero_name) === n],
+      ["name", (p) => [p.full_name, p.display_name, ...(p.clickup_user_names || [])].some((x) => x && normName(x) === n)],
       ["first_name", (p) => [p.full_name, p.display_name].some((x) => x && firstName(x) === firstName(n))],
     ];
     for (const [method, pred] of tiers) {
       const hit = uniqueBy(pred);
       if (hit === "__ambiguous") { ambiguous = true; continue; }
-      if (hit) return { name, hours, person_id: hit, method };
+      if (hit) return { name, hours, person_id: hit, method, needsConfirm: method === "first_name" };
     }
-    return { name, hours, person_id: null, method: ambiguous ? "ambiguous" : "unmatched" };
-  });
-}
-
-// ---------------------------------------------------------------- export ----------------
-export const WORKBOOK_HEADINGS = [
-  "Employee", "State", "Type", "ClickUp total billed (with PG)", "PG billed", "Client billed",
-  "ClickUp unbilled", "ClickUp total", "% billed total", "% billed client", "% billed (with PG)",
-  "Xero", "ClickUp Total Xero Total Variance", "AL", "Sick / Personal", "LWOP", "Public Holiday",
-  "Total", "Should be", "Variance", "PG", "KW", "LS", "Phil", "KW comment round 2",
-];
-
-// lines: [{ person_id, ...computeLine(...) result, pg_comment, kw_comment, ls_comment,
-// phil_comment, kw2_comment }]. people: [{ person_id, display_name, state, type? }]
-// (type overrides the basis-derived label). Nulls become "" so the cell stays blank;
-// percentages stay as fractions (format the column as % in the sheet).
-export function toWorkbookRows(lines, people) {
-  const byId = new Map((people || []).map((p) => [p.person_id, p]));
-  const blank = (v) => (v == null ? "" : v);
-  return (lines || []).map((l) => {
-    const p = byId.get(l.person_id) || {};
-    const vals = [
-      p.display_name ?? p.full_name ?? l.person_id, p.state ?? "", p.type ?? l.type ?? "",
-      l.D, l.E, l.F, l.G, l.H, "", l.J, l.K, l.L, l.M, l.N, l.O, l.P, l.Q, l.R, l.S, l.T,
-      l.pg_comment, l.kw_comment, l.ls_comment, l.phil_comment, l.kw2_comment,
-    ];
-    return Object.fromEntries(WORKBOOK_HEADINGS.map((h, i) => [h, blank(vals[i])]));
+    return { name, hours, person_id: null, method: ambiguous ? "ambiguous" : "unmatched", needsConfirm: false };
   });
 }

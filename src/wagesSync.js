@@ -10,6 +10,7 @@ import { loadKey, SEED_PEOPLE } from "./capacityData.js";
 import { fetchLeaveEntries } from "./leaveSync.js";
 import { functionErrorMessage } from "./clickupSync.js";
 import { CAP_PEOPLE_KEY, CAP_LEAVES_KEY } from "./storageKeys.js";
+import { monthOffsetFor } from "./dateMath.js";
 
 const PAGE_SIZE = 1000; // PostgREST's per-request row cap
 
@@ -174,23 +175,6 @@ export async function reopenMonth(monthKey, reason) {
 }
 
 // ---------------------------------------------------------------- ClickUp re-sync -------
-// The current calendar month in Adelaide (the sync's month boundary), as "YYYY-MM".
-export function adelaideMonthKey(now = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Adelaide", year: "numeric", month: "2-digit" }).formatToParts(now);
-  const get = (t) => parts.find((p) => p.type === t).value;
-  return `${get("year")}-${get("month")}`;
-}
-export function adelaideDayOfMonth(now = new Date()) {
-  return Number(new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Adelaide", day: "numeric" }).format(now));
-}
-
-// Months back from the current Adelaide month (0 = this month, 1 = last month).
-export function monthOffsetFor(monthKey, now = new Date()) {
-  const [cy, cm] = adelaideMonthKey(now).split("-").map(Number);
-  const [y, m] = String(monthKey).split("-").map(Number);
-  return (cy * 12 + cm) - (y * 12 + m);
-}
-
 // cron only refreshes the current and previous month; anything older must be re-synced
 // on demand before its numbers reflect later ClickUp edits.
 export async function resyncClickupMonth(monthKey) {

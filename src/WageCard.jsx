@@ -1,36 +1,13 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import {
   CheckCircle2, AlertTriangle, TrendingUp, TrendingDown, Clock, MinusCircle, CalendarDays, ArrowLeftRight,
   BarChart3, Scale, Info, MessageSquare, ChevronRight,
 } from "lucide-react";
 import { PersonAvatar } from "./avatar.jsx";
 import { useDismissable } from "./useDismissable.js";
-
-/* ---------------------------------------------------------------- formatting ----------- */
-// null is "not entered / not applicable" and always renders as an em dash, never 0.
-export const fmtH = (v, dp = 1) => (v == null || !Number.isFinite(Number(v)) ? "—" : `${Number(v).toFixed(dp)} h`);
-export const fmtNum = (v, dp = 1) => (v == null || !Number.isFinite(Number(v)) ? "—" : Number(v).toFixed(dp));
-export const fmtSigned = (v, dp = 1) => {
-  if (v == null || !Number.isFinite(Number(v))) return "—";
-  const n = Number(v);
-  const r = Number(n.toFixed(dp));
-  return `${r > 0 ? "+" : r < 0 ? "−" : ""}${Math.abs(r).toFixed(dp)} h`;
-};
-export const fmtPct = (r, dp = 0) => (r == null || !Number.isFinite(Number(r)) ? "—" : `${(Number(r) * 100).toFixed(dp)}%`);
-const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-export const fmtDay = (d) => {
-  if (!d) return "";
-  const [, m, day] = String(d).slice(0, 10).split("-").map(Number);
-  return `${day} ${MONTHS_SHORT[m - 1]}`;
-};
-export const monthLabel = (mk, long = false) => {
-  const [y, m] = String(mk).split("-").map(Number);
-  return long
-    ? new Date(Date.UTC(y, m - 1, 1)).toLocaleString("en-AU", { month: "long", year: "numeric", timeZone: "UTC" })
-    : `${MONTHS_SHORT[m - 1]} ${y}`;
-};
-const BASIS_NAME = { ft: "Full-time", pt_pattern: "Part-time pattern", casual_xero: "Casual (expected = Xero)", casual_pattern: "Casual pattern", casual_target: "Casual monthly target" };
-export const basisName = (b) => BASIS_NAME[b] || b;
+import { DEFAULT_XERO_TOLERANCE_H } from "./wagesCalc.js";
+import { REVIEWER_FIELDS, COMMENT_FIELDS } from "./wagesView.js";
+import { fmtH, fmtNum, fmtSigned, fmtPct, fmtDay, basisName } from "./wagesFormat.js";
 
 /* ---------------------------------------------------------------- status --------------- */
 export const STATUS_META = {
@@ -54,6 +31,41 @@ export function StatusPill({ status, compact }) {
     </span>
   );
 }
+
+/* ---------------------------------------------------------------- tabs ----------------- */
+// Accessible tab strip: roving tabindex, Left/Right (and Home/End) move between tabs and
+// select them. Each tab controls the panel rendered with tabPanelProps(idBase, key).
+export function TabBar({ tabs, active, onChange, idBase, label }) {
+  const refs = useRef({});
+  const onKeyDown = (e) => {
+    const i = tabs.findIndex((t) => t.key === active);
+    let n = null;
+    if (e.key === "ArrowRight") n = (i + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") n = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") n = 0;
+    else if (e.key === "End") n = tabs.length - 1;
+    if (n == null) return;
+    e.preventDefault();
+    onChange(tabs[n].key);
+    refs.current[tabs[n].key]?.focus();
+  };
+  return (
+    <div className="pg-tabs" role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+      {tabs.map((t) => {
+        const selected = t.key === active;
+        const Icon = t.icon;
+        return (
+          <button key={t.key} ref={(el) => { refs.current[t.key] = el; }} type="button" role="tab"
+            id={`${idBase}-tab-${t.key}`} aria-selected={selected} aria-controls={`${idBase}-panel-${t.key}`} tabIndex={selected ? 0 : -1}
+            className={"pg-tab" + (selected ? " pg-tab--active" : "")} onClick={() => onChange(t.key)}>
+            {Icon && <Icon size={13} aria-hidden="true" />} {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+export const tabPanelProps = (idBase, key) => ({ role: "tabpanel", id: `${idBase}-panel-${key}`, "aria-labelledby": `${idBase}-tab-${key}`, tabIndex: 0 });
 
 /* ---------------------------------------------------------------- building blocks ------ */
 export function Section({ icon: Icon, title, aside, children }) {
@@ -175,7 +187,7 @@ export function LeaveSection({ line, month }) {
 }
 
 export function ReconSection({ line, settings }) {
-  const tol = settings?.xero_tolerance_h ?? 0.25;
+  const tol = settings?.xero_tolerance_h ?? DEFAULT_XERO_TOLERANCE_H;
   let statusText, StatusIcon, tone;
   if (line.L == null) { statusText = "Awaiting Xero"; StatusIcon = Clock; tone = "var(--fg-tertiary)"; }
   else if (line.flags?.xeroMismatch) { statusText = "Check"; StatusIcon = AlertTriangle; tone = "var(--status-over)"; }
@@ -230,12 +242,10 @@ export function overUnderText(line) {
   return { value: `${t > 0 ? "▲" : t < 0 ? "▼" : ""} ${Math.abs(t).toFixed(1)} h`.trim(), sub: `${word}${pct}`, icon: t > 0 ? TrendingUp : t < 0 ? TrendingDown : null };
 }
 
-// Expected S as displayed: "—" when no rule covers any employed day (S would be a
-// fabricated 0), "= Xero" for an all-casual month before Xero is entered.
+// Expected S as displayed: "= Xero" for an all-casual month before Xero is entered,
+// otherwise S itself ("—" when null, e.g. no hours rule covers the month).
 export function expectedText(line) {
-  if (line.expected_override_h != null) return fmtH(line.S);
-  if (line.expected?.missingRule && !(line.expected?.segments || []).length) return "—";
-  if (line.expected?.allCasualXero && line.S == null) return "= Xero";
+  if (line.S == null && line.expected?.allCasualXero && line.expected_override_h == null) return "= Xero";
   return fmtH(line.S);
 }
 
@@ -259,19 +269,13 @@ export function HoursSection({ line, view }) {
   );
 }
 
-const REVIEWERS = [
-  { key: "kw_comment", short: "KW", label: "Kelly" },
-  { key: "ls_comment", short: "LS", label: "Lynda" },
-  { key: "phil_comment", short: "Phil", label: "Phil" },
-  { key: "kw2_comment", short: "KW2", label: "Kelly round 2" },
-];
 export function commentCount(line) {
-  return ["pg_comment", ...REVIEWERS.map((r) => r.key)].filter((k) => line[k] && String(line[k]).trim()).length;
+  return COMMENT_FIELDS.filter((k) => line[k] && String(line[k]).trim()).length;
 }
 export function ReviewDots({ line }) {
   return (
     <span className="wr-dots">
-      {REVIEWERS.map((r) => {
+      {REVIEWER_FIELDS.map((r) => {
         const done = !!(line[r.key] && String(line[r.key]).trim());
         return (
           <span key={r.key} className={"wr-dot" + (done ? " wr-dot--done" : "")} title={`${r.label}: ${done ? "commented" : "no comment yet"}`}>

@@ -11,6 +11,7 @@
 import { supabase } from "./supabaseClient.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { LEAVE_ENTRIES_KEY } from "./storageKeys.js";
+import { round2, STANDARD_DAY_HOURS } from "./wagesCalc.js";
 
 export const LEAVE_TYPES = [
   { key: "annual", label: "Annual leave" },
@@ -35,9 +36,8 @@ function normalize(row) {
   };
 }
 
-// hours/days are numeric(6,2) -- round before sending so the stored value matches what
-// we total locally.
-export const round2 = (n) => Math.round(Number(n) * 100) / 100;
+// hours/days are numeric(6,2): writes round with round2 (wagesCalc.js) before sending so
+// the stored value matches what we total locally.
 
 export function notifyLeaveEntriesChanged() {
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(PG_DATA_EVENT, { detail: { key: LEAVE_ENTRIES_KEY } }));
@@ -45,15 +45,6 @@ export function notifyLeaveEntriesChanged() {
 
 export async function fetchLeaveEntries(monthKey) {
   const { data, error } = await supabase.from(TABLE).select(COLUMNS).eq("month_key", monthKey).order("created_at", { ascending: true });
-  if (error) throw error;
-  return (data || []).map(normalize);
-}
-
-// Inclusive 'YYYY-MM' range (string comparison is safe for zero-padded month keys).
-export async function fetchLeaveEntriesRange(fromMonthKey, toMonthKey) {
-  const { data, error } = await supabase.from(TABLE).select(COLUMNS)
-    .gte("month_key", fromMonthKey).lte("month_key", toMonthKey)
-    .order("month_key", { ascending: true }).order("created_at", { ascending: true });
   if (error) throw error;
   return (data || []).map(normalize);
 }
@@ -102,4 +93,13 @@ export function deriveLeaveRows(personEntries, legacyTotalHours) {
   const legacy = Number(legacyTotalHours ?? 0);
   if (legacy > 0) return [{ id: null, legacy: true, leave_type: "unspecified", hours: legacy, days: null }];
   return [];
+}
+
+const FULL_TIME_WEEKLY_HOURS = 38;
+// Length of one day off in hours for the leave editor's Days field, or 0 when days can't
+// be converted (the field is disabled and hours must be entered). Only full-time (38 h a
+// week) staff have a fixed day (7.6 h); a part-timer's or casual's working days vary in
+// length, so contracted/5 would misstate their leave.
+export function leaveDayHours(person) {
+  return Number(person?.contracted) === FULL_TIME_WEEKLY_HOURS ? STANDARD_DAY_HOURS : 0;
 }

@@ -1,19 +1,28 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Plus, X, Pencil, Trash2, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
 import { PersonAvatar } from "./avatar.jsx";
-import { expectedFor } from "./wagesCalc.js";
+import { expectedFor, BASES, PATTERN_DAYS, STANDARD_DAY_HOURS } from "./wagesCalc.js";
 import { normaliseSettings } from "./wagesView.js";
 import { upsertPerson, upsertRule, deleteRule, saveSettings } from "./wagesSync.js";
-import { fmtDay, fmtNum, basisName, monthLabel } from "./WageCard.jsx";
+import { fmtDay, fmtNum, basisName, monthLabel } from "./wagesFormat.js";
 
-const DAYS = [["mon_h", "Mon"], ["tue_h", "Tue"], ["wed_h", "Wed"], ["thu_h", "Thu"], ["fri_h", "Fri"], ["sat_h", "Sat"], ["sun_h", "Sun"]];
-const CASUAL_OPTIONS = [
-  { basis: "casual_xero", label: "Expected = Xero (no over/under)" },
-  { basis: "casual_pattern", label: "Agreed weekly pattern" },
-  { basis: "casual_target", label: "Monthly target" },
+const CASUAL_BASES = ["casual_xero", "casual_pattern", "casual_target"];
+const BASIS_FAMILIES = [
+  { key: "ft", title: BASES.ft.long, sub: BASES.ft.help },
+  { key: "pt", title: BASES.pt_pattern.long, sub: BASES.pt_pattern.help },
+  { key: "casual", title: "Casual", sub: "No public holidays" },
 ];
 const errText = (e) => e?.message || String(e);
 const toNum = (v) => (v === "" || v == null ? null : Number(v));
+// A rule/settings hours field: blank is allowed only where `blankOk`; otherwise a plain
+// non-negative number with a dot for decimals. "7,6" is refused (never silently 0).
+const hoursFieldError = (v, { blankOk = false } = {}) => {
+  const t = String(v ?? "").trim();
+  if (t === "") return blankOk ? null : "Required";
+  if (/^\d+,\d+$/.test(t)) return `Use a dot for decimals: ${t.replace(",", ".")}`;
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(t)) return "Enter a number, e.g. 7.6";
+  return null;
+};
 
 function ChipList({ items, onRemove, label }) {
   if (!items.length) return <span className="wr-note">None</span>;
@@ -49,7 +58,8 @@ function GlobalSettings({ settingsRow, seenUsers, onSaved }) {
   const [state, setState] = useState({ saving: false, error: null, saved: false });
   useEffect(() => { setForm({ ...normaliseSettings(settingsRow) }); }, [settingsRow]);
   const set = (k, v) => { setForm((f) => ({ ...f, [k]: v })); setState((st) => ({ ...st, saved: false })); };
-  const numOk = ["hours_per_day", "xero_tolerance_h", "variance_threshold_h"].every((k) => form[k] !== "" && Number.isFinite(Number(form[k])) && Number(form[k]) >= 0);
+  const numErrors = Object.fromEntries(["hours_per_day", "xero_tolerance_h", "variance_threshold_h"].map((k) => [k, hoursFieldError(form[k])]));
+  const numOk = Object.values(numErrors).every((e) => !e);
   const save = async () => {
     setState({ saving: true, error: null, saved: false });
     try {
@@ -66,12 +76,16 @@ function GlobalSettings({ settingsRow, seenUsers, onSaved }) {
       <h2 className="wr-panel__title">Global settings</h2>
       <div className="wr-form-row">
         <label className="pg-field"><span className="pg-field__label">Hours per day</span>
-          <input className="pg-input" inputMode="decimal" value={form.hours_per_day} onChange={(e) => set("hours_per_day", e.target.value)} /></label>
+          <input className="pg-input" inputMode="decimal" value={form.hours_per_day} aria-invalid={!!numErrors.hours_per_day} onChange={(e) => set("hours_per_day", e.target.value)} /></label>
         <label className="pg-field"><span className="pg-field__label">Xero ⇄ ClickUp tolerance (M), h</span>
-          <input className="pg-input" inputMode="decimal" value={form.xero_tolerance_h} onChange={(e) => set("xero_tolerance_h", e.target.value)} /></label>
+          <input className="pg-input" inputMode="decimal" value={form.xero_tolerance_h} aria-invalid={!!numErrors.xero_tolerance_h} onChange={(e) => set("xero_tolerance_h", e.target.value)} /></label>
         <label className="pg-field"><span className="pg-field__label">Over/under threshold (T), h</span>
-          <input className="pg-input" inputMode="decimal" value={form.variance_threshold_h} onChange={(e) => set("variance_threshold_h", e.target.value)} /></label>
+          <input className="pg-input" inputMode="decimal" value={form.variance_threshold_h} aria-invalid={!!numErrors.variance_threshold_h} onChange={(e) => set("variance_threshold_h", e.target.value)} /></label>
       </div>
+      <p className="wr-note">
+        Hours per day is the standard-month figure and the starting value for new full-time rules.
+        Changing it doesn't rewrite existing rules: each full-time rule keeps its own hours per day (edit the rule to change it).
+      </p>
       <div className="wr-form-block">
         <div className="pg-field__label">PG folders (inside client spaces, counted as PG time)</div>
         <ChipList label="PG folders" items={form.pg_folders} onRemove={(n) => set("pg_folders", form.pg_folders.filter((x) => x !== n))} />
@@ -84,7 +98,7 @@ function GlobalSettings({ settingsRow, seenUsers, onSaved }) {
       </div>
       <div className="wr-inline">
         <button type="button" className="pg-btn" disabled={!numOk || state.saving} onClick={save}>{state.saving ? "Saving…" : "Save settings"}</button>
-        {!numOk && <span className="wr-field-state wr-field-state--error">Enter numbers for hours/tolerance/threshold.</span>}
+        {!numOk && <span className="wr-field-state wr-field-state--error">Hours/tolerance/threshold: {Object.values(numErrors).find(Boolean)}.</span>}
         {state.saved && <span className="wr-field-state">Saved</span>}
         {state.error && <span className="wr-field-state wr-field-state--error" role="alert">Couldn't save: {state.error}</span>}
       </div>
@@ -93,20 +107,29 @@ function GlobalSettings({ settingsRow, seenUsers, onSaved }) {
 }
 
 /* ---------------------------------------------------------------- rules ----------------- */
-const blankRule = (personId) => ({
-  person_id: personId, effective_from: "", basis: "ft", daily_hours: 7.6,
-  mon_h: 0, tue_h: 0, wed_h: 0, thu_h: 0, fri_h: 0, sat_h: 0, sun_h: 0, monthly_target_h: "", note: "",
+// New rules start from the global hours per day; an existing rule keeps its own value.
+const blankRule = (personId, perDay) => ({
+  person_id: personId, effective_from: "", basis: "ft", daily_hours: perDay ?? STANDARD_DAY_HOURS,
+  ...Object.fromEntries(PATTERN_DAYS.map((d) => [d.key, 0])), monthly_target_h: "", note: "",
 });
 
 function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onCancel }) {
-  const [r, setR] = useState(() => ({ ...initial, monthly_target_h: initial.monthly_target_h ?? "", note: initial.note ?? "" }));
+  const [r, setR] = useState(() => ({
+    ...initial, daily_hours: initial.daily_hours ?? perDay ?? STANDARD_DAY_HOURS, monthly_target_h: initial.monthly_target_h ?? "", note: initial.note ?? "",
+  }));
   const [state, setState] = useState({ saving: false, error: null });
   const set = (k, v) => setR((x) => ({ ...x, [k]: v }));
   const family = r.basis === "ft" ? "ft" : r.basis === "pt_pattern" ? "pt" : "casual";
   const usesPattern = r.basis === "pt_pattern" || r.basis === "casual_pattern";
-  const weekly = DAYS.reduce((s, [k]) => s + (Number(r[k]) || 0), 0);
+  const weekly = PATTERN_DAYS.reduce((s, d) => s + (Number(r[d.key]) || 0), 0);
+  const fieldErrors = {
+    daily_hours: r.basis === "ft" ? hoursFieldError(r.daily_hours) : null,
+    monthly_target_h: r.basis === "casual_target" ? hoursFieldError(r.monthly_target_h) : null,
+    ...Object.fromEntries(PATTERN_DAYS.map((d) => [d.key, usesPattern ? hoursFieldError(r[d.key], { blankOk: true }) : null])),
+  };
+  const firstFieldError = Object.values(fieldErrors).find(Boolean) || null;
   const valid = /^\d{4}-\d{2}-\d{2}$/.test(r.effective_from || "")
-    && (r.basis !== "casual_target" || (r.monthly_target_h !== "" && Number(r.monthly_target_h) >= 0))
+    && !firstFieldError
     && (r.basis !== "ft" || Number(r.daily_hours) > 0)
     && (!usesPattern || weekly > 0)
     && !otherRules.some((o) => String(o.effective_from).slice(0, 10) === r.effective_from);
@@ -115,7 +138,7 @@ function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onC
     if (!/^\d{4}-\d{2}-\d{2}$/.test(r.effective_from || "")) return null;
     const draft = { ...r, daily_hours: Number(r.daily_hours) || 0, monthly_target_h: toNum(r.monthly_target_h) };
     const e = expectedFor({ monthKey, person, rules: [...otherRules, draft], perDay });
-    const S = e.allCasualXero ? "= Xero" : `${fmtNum(e.S, 2)} h`;
+    const S = e.allCasualXero ? "= Xero" : e.S == null ? "—" : `${fmtNum(e.S, 2)} h`;
     return `${monthLabel(monthKey)}: S = ${S} (${e.segments.map((s) => s.working).join("; ") || "no rule applies"})`;
   }, [r, otherRules, person, monthKey, perDay]);
 
@@ -124,9 +147,11 @@ function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onC
     setState({ saving: true, error: null });
     const payload = {
       ...(r.id ? { id: r.id } : {}), person_id: r.person_id, effective_from: r.effective_from, basis: r.basis,
-      daily_hours: Number(r.daily_hours) || 7.6, monthly_target_h: r.basis === "casual_target" ? Number(r.monthly_target_h) : null,
+      // daily_hours is only meaningful for ft; other bases store the global value as a placeholder.
+      daily_hours: r.basis === "ft" ? Number(r.daily_hours) : (perDay ?? STANDARD_DAY_HOURS),
+      monthly_target_h: r.basis === "casual_target" ? Number(r.monthly_target_h) : null,
       note: r.note?.trim() || null,
-      ...Object.fromEntries(DAYS.map(([k]) => [k, usesPattern ? (Number(r[k]) || 0) : 0])),
+      ...Object.fromEntries(PATTERN_DAYS.map((d) => [d.key, usesPattern ? (Number(r[d.key]) || 0) : 0])),
     };
     try { await onSave(payload); } catch (e) { setState({ saving: false, error: errText(e) }); }
   };
@@ -138,7 +163,7 @@ function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onC
         <input className="pg-input" type="date" value={r.effective_from || ""} onChange={(e) => set("effective_from", e.target.value)} />
       </label>
       <div className="wr-basis" role="radiogroup" aria-label="Employment basis">
-        {[["ft", "Full-time", "Standard days × hours per day"], ["pt", "Part-time pattern", "Hours per weekday"], ["casual", "Casual", "No public holidays"]].map(([key, title, sub]) => (
+        {BASIS_FAMILIES.map(({ key, title, sub }) => (
           <button key={key} type="button" role="radio" aria-checked={family === key}
             className={"wr-basis__opt" + (family === key ? " is-active" : "")}
             onClick={() => pick(key === "ft" ? "ft" : key === "pt" ? "pt_pattern" : (family === "casual" ? r.basis : "casual_xero"))}>
@@ -148,9 +173,9 @@ function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onC
       </div>
       {family === "casual" && (
         <div className="wr-radio-list" role="radiogroup" aria-label="Casual expected hours">
-          {CASUAL_OPTIONS.map((o) => (
-            <label key={o.basis} className="pg-checkbox-row">
-              <input type="radio" name={`casual-${r.person_id}`} checked={r.basis === o.basis} onChange={() => pick(o.basis)} /> {o.label}
+          {CASUAL_BASES.map((b) => (
+            <label key={b} className="pg-checkbox-row">
+              <input type="radio" name={`casual-${r.person_id}`} checked={r.basis === b} onChange={() => pick(b)} /> {BASES[b].help}
             </label>
           ))}
         </div>
@@ -158,16 +183,16 @@ function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onC
       {r.basis === "ft" && (
         <label className="pg-field" style={{ maxWidth: 160 }}>
           <span className="pg-field__label">Hours per day</span>
-          <input className="pg-input" inputMode="decimal" value={r.daily_hours} onChange={(e) => set("daily_hours", e.target.value)} />
+          <input className="pg-input" inputMode="decimal" value={r.daily_hours} aria-invalid={!!fieldErrors.daily_hours} onChange={(e) => set("daily_hours", e.target.value)} />
         </label>
       )}
       {usesPattern && (
         <div>
           <div className="wr-week">
-            {DAYS.map(([k, label]) => (
-              <label key={k} className="pg-field">
-                <span className="pg-field__label">{label}</span>
-                <input className="pg-input" inputMode="decimal" value={r[k]} onChange={(e) => set(k, e.target.value)} />
+            {PATTERN_DAYS.map((d) => (
+              <label key={d.key} className="pg-field">
+                <span className="pg-field__label">{d.label}</span>
+                <input className="pg-input" inputMode="decimal" value={r[d.key]} aria-invalid={!!fieldErrors[d.key]} onChange={(e) => set(d.key, e.target.value)} />
               </label>
             ))}
           </div>
@@ -177,14 +202,15 @@ function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onC
       {r.basis === "casual_target" && (
         <label className="pg-field" style={{ maxWidth: 200 }}>
           <span className="pg-field__label">Monthly target (h)</span>
-          <input className="pg-input" inputMode="decimal" value={r.monthly_target_h} onChange={(e) => set("monthly_target_h", e.target.value)} />
+          <input className="pg-input" inputMode="decimal" value={r.monthly_target_h} aria-invalid={!!fieldErrors.monthly_target_h} onChange={(e) => set("monthly_target_h", e.target.value)} />
         </label>
       )}
       <label className="pg-field">
         <span className="pg-field__label">Note (optional)</span>
         <input className="pg-input" value={r.note} onChange={(e) => set("note", e.target.value)} />
       </label>
-      {preview && <p className="wr-preview">{preview}</p>}
+      {firstFieldError && <p className="wr-field-state wr-field-state--error" role="alert">{firstFieldError}</p>}
+      {preview && !firstFieldError && <p className="wr-preview">{preview}</p>}
       {otherRules.some((o) => String(o.effective_from).slice(0, 10) === r.effective_from) && <p className="wr-field-state wr-field-state--error">Another rule already starts on this date.</p>}
       <div className="wr-inline">
         <button type="button" className="pg-btn" disabled={!valid || state.saving} onClick={save}>{state.saving ? "Saving…" : "Save rule"}</button>
@@ -198,8 +224,8 @@ function RuleEditor({ initial, otherRules, person, monthKey, perDay, onSave, onC
 function ruleSummary(r) {
   if (r.basis === "ft") return `${basisName(r.basis)} · ${fmtNum(r.daily_hours, 2)} h/day`;
   if (r.basis === "pt_pattern" || r.basis === "casual_pattern") {
-    const days = DAYS.filter(([k]) => Number(r[k]) > 0).map(([k, l]) => `${l} ${Number(r[k])}`).join(", ");
-    const total = DAYS.reduce((s, [k]) => s + (Number(r[k]) || 0), 0);
+    const days = PATTERN_DAYS.filter((d) => Number(r[d.key]) > 0).map((d) => `${d.label} ${Number(r[d.key])}`).join(", ");
+    const total = PATTERN_DAYS.reduce((s, d) => s + (Number(r[d.key]) || 0), 0);
     return `${basisName(r.basis)} · ${days || "no days"} (${fmtNum(total, 2)} h/wk)`;
   }
   if (r.basis === "casual_target") return `${basisName(r.basis)} · ${fmtNum(r.monthly_target_h, 2)} h/month`;
@@ -291,7 +317,7 @@ function PersonSettings({ rosterPerson, wageRow, rules, seenUsers, monthKey, per
         </ol>
         {ruleError && <p className="wr-field-state wr-field-state--error" role="alert">Couldn't delete: {ruleError}</p>}
         {wageRow && (editing === "new"
-          ? <RuleEditor initial={blankRule(pid)} otherRules={sortedRules} person={person} monthKey={monthKey} perDay={perDay} onSave={saveRule} onCancel={() => setEditing(null)} />
+          ? <RuleEditor initial={blankRule(pid, perDay)} otherRules={sortedRules} person={person} monthKey={monthKey} perDay={perDay} onSave={saveRule} onCancel={() => setEditing(null)} />
           : <button type="button" className="pg-btn-ghost" onClick={() => setEditing("new")}><Plus size={11} /> Add rule</button>)}
       </div>
     </div>

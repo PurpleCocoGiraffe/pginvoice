@@ -14,6 +14,10 @@
 // - Optional `region` marks a holiday that only applies to part of the state (QLD's Ekka
 //   is Brisbane-only; other QLD areas have their own show day). Consumers that don't
 //   care about region simply ignore the field.
+// Last date the table below covers. A month after this has NO holidays listed -- callers
+// (wagesView) warn rather than silently treating it as a month without public holidays.
+export const HOLIDAY_COVERAGE_END = "2027-12-31";
+
 export const PUBLIC_HOLIDAYS = {
   SA: [
     { date: "2025-06-09", name: "King's Birthday" },

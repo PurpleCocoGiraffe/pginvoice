@@ -7,17 +7,21 @@ import {
 import { OverviewKpiCard } from "./OverviewKpiCard.jsx";
 import { ExportItem } from "./ExportItem.jsx";
 import { PersonAvatar } from "./avatar.jsx";
-import { useDismissable, useEscape } from "./useDismissable.js";
+import { useDismissable, useEscape, useFocusTrap } from "./useDismissable.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { CAP_PEOPLE_KEY, CAP_LEAVES_KEY, LEAVE_ENTRIES_KEY, WAGES_PREFS_KEY } from "./storageKeys.js";
 import { timeAgo } from "./format.js";
-import { toWorkbookRows, WORKBOOK_HEADINGS } from "./wagesCalc.js";
-import { buildMonthView, buildSnapshot, groupLines, filterLines, computeTotals } from "./wagesView.js";
+import { adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor } from "./dateMath.js";
+import {
+  buildMonthView, buildSnapshot, groupLines, filterLines, computeTotals, hasExpected,
+  toWorkbookRows, WORKBOOK_HEADINGS, WAGE_STATES,
+} from "./wagesView.js";
 import {
   loadWagesMonth, WAGE_SOURCES, ESSENTIAL_LIVE_SOURCES, upsertLine, upsertPerson, saveXeroNameMap,
-  closeMonth, reopenMonth, resyncClickupMonth, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor,
+  closeMonth, reopenMonth, resyncClickupMonth,
 } from "./wagesSync.js";
-import { WageCard, StatusPill, ReviewDots, overUnderText, expectedText, fmtH, fmtSigned, fmtPct, fmtDay, monthLabel } from "./WageCard.jsx";
+import { fmtH, fmtSigned, fmtPct, fmtDay, monthLabel } from "./wagesFormat.js";
+import { WageCard, StatusPill, ReviewDots, overUnderText, expectedText, TabBar, tabPanelProps } from "./WageCard.jsx";
 import { WageDrawer, HoursInput } from "./WageDrawer.jsx";
 import { XeroPasteDialog } from "./XeroPasteDialog.jsx";
 import { WageSettings } from "./WageSettings.jsx";
@@ -45,6 +49,19 @@ const STATUS_FILTERS = [
   ["over", "Over"], ["under", "Under"], ["ok", "OK"], ["not_assessed", "Not assessed"],
 ];
 const sourceLabel = (k) => WAGE_SOURCES.find((s) => s.key === k)?.label || k;
+const PAGE_TABS = [
+  { key: "review", label: "Review", icon: ListChecks },
+  { key: "settings", label: "Settings", icon: Settings2 },
+];
+// The plain-data sources object buildMonthView takes, from loadWagesMonth's
+// { key: {data, error} } result. A failed source is passed as undefined, never as empty.
+const sourceData = (loaded) => {
+  const pick = (k) => (loaded[k] && !loaded[k].error ? loaded[k].data : undefined);
+  return {
+    roster: pick("roster"), capLeaves: pick("capLeaves"), wagePeople: pick("wagePeople"), rules: pick("rules"),
+    settings: pick("settings"), monthRow: pick("monthRow"), lines: pick("lines"), leaveEntries: pick("leaveEntries"), clickupSummary: pick("clickupSummary"),
+  };
+};
 
 class ErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -96,10 +113,11 @@ function ExportMenu({ disabled, onWorkbook, onCsv }) {
 
 function ConfirmDialog({ title, children, confirmLabel, onConfirm, onClose, disabled, busy, error }) {
   useEscape(onClose);
+  const dialogRef = useFocusTrap();
   return (
     <>
       <div className="wr-drawer-backdrop" onClick={onClose} aria-hidden="true" />
-      <div className="wr-modal wr-modal--small" role="dialog" aria-modal="true" aria-labelledby="wr-confirm-title">
+      <div ref={dialogRef} tabIndex={-1} className="wr-modal wr-modal--small" role="dialog" aria-modal="true" aria-labelledby="wr-confirm-title">
         <div className="wr-modal__head">
           <h2 id="wr-confirm-title" className="wr-modal__title">{title}</h2>
           <button type="button" className="wr-iconbtn" onClick={onClose} aria-label="Close"><X size={16} /></button>
@@ -198,7 +216,7 @@ function WagesTable({ lines, closed, onSaveLine, onOpen }) {
             <tr className="total">
               <th scope="row" className="wr-table__person">Team ({t.people})</th>
               <td />
-              <td className="right num">{fmtH(sumKnown(lines, (l) => (expectedText(l) === "—" ? null : l.S)))}</td>
+              <td className="right num">{fmtH(sumKnown(lines, (l) => (hasExpected(l) ? l.S : null)))}</td>
               <td className="right num">{fmtH(t.L)}</td>
               <td className="right num">{fmtH(lines.reduce((s, l) => s + leaveTotal(l), 0))}</td>
               <td className="right num">{fmtH(sumKnown(lines, (l) => l.Q))}</td>
@@ -224,10 +242,14 @@ function download(blob, name) {
   a.href = url; a.download = name; a.click();
   URL.revokeObjectURL(url);
 }
+// Percentage columns J and K (fractions in the data). Column I ("% billed total") stays
+// blank: it's in the workbook's layout but not used in the workbook.
+const PCT_COLUMNS = ["% billed client", "% billed (with PG)"].map((h) => WORKBOOK_HEADINGS.indexOf(h));
+const COMMENT_COL_START = WORKBOOK_HEADINGS.indexOf("PG");
 function workbookSheet(view) {
   const people = view.lines.map((l) => ({ person_id: l.person_id, display_name: l.name, state: l.state, type: l.typeLabel }));
-  // A person with no hours rule has no meaningful S: leave the cell blank, not 0.
-  const rows = toWorkbookRows(view.lines.map((l) => (expectedText(l) === "—" ? { ...l, S: null } : l)), people);
+  // S and T blanks (no rule, not assessable) are decided from the data in toWorkbookRows.
+  const rows = toWorkbookRows(view.lines, people);
   const aoa = [WORKBOOK_HEADINGS, ...rows.map((r) => WORKBOOK_HEADINGS.map((h) => r[h]))];
   aoa.push([]);
   aoa.push([`Standard hours: ${view.weekdays} weekdays × ${view.perDay} = ${view.standardHours} h`]);
@@ -235,12 +257,12 @@ function workbookSheet(view) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   // J and K are fractions; show them as percentages like the workbook does.
   for (let r = 1; r <= rows.length; r++) {
-    for (const c of [9, 10]) {
+    for (const c of PCT_COLUMNS) {
       const cell = ws[XLSX.utils.encode_cell({ r, c })];
       if (cell && typeof cell.v === "number") cell.z = "0.0%";
     }
   }
-  ws["!cols"] = WORKBOOK_HEADINGS.map((h, i) => ({ wch: i === 0 ? 22 : i >= 20 ? 30 : Math.max(9, Math.min(18, h.length + 2)) }));
+  ws["!cols"] = WORKBOOK_HEADINGS.map((h, i) => ({ wch: i === 0 ? 22 : i >= COMMENT_COL_START ? 30 : Math.max(9, Math.min(18, h.length + 2)) }));
   return ws;
 }
 
@@ -258,6 +280,11 @@ function WagesReviewInner() {
   const [reopenReason, setReopenReason] = useState("");
   const [resync, setResync] = useState({ busy: false, error: null, done: false });
   const [saveError, setSaveError] = useState(null);
+  // Line saves still in flight (an HoursInput commits on blur, e.g. when the Close month
+  // button is clicked). Close waits for them so the snapshot can't miss a just-typed value.
+  const pendingSaves = useRef(new Set());
+  const [pendingCount, setPendingCount] = useState(0);
+  const drawerTrigger = useRef(null); // focus goes back here when the drawer closes
   const seq = useRef(0);
   const monthRef = useRef(monthKey);
   monthRef.current = monthKey;
@@ -308,11 +335,7 @@ function WagesReviewInner() {
 
   const view = useMemo(() => {
     if (!canBuild) return null;
-    const pick = (k) => (ok(k) ? src[k].data : undefined);
-    return buildMonthView({
-      roster: pick("roster"), capLeaves: pick("capLeaves"), wagePeople: pick("wagePeople"), rules: pick("rules"),
-      settings: pick("settings"), monthRow, lines: pick("lines"), leaveEntries: pick("leaveEntries"), clickupSummary: pick("clickupSummary"),
-    }, monthKey);
+    return buildMonthView(sourceData(src), monthKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canBuild, sources, monthKey]);
 
@@ -330,13 +353,21 @@ function WagesReviewInner() {
   /* ---- writes ---- */
   const saveLine = useCallback(async (personId, patch) => {
     const mk = monthRef.current;
-    const row = await upsertLine(mk, personId, patch);
-    setSources((prev) => {
-      if (prev.month !== mk || !prev.data.lines || prev.data.lines.error) return prev;
-      const others = prev.data.lines.data.filter((l) => l.person_id !== personId);
-      return { ...prev, data: { ...prev.data, lines: { data: [...others, row], error: null } } };
-    });
-    return row;
+    const p = upsertLine(mk, personId, patch);
+    pendingSaves.current.add(p);
+    setPendingCount(pendingSaves.current.size);
+    try {
+      const row = await p;
+      setSources((prev) => {
+        if (prev.month !== mk || !prev.data.lines || prev.data.lines.error) return prev;
+        const others = prev.data.lines.data.filter((l) => l.person_id !== personId);
+        return { ...prev, data: { ...prev.data, lines: { data: [...others, row], error: null } } };
+      });
+      return row;
+    } finally {
+      pendingSaves.current.delete(p);
+      setPendingCount(pendingSaves.current.size);
+    }
   }, []);
   const saveLineReported = useCallback(async (personId, patch) => {
     try { setSaveError(null); return await saveLine(personId, patch); }
@@ -362,10 +393,20 @@ function WagesReviewInner() {
     return { saved: rows.length - failed.length, failed, mapError };
   };
 
+  // The snapshot is built from a fresh load, not the on-screen view: the page's copy can be
+  // stale (another admin's Xero paste, a ClickUp sync, leave edited in Consultants).
   const doClose = async () => {
+    const mk = monthKey;
     setAction({ busy: true, error: null });
     try {
-      await closeMonth(monthKey, buildSnapshot(view));
+      await Promise.allSettled([...pendingSaves.current]);
+      const fresh = await loadWagesMonth(mk);
+      const failed = ESSENTIAL_LIVE_SOURCES.filter((k) => !fresh[k] || fresh[k].error);
+      if (failed.length) throw new Error(`Couldn't reload ${failed.map((k) => sourceLabel(k).toLowerCase()).join(", ")}, so nothing was closed. Try again.`);
+      if (fresh.monthRow.data?.status === "closed") throw new Error("This month has already been closed (by someone else?). Nothing was changed.");
+      const freshView = buildMonthView(sourceData(fresh), mk);
+      await closeMonth(mk, buildSnapshot(freshView));
+      if (mk === monthRef.current) setSources({ month: mk, data: fresh });
       await reload(["monthRow", "lines"]);
       setDialog(null);
       setAction({ busy: false, error: null });
@@ -409,6 +450,18 @@ function WagesReviewInner() {
     const wp = wagePeople.find((x) => x.person_id === l.person_id);
     return { person_id: l.person_id, full_name: l.name, display_name: l.name, xero_name: wp?.xero_name || null, clickup_user_names: wp?.clickup_user_names || [] };
   });
+  const openDrawer = (personId) => {
+    if (!drawerId) drawerTrigger.current = document.activeElement;
+    setDrawerId(personId);
+  };
+  const closeDrawer = () => {
+    setDrawerId(null);
+    const t = drawerTrigger.current;
+    drawerTrigger.current = null;
+    // After the drawer unmounts; the trigger (card button / table name) is still mounted.
+    if (t && typeof t.focus === "function") setTimeout(() => { if (document.contains(t)) t.focus(); }, 0);
+  };
+
   const blockers = view ? [
     t.awaiting && `${t.awaiting} ${t.awaiting === 1 ? "person is" : "people are"} still awaiting Xero hours`,
     t.outOfTolerance && `${t.outOfTolerance} Xero ⇄ ClickUp gap${t.outOfTolerance === 1 ? "" : "s"} out of tolerance`,
@@ -416,6 +469,9 @@ function WagesReviewInner() {
     w.unmapped.length && `${w.unmapped.length} unmapped ClickUp user${w.unmapped.length === 1 ? "" : "s"}`,
     w.noRule.length && `No hours rule for ${w.noRule.map((u) => u.name).join(", ")}`,
     w.needsSetup.length && `${w.needsSetup.length} roster ${w.needsSetup.length === 1 ? "person has" : "people have"} no wage setup`,
+    w.conflicts.length && `${w.conflicts.length} ClickUp name${w.conflicts.length === 1 ? "" : "s"} claimed by more than one person`,
+    w.unknownSpaceHours > 0 && `${fmtH(w.unknownSpaceHours)} of ClickUp time has no space recorded (classified by folder name)${offset >= 2 ? ": re-sync this month first" : ""}`,
+    w.holidaysNotLoaded && "Public holidays aren't loaded for this month",
   ].filter(Boolean) : [];
 
   return (
@@ -428,14 +484,7 @@ function WagesReviewInner() {
         </div>
       </div>
 
-      <div className="pg-tabs" role="tablist" aria-label="Wages review sections">
-        <button type="button" role="tab" aria-selected={tab === "review"} className={"pg-tab" + (tab === "review" ? " pg-tab--active" : "")} onClick={() => setTab("review")}>
-          <ListChecks size={13} aria-hidden="true" /> Review
-        </button>
-        <button type="button" role="tab" aria-selected={tab === "settings"} className={"pg-tab" + (tab === "settings" ? " pg-tab--active" : "")} onClick={() => setTab("settings")}>
-          <Settings2 size={13} aria-hidden="true" /> Settings
-        </button>
-      </div>
+      <TabBar tabs={PAGE_TABS} active={tab} onChange={setTab} idBase="wr-page" label="Wages review sections" />
 
       <div className="pg-pillbar wr-filters">
         <label className="pg-pill pg-pill--search">
@@ -451,7 +500,7 @@ function WagesReviewInner() {
           <label className="pg-pill pg-pill--select">
             <span className="wr-sr">State</span>
             <select value={prefs.state} onChange={(e) => setPref("state", e.target.value)}>
-              <option value="all">All states</option><option value="SA">SA</option><option value="WA">WA</option><option value="QLD">QLD</option>
+              <option value="all">All states</option>{WAGE_STATES.map((st) => <option key={st} value={st}>{st}</option>)}
             </select>
             <ChevronDown size={13} className="pg-pill__chevron" aria-hidden="true" />
           </label>
@@ -490,7 +539,7 @@ function WagesReviewInner() {
         {view && <span>Xero entered {t.xeroEntered}/{t.people}</span>}
         {view && <span>Standard hours: {view.weekdays} weekdays × {view.perDay} = {view.standardHours} h</span>}
         {view && (
-          <span>Holidays: {["SA", "WA", "QLD"].map((s) => `${s} ${(view.holidaysByState[s] || []).map((h) => `${h.name} (${fmtDay(h.date)})`).join(", ") || "none"}`).join(" · ")}</span>
+          <span>Holidays: {WAGE_STATES.map((s) => `${s} ${(view.holidaysByState[s] || []).map((h) => `${h.name} (${fmtDay(h.date)})`).join(", ") || "none"}`).join(" · ")}</span>
         )}
         {offset >= 2 && !closed && (
           <button type="button" className="pg-btn-ghost" disabled={resync.busy} onClick={doResync}>
@@ -516,13 +565,15 @@ function WagesReviewInner() {
       {saveError && <Banner tone="error" action={<button type="button" className="pg-btn-ghost" onClick={() => setSaveError(null)}>Dismiss</button>}>{saveError}</Banner>}
 
       {tab === "settings" && (
-        ok("roster") && ok("wagePeople") && ok("rules") && ok("settings")
-          ? <WageSettings roster={src.roster.data} wagePeople={src.wagePeople.data} rules={src.rules.data} settingsRow={src.settings.data}
-              seenUsers={seenUsers} monthKey={monthKey} onChanged={(keys) => reload(keys)} />
-          : loading ? <div className="ov-card ov-skeleton" style={{ marginTop: 18, minHeight: 240 }} /> : null
+        <div {...tabPanelProps("wr-page", "settings")}>
+          {ok("roster") && ok("wagePeople") && ok("rules") && ok("settings")
+            ? <WageSettings roster={src.roster.data} wagePeople={src.wagePeople.data} rules={src.rules.data} settingsRow={src.settings.data}
+                seenUsers={seenUsers} monthKey={monthKey} onChanged={(keys) => reload(keys)} />
+            : loading ? <div className="ov-card ov-skeleton" style={{ marginTop: 18, minHeight: 240 }} /> : null}
+        </div>
       )}
 
-      {tab === "review" && <>
+      {tab === "review" && <div {...tabPanelProps("wr-page", "review")}>
         {loading && (
           <>
             <div className="wr-kpis">{[0, 1, 2, 3, 4].map((i) => <div key={i} className="ov-card ov-skeleton" aria-hidden="true" />)}</div>
@@ -536,7 +587,16 @@ function WagesReviewInner() {
             <Banner tone="info" icon={Lock}>
               <b>{monthText} is closed</b>{monthRow?.closed_at ? ` (${new Date(monthRow.closed_at).toLocaleDateString("en-AU")})` : ""}.
               {view.fromSnapshot ? " Figures are the snapshot taken at close; hours are locked, comments stay editable." : " No snapshot was stored, so figures below are live. Reopen and close again to freeze them."}
-              {view.liveDiffers.length > 0 && <> Live ClickUp now differs for {view.liveDiffers.map((d) => `${d.name} (${fmtH(d.snapshotH)} → ${fmtH(d.liveH)})`).join(", ")}.</>}
+              {view.liveDiffers.length > 0 && <>
+                {" "}Live data now differs from the snapshot:
+                <ul className="wr-banner__list">
+                  {view.liveDiffers.map((d) => (
+                    <li key={d.person_id}>
+                      {d.name}: {d.missing ? "no longer in the live month (excluded, left, or wage setup changed)" : d.fields.map((f) => `${f.label} ${fmtH(f.snapshot)} → ${fmtH(f.live)}`).join(", ")}
+                    </li>
+                  ))}
+                </ul>
+              </>}
             </Banner>
           )}
           {!closed && monthRow?.reopened_reason && <p className="wr-note">Reopened: {monthRow.reopened_reason}</p>}
@@ -555,7 +615,11 @@ function WagesReviewInner() {
                 <b>ClickUp users not linked to anyone</b> (their time isn't counted):
                 <ul className="wr-banner__list">
                   {w.unmapped.map((u) => (
-                    <li key={u.user_name} className="wr-inline">{u.user_name} · {fmtH(u.hours)} <MapToPicker userName={u.user_name} people={pickable} onMap={mapClickupUser} /></li>
+                    // A blank ClickUp name can't be mapped (people map by exact name), so no picker for it.
+                    <li key={u.user_name || "(no name)"} className="wr-inline">
+                      {u.user_name || "(no name)"} · {fmtH(u.hours)}
+                      {u.user_name ? <MapToPicker userName={u.user_name} people={pickable} onMap={mapClickupUser} /> : <span className="wr-note">time logged with no ClickUp user name</span>}
+                    </li>
                   ))}
                 </ul>
               </Banner>
@@ -583,21 +647,24 @@ function WagesReviewInner() {
               <Banner>Wage setup exists for {w.orphanWagePeople.length} person id{w.orphanWagePeople.length === 1 ? "" : "s"} no longer on the Consultants roster ({w.orphanWagePeople.map((p) => p.person_id).join(", ")}).</Banner>
             )}
             {w.unknownSpaceHours > 0 && (
-              <Banner>{fmtH(w.unknownSpaceHours)} of ClickUp time was synced before space tracking and is assumed to be client time.{offset >= 2 ? " Re-sync this month to classify it properly." : " The next scheduled sync will classify it."}</Banner>
+              <Banner>{fmtH(w.unknownSpaceHours)} of ClickUp time was synced before space tracking, so it's classified by folder name (BDM folders as PG, anything else as client).{offset >= 2 ? " Re-sync this month to classify it properly." : " The next scheduled sync will classify it."}</Banner>
+            )}
+            {w.holidaysNotLoaded && (
+              <Banner tone="error">Public holidays not loaded for this month — update src/publicHolidays.js. Public holiday hours (Q) are 0 for everyone until then.</Banner>
             )}
           </>}
 
           {view.lines.length === 0 ? (
             <div className="pg-empty">No one is set up for wages in {monthText}. Add people in Settings.</div>
           ) : prefs.view === "table" ? (
-            <WagesTable lines={filtered} closed={closed} onSaveLine={saveLineReported} onOpen={setDrawerId} />
+            <WagesTable lines={filtered} closed={closed} onSaveLine={saveLineReported} onOpen={openDrawer} />
           ) : groups.length === 0 ? (
             <div className="pg-empty">No one matches these filters.</div>
           ) : groups.map((g) => (
             <section key={g.key} className="wr-group" aria-labelledby={`wr-g-${g.key}`}>
               <h2 id={`wr-g-${g.key}`} className="wr-group__title">{g.title} <span className="wr-group__count">{g.lines.length}</span></h2>
               <div className="wr-grid">
-                {g.lines.map((l) => <WageCard key={l.person_id} line={l} view={view} monthText={monthText} onOpen={setDrawerId} />)}
+                {g.lines.map((l) => <WageCard key={l.person_id} line={l} view={view} monthText={monthText} onOpen={openDrawer} />)}
               </div>
             </section>
           ))}
@@ -606,17 +673,17 @@ function WagesReviewInner() {
             Client time is a task in the Clients or PG CLIENTS space outside the PG folders and internal folders; everything else is PG time. Leave comes from the Consultants module.
           </p>
         </>}
-      </>}
+      </div>}
 
       {drawerLine && view && (
         <WageDrawer
           key={drawerLine.person_id}
           line={drawerLine} view={view} monthText={monthText} closed={closed}
           position={drawerIdx >= 0 ? `${drawerIdx + 1} of ${ordered.length}` : ""}
-          onClose={() => setDrawerId(null)}
+          onClose={closeDrawer}
           onPrev={drawerIdx > 0 ? () => setDrawerId(ordered[drawerIdx - 1].person_id) : null}
           onNext={drawerIdx >= 0 && drawerIdx < ordered.length - 1 ? () => setDrawerId(ordered[drawerIdx + 1].person_id) : null}
-          onSaveLine={saveLine}
+          onSaveLine={saveLineReported}
         />
       )}
 
@@ -626,8 +693,10 @@ function WagesReviewInner() {
           nameMap={view.settings.xero_name_map} onApply={applyPaste} onClose={() => setDialog(null)} />
       )}
       {dialog === "close" && view && (
-        <ConfirmDialog title={`Close ${monthText}?`} confirmLabel="Close month" onConfirm={doClose} onClose={() => setDialog(null)} busy={action.busy} error={action.error}>
-          <p className="wr-note wr-note--strong">Closing freezes every figure as it is now. Hours become read-only; comments stay editable. You can reopen later with a reason.</p>
+        <ConfirmDialog title={`Close ${monthText}?`} confirmLabel={pendingCount ? "Saving…" : "Close month"} onConfirm={doClose} onClose={() => setDialog(null)}
+          busy={action.busy} error={action.error} disabled={pendingCount > 0}>
+          <p className="wr-note wr-note--strong">Closing reloads everything and freezes every figure as it is then. Hours become read-only; comments stay editable. You can reopen later with a reason.</p>
+          {pendingCount > 0 && <p className="wr-note" role="status">Waiting for {pendingCount} change{pendingCount === 1 ? "" : "s"} to finish saving…</p>}
           {blockers.length > 0 ? (
             <Banner><b>Still open:</b><ul className="wr-banner__list">{blockers.map((b) => <li key={b}>{b}</li>)}</ul>You can still close the month.</Banner>
           ) : <p className="wr-note">Nothing outstanding.</p>}

@@ -26,3 +26,26 @@ export function adelaideLocalMidnightUtcMs(year, month1to12, day) {
   }
   return guessMs;
 }
+
+// ---- Adelaide calendar-month helpers (browser only; used by Wages review) ----
+// The ClickUp sync's month boundary is Adelaide local time, so "this month" / "last
+// month" must be measured there too, not in the browser's own timezone.
+
+// The current calendar month in TIMEZONE, as "YYYY-MM".
+export function adelaideMonthKey(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-AU", { timeZone: TIMEZONE, year: "numeric", month: "2-digit" }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return `${get("year")}-${get("month")}`;
+}
+
+// Today's day of the month (1-31) in TIMEZONE.
+export function adelaideDayOfMonth(now = new Date()) {
+  return Number(new Intl.DateTimeFormat("en-AU", { timeZone: TIMEZONE, day: "numeric" }).format(now));
+}
+
+// Months back from the current TIMEZONE month (0 = this month, 1 = last month, negative = future).
+export function monthOffsetFor(monthKey, now = new Date()) {
+  const [cy, cm] = adelaideMonthKey(now).split("-").map(Number);
+  const [y, m] = String(monthKey).split("-").map(Number);
+  return (cy * 12 + cm) - (y * 12 + m);
+}
