@@ -8,7 +8,11 @@ import { PG_DATA_EVENT } from "./idbStore.js";
 import { PersonAvatar, resizePhotoFile } from "./avatar.jsx";
 import { useDismissable } from "./useDismissable.js";
 import { LeaveEditor } from "./LeaveEditor.jsx";
-import { CAP_PEOPLE_KEY, CAP_LEAVES_KEY } from "./storageKeys.js";
+import { CAP_PEOPLE_KEY, CAP_LEAVES_KEY, LEAVE_ENTRIES_KEY } from "./storageKeys.js";
+import {
+  fetchLeaveEntries, addLeaveEntry, updateLeaveEntry, deleteLeaveEntry, notifyLeaveEntriesChanged,
+  entriesForPerson, totalLeaveHours, leaveTypeLabel,
+} from "./leaveSync.js";
 
 const uid = (p) => p + Math.random().toString(36).slice(2, 9);
 const ROLES = ["Consultant", "Coordinator"];
@@ -229,15 +233,96 @@ function TeamDashboardInner() {
     window.addEventListener(PG_DATA_EVENT, onUpdate);
     return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
   }, []);
-  const leaveFor = useCallback((personId) => Number(leaves[`${personId}_${month}`] || 0), [leaves, month]);
-  const setLeaveFor = useCallback((personId, hrs) => {
+  const leaveFor = useCallback((personId) => Number(leaves[`${personId}_${month}`] ?? 0), [leaves, month]);
+  const setLeaveFor = useCallback((personId, hrs, monthKey = month) => {
     setLeaves((prev) => {
-      const next = { ...prev, [`${personId}_${month}`]: hrs === "" ? 0 : Number(hrs) };
+      const next = { ...prev, [`${personId}_${monthKey}`]: hrs === "" ? 0 : Number(hrs) };
       ownWriteLeaves.current = true;
       saveState(CAP_LEAVES_KEY, next).then(flashSaved).catch((e) => setSaveError(`Couldn't save leave hours: ${e.message || e}`));
       return next;
     });
-  }, [month]);
+  }, [month, flashSaved]);
+
+  // Typed leave entries (pginvoice_leave_entries) for the selected month, loaded once here
+  // for every row rather than per LeaveEditor. cap_leaves stays the stored per-person
+  // total (what Capacity Planning reads); after each typed add/update/delete we recompute
+  // that person's total from their entries and write it via setLeaveFor.
+  //
+  // A failed load is kept as status "error" -- never treated as "no typed entries" --
+  // so the editor goes read-only instead of offering to overwrite a real total.
+  const [leaveEntries, setLeaveEntries] = useState({ month: null, status: "loading", entries: [], error: null });
+  const leaveEntriesRef = useRef(leaveEntries); // latest value, for computing totals inside async handlers
+  const leaveLoadSeq = useRef(0);
+  const ownWriteLeaveEntries = useRef(false);
+  const commitLeaveEntries = useCallback((value) => { leaveEntriesRef.current = value; setLeaveEntries(value); }, []);
+  const loadLeaveEntries = useCallback((monthKey) => {
+    const seq = ++leaveLoadSeq.current;
+    if (leaveEntriesRef.current.month !== monthKey) commitLeaveEntries({ month: monthKey, status: "loading", entries: [], error: null });
+    fetchLeaveEntries(monthKey).then(
+      (entries) => { if (seq === leaveLoadSeq.current) commitLeaveEntries({ month: monthKey, status: "ready", entries, error: null }); },
+      (e) => { if (seq === leaveLoadSeq.current) commitLeaveEntries({ month: monthKey, status: "error", entries: [], error: e.message || String(e) }); },
+    );
+  }, [commitLeaveEntries]);
+  useEffect(() => {
+    loadLeaveEntries(month);
+    const onUpdate = (e) => {
+      if (e.detail && e.detail.key !== LEAVE_ENTRIES_KEY) return;
+      if (ownWriteLeaveEntries.current) return;
+      loadLeaveEntries(month);
+    };
+    window.addEventListener(PG_DATA_EVENT, onUpdate);
+    return () => { leaveLoadSeq.current++; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
+  }, [month, loadLeaveEntries]);
+
+  // Runs one typed-leave write, folds its result into the loaded entries, then rewrites
+  // the person's cap_leaves total from their typed entries. `apply(entries)` returns the
+  // month's entries after the write succeeded. Errors propagate to the editor.
+  const mutateLeave = useCallback(async (personId, monthKey, write, apply) => {
+    const result = await write();
+    const current = leaveEntriesRef.current;
+    let monthEntries;
+    if (current.month === monthKey && current.status === "ready") {
+      monthEntries = apply(current.entries, result);
+      leaveLoadSeq.current++; // an in-flight reload may predate this write -- drop it
+      commitLeaveEntries({ ...current, entries: monthEntries });
+    } else {
+      // The user moved to another month mid-write -- get this month's truth from the server.
+      monthEntries = await fetchLeaveEntries(monthKey);
+    }
+    setLeaveFor(personId, totalLeaveHours(entriesForPerson(monthEntries, personId, monthKey)), monthKey);
+    // Our own state is already up to date; just tell other modules (dispatch is synchronous).
+    ownWriteLeaveEntries.current = true;
+    try { notifyLeaveEntriesChanged(); } finally { ownWriteLeaveEntries.current = false; }
+  }, [commitLeaveEntries, setLeaveFor]);
+
+  const leaveHandlersFor = useCallback((personId) => ({
+    onAdd: (fields) => mutateLeave(personId, month,
+      () => addLeaveEntry({ ...fields, person_id: personId, month_key: month }),
+      (entries, row) => [...entries, row]),
+    onUpdate: (id, patch) => mutateLeave(personId, month,
+      () => updateLeaveEntry(id, patch),
+      (entries, row) => entries.map((e) => (e.id === id ? row : e))),
+    onDelete: (id) => mutateLeave(personId, month,
+      () => deleteLeaveEntry(id),
+      (entries) => entries.filter((e) => e.id !== id)),
+    // Only offered for a legacy (untyped, no entries) total, on explicit confirmation.
+    onDeleteLegacy: async () => setLeaveFor(personId, 0),
+    // Only offered when typed entries exist and the stored total disagrees with them.
+    onSyncTotal: async (total) => setLeaveFor(personId, total),
+  }), [month, mutateLeave, setLeaveFor]);
+
+  const typedLeaveFor = (personId) => ({
+    status: leaveEntries.month === month ? leaveEntries.status : "loading",
+    error: leaveEntries.error,
+    entries: leaveEntries.month === month ? entriesForPerson(leaveEntries.entries, personId, month) : [],
+    ...leaveHandlersFor(personId),
+  });
+  const leaveBreakdownTitle = (personId) => {
+    if (leaveEntries.month !== month || leaveEntries.status !== "ready") return undefined;
+    const mine = entriesForPerson(leaveEntries.entries, personId, month);
+    if (!mine.length) return undefined;
+    return mine.map((e) => `${leaveTypeLabel(e.leave_type)}: ${e.hours} h`).join("\n");
+  };
 
   // Reads/writes the same "cap_people" key Capacity Planning uses (Supabase-backed via
   // capacityStore.js), so a person added, removed, or edited here is immediately reflected
@@ -320,7 +405,7 @@ function TeamDashboardInner() {
   // just shows "—" for their hours instead of a row.
   const rows = useMemo(() => {
     return visiblePeople.map((p) => {
-      const leaveHrs = Number(leaves[`${p.id}_${month}`] || 0);
+      const leaveHrs = Number(leaves[`${p.id}_${month}`] ?? 0);
       return { person: p, avail: computeMonthlyAvailability(p, month, leaveHrs) };
     });
   }, [visiblePeople, leaves, month]);
@@ -453,8 +538,8 @@ function TeamDashboardInner() {
                 </td>
                 <td className="right num">
                   {editing
-                    ? <LeaveEditor person={p} hours={leaveFor(p.id)} onChange={(hrs) => setLeaveFor(p.id, hrs)} />
-                    : `${leaveFor(p.id)} h`}
+                    ? <LeaveEditor person={p} hours={leaveFor(p.id)} typed={typedLeaveFor(p.id)} />
+                    : <span title={leaveBreakdownTitle(p.id)}>{leaveFor(p.id)} h</span>}
                 </td>
                 <td className="right num">{avail ? avail.totalMonthlyHours.toFixed(1) : "—"}</td>
                 <td className="right num">{avail ? <b>{avail.billableHours.toFixed(1)}</b> : "—"}</td>
