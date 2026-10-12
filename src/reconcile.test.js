@@ -459,6 +459,9 @@ describe("resolveClientType: a fixed-price type can't be turned back into a pack
     expect(resolveClientType({ name: "Astill", monthType: "map", capType: "strategy" })).toEqual({ type: "map", demoted: false });
     expect(resolveClientType({ name: "Warrina Guide", matched: true, pkg: 24, capType: "quoted" })).toEqual({ type: "quoted", demoted: true });
   });
+  it("never demotes the Clients month type (Comunet: dated package, stale Hourly cap row)", () => {
+    expect(resolveClientType({ name: "Comunet", matched: true, pkg: 32, monthType: "package", capType: "hourly" })).toEqual({ type: "package", demoted: false });
+  });
   it("unregistered fallbacks: matched with a package -> package, (Qld) -> queensland, else hourly", () => {
     expect(resolveClientType({ name: "Acme", matched: true, pkg: 20 }).type).toBe("package");
     expect(resolveClientType({ name: "Acme (QLD)" }).type).toBe("queensland");

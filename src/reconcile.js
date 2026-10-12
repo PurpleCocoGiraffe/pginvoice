@@ -273,13 +273,15 @@ export function subProjectType(name, { profileType = null, capType = null } = {}
 }
 
 // A row's type for the month. `monthType` (the Clients module's typeForMonth, or
-// subProjectType for a sub-project) always wins over the ledger guess; Capacity Planning's
-// basis for this exact folder (`capType`) may only demote a package-like result, never
-// promote -- so a fixed-price type (digital, map, quoted, ...) can't be turned back into a
-// package by either fallback. `demoted`: the cap basis overrode a package-like type.
+// subProjectType for a sub-project) always wins -- over the ledger guess and over Capacity
+// Planning. Capacity Planning's basis for this exact folder (`capType`) may only demote the
+// ledger guess for a row with no monthType, never promote -- so a fixed-price type (digital,
+// map, quoted, ...) can't be turned back into a package. A stale cap basis once demoted
+// Comunet's dated package months to Hourly, hiding their carry-in and reset.
+// `demoted`: the cap basis overrode a package-like type.
 export function resolveClientType({ name, matched = false, pkg = null, monthType = null, capType = null }) {
-  let type = matched && pkg != null ? "package" : /\(qld\)/i.test(String(name ?? "")) ? "queensland" : "hourly";
-  if (monthType) type = monthType;
+  if (monthType) return { type: monthType, demoted: false };
+  const type = matched && pkg != null ? "package" : /\(qld\)/i.test(String(name ?? "")) ? "queensland" : "hourly";
   if (capType && !isPackageLikeType(capType) && isPackageLikeType(type)) return { type: capType, demoted: true };
   return { type, demoted: false };
 }
