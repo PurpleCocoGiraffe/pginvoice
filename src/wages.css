@@ -468,3 +468,8 @@
   .wr-iconbtn { width: 44px; height: 44px; }
   .wr-people__cu { display: none; }
 }
+
+/* Xero paste: batch conflicts (same person twice, or a later batch differing from saved hours) */
+.wr-conflicts { display: grid; gap: 10px; min-width: 0; }
+.wr-conflict { border: 1px solid var(--border-subtle); border-radius: var(--app-radius-sm); padding: 8px 10px; margin: 0; display: grid; gap: 4px; background: var(--bg-card); }
+.wr-conflict legend { padding: 0 4px; font-weight: 600; color: var(--fg-primary); }
