@@ -472,8 +472,9 @@ function lineTokens(line) {
 // Only the employee name and units are used. When an "Earnings Rate" column exists, only
 // Ordinary Hours rows count -- other rates (overtime, public holiday, leave...) are listed
 // as notes, not added, because public holidays and leave are accounted for separately
-// (Q / N / O / P) and adding them here would double count. Several Ordinary Hours rows for
-// one person are summed (and noted). "Total" rows are skipped.
+// (Q / N / O / P) and adding them here would double count. Several rows for one person
+// are kept as separate rows -- resolveXeroBatch makes the admin choose. "Total" rows are
+// skipped.
 const XERO_NAME_HEADERS = new Set(["employee", "employee name", "name"]);
 const XERO_HOURS_HEADERS = new Set(["units", "hours", "total hours", "hours worked", "ordinary hours"]);
 function parseXeroTable(lines) {
@@ -487,7 +488,6 @@ function parseXeroTable(lines) {
   const rows = [];
   const errors = [];
   const notes = [];
-  const byName = new Map();
   for (const line of lines.slice(headerIdx + 1)) {
     if (!line.trim()) continue;
     const cells = line.split("\t").map((c) => c.trim());
@@ -502,16 +502,7 @@ function parseXeroTable(lines) {
     if (/\d,\d/.test(rawHours)) { errors.push({ raw: line.trim(), message: `${name}: remove commas from the hours ("${rawHours}")` }); continue; }
     const hours = parseXeroTime(rawHours);
     if (hours == null) { errors.push({ raw: line.trim(), message: `${name}: couldn't read the hours "${rawHours}"` }); continue; }
-    const key = normName(name);
-    if (byName.has(key)) {
-      const row = byName.get(key);
-      row.hours = round2(row.hours + hours);
-      notes.push(`${name} has more than one Ordinary Hours row; added together (${row.hours} h)`);
-      continue;
-    }
-    const row = { name, hours, raw: line.trim() };
-    byName.set(key, row);
-    rows.push(row);
+    rows.push({ name, hours, raw: line.trim() });
   }
   return { rows, errors, notes };
 }
@@ -576,4 +567,48 @@ export function matchXeroNames(parsed, people, nameMap = {}) {
     }
     return { name, hours, person_id: null, method: ambiguous ? "ambiguous" : "unmatched", needsConfirm: false };
   });
+}
+
+// ---------------------------------------------------------------- Xero batches ----------
+// Xero hours can arrive in several pastes (batches). Applying a batch only touches the
+// people in it. A person is a CONFLICT -- and nothing is saved for them until the admin
+// chooses -- when this paste has more than one row for them, or they already have saved
+// Xero hours (from an earlier batch) that differ from the pasted value.
+//   rows:     [{ target: person_id, hours, name }]  (matched, non-ignored rows of this paste)
+//   currentL: { [person_id]: saved hours | null }
+//   choices:  { [person_id]: "row:<index into that person's rows>" | "saved" | "sum" }
+//     "sum" adds this paste's rows together, plus the saved value when there is one.
+// Returns { apply: [{person_id, hours, names}], unchanged: [person_id], keep: [person_id],
+//           conflicts: [{ person_id, saved, rows: [{hours, name}], options: [{key, label, hours}], choice }] }
+export function resolveXeroBatch(rows, currentL = {}, choices = {}) {
+  const byPerson = new Map();
+  for (const r of rows || []) {
+    if (!r.target) continue;
+    if (!byPerson.has(r.target)) byPerson.set(r.target, []);
+    byPerson.get(r.target).push({ hours: r.hours, name: r.name });
+  }
+  const apply = [];
+  const unchanged = [];
+  const keep = [];
+  const conflicts = [];
+  for (const [person_id, prs] of byPerson) {
+    const saved = currentL[person_id] ?? null;
+    const names = [...new Set(prs.map((r) => r.name))];
+    if (prs.length === 1 && (saved == null || Math.abs(saved - prs[0].hours) < 0.005)) {
+      if (saved == null) apply.push({ person_id, hours: prs[0].hours, names });
+      else unchanged.push(person_id);
+      continue;
+    }
+    const pastedSum = round2(prs.reduce((a, r) => a + r.hours, 0));
+    const options = prs.map((r, i) => ({ key: `row:${i}`, label: prs.length === 1 ? `Use new ${r.hours} h` : `Use ${r.hours} h (row ${i + 1})`, hours: r.hours }));
+    if (saved != null) options.push({ key: "saved", label: `Keep saved ${saved} h`, hours: saved });
+    options.push(saved != null
+      ? { key: "sum", label: `Add together: ${round2(saved + pastedSum)} h`, hours: round2(saved + pastedSum) }
+      : { key: "sum", label: `Add together: ${pastedSum} h`, hours: pastedSum });
+    const choice = options.some((o) => o.key === choices[person_id]) ? choices[person_id] : null;
+    conflicts.push({ person_id, saved, rows: prs, options, choice });
+    if (choice === "saved") keep.push(person_id);
+    else if (choice) apply.push({ person_id, hours: options.find((o) => o.key === choice).hours, names });
+  }
+  return { apply, unchanged, keep, conflicts };
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   monthDays, wageWeekdaysInMonth, standardMonthHours, classifyClickup, attributeToPeople,
-  expectedFor, computeLine, parseXeroPaste, parseXeroTime, matchXeroNames, normName,
+  expectedFor, computeLine, parseXeroPaste, resolveXeroBatch, parseXeroTime, matchXeroNames, normName,
   typeLabelFor, parseHoursInput,
 } from "./wagesCalc.js";
 
@@ -414,18 +414,45 @@ describe("parseXeroPaste: Xero report table", () => {
     expect(r.rows.map((x) => [x.name, x.hours])).toEqual([["Alexander Banitsiotis", 141.58], ["Alice Fulton-Sherriff", 75.2], ["Vinavie Gayara Malagammanage", 136.95]]);
   });
 
-  it("skips non-ordinary earnings rates with a note and sums repeated ordinary rows", () => {
+  it("skips non-ordinary earnings rates with a note and keeps repeated ordinary rows separate", () => {
     const r = parseXeroPaste([H, row("Holly Latham", "Ordinary Hours", "100"), row("Holly Latham", "Public Holiday", "7.6"), row("Holly Latham", "Ordinary Hours", "50.5"), "Total\t\t\t\t\t158.1"].join("\r\n"));
-    expect(r.rows).toEqual([expect.objectContaining({ name: "Holly Latham", hours: 150.5 })]);
+    expect(r.rows.map((x) => [x.name, x.hours])).toEqual([["Holly Latham", 100], ["Holly Latham", 50.5]]);
     expect(r.errors).toEqual([]);
     expect(r.notes.some((n) => /Public Holiday/.test(n))).toBe(true);
-    expect(r.notes.some((n) => /added together/.test(n))).toBe(true);
   });
 
   it("reports unreadable units and thousands commas instead of guessing", () => {
     const r = parseXeroPaste([H, row("Jane Doe", "Ordinary Hours", "abc"), row("John Roe", "Ordinary Hours", "1,234.5")].join("\n"));
     expect(r.rows).toEqual([]);
     expect(r.errors).toHaveLength(2);
+  });
+});
+
+describe("resolveXeroBatch", () => {
+  it("applies new people, skips identical saved values, and leaves people not in the batch alone", () => {
+    const r = resolveXeroBatch([{ target: "a", hours: 150, name: "A" }, { target: "b", hours: 120, name: "B" }], { a: null, b: 120, c: 99 });
+    expect(r.apply).toEqual([{ person_id: "a", hours: 150, names: ["A"] }]);
+    expect(r.unchanged).toEqual(["b"]);
+    expect(r.conflicts).toEqual([]);
+  });
+
+  it("asks when a later batch differs from saved hours, and applies only the chosen value", () => {
+    const rows = [{ target: "a", hours: 40, name: "A" }];
+    const open = resolveXeroBatch(rows, { a: 100 });
+    expect(open.apply).toEqual([]);
+    expect(open.conflicts[0].options.map((o) => [o.key, o.hours])).toEqual([["row:0", 40], ["saved", 100], ["sum", 140]]);
+    expect(resolveXeroBatch(rows, { a: 100 }, { a: "row:0" }).apply).toEqual([{ person_id: "a", hours: 40, names: ["A"] }]);
+    expect(resolveXeroBatch(rows, { a: 100 }, { a: "saved" })).toMatchObject({ apply: [], keep: ["a"] });
+    expect(resolveXeroBatch(rows, { a: 100 }, { a: "sum" }).apply[0].hours).toBe(140);
+  });
+
+  it("asks which row to use when one paste has the same person twice", () => {
+    const rows = [{ target: "a", hours: 100, name: "A" }, { target: "a", hours: 50.5, name: "A" }];
+    const open = resolveXeroBatch(rows, {});
+    expect(open.apply).toEqual([]);
+    expect(open.conflicts[0].options.map((o) => o.hours)).toEqual([100, 50.5, 150.5]);
+    expect(resolveXeroBatch(rows, {}, { a: "row:1" }).apply[0].hours).toBe(50.5);
+    expect(resolveXeroBatch(rows, {}, { a: "bogus" }).conflicts[0].choice).toBe(null);
   });
 });
 
