@@ -404,6 +404,31 @@ describe("computeLine", () => {
   });
 });
 
+describe("parseXeroPaste: Xero report table", () => {
+  const H = "Employee\tEmployee group\tEarnings Rate\tCalendar\tTimesheet Category\tUnits";
+  const row = (name, rate, units) => `${name}\tNone\t${rate}\tMonthly\t(none)\t${units}`;
+
+  it("takes only the Employee and Units columns", () => {
+    const r = parseXeroPaste([H, row("Alexander Banitsiotis", "Ordinary Hours", "141.58"), row("Alice Fulton-Sherriff", "Ordinary Hours", "75.20"), row("Vinavie Gayara Malagammanage", "Ordinary Hours", "136.95")].join("\n"));
+    expect(r.errors).toEqual([]);
+    expect(r.rows.map((x) => [x.name, x.hours])).toEqual([["Alexander Banitsiotis", 141.58], ["Alice Fulton-Sherriff", 75.2], ["Vinavie Gayara Malagammanage", 136.95]]);
+  });
+
+  it("skips non-ordinary earnings rates with a note and sums repeated ordinary rows", () => {
+    const r = parseXeroPaste([H, row("Holly Latham", "Ordinary Hours", "100"), row("Holly Latham", "Public Holiday", "7.6"), row("Holly Latham", "Ordinary Hours", "50.5"), "Total\t\t\t\t\t158.1"].join("\r\n"));
+    expect(r.rows).toEqual([expect.objectContaining({ name: "Holly Latham", hours: 150.5 })]);
+    expect(r.errors).toEqual([]);
+    expect(r.notes.some((n) => /Public Holiday/.test(n))).toBe(true);
+    expect(r.notes.some((n) => /added together/.test(n))).toBe(true);
+  });
+
+  it("reports unreadable units and thousands commas instead of guessing", () => {
+    const r = parseXeroPaste([H, row("Jane Doe", "Ordinary Hours", "abc"), row("John Roe", "Ordinary Hours", "1,234.5")].join("\n"));
+    expect(r.rows).toEqual([]);
+    expect(r.errors).toHaveLength(2);
+  });
+});
+
 describe("parseXeroPaste", () => {
   const pairs = (text) => parseXeroPaste(text).rows.map((r) => [r.name, r.hours]);
 
@@ -491,8 +516,8 @@ describe("parseXeroPaste", () => {
   });
 
   it("returns empty results for empty input", () => {
-    expect(parseXeroPaste("")).toEqual({ rows: [], errors: [] });
-    expect(parseXeroPaste(null)).toEqual({ rows: [], errors: [] });
+    expect(parseXeroPaste("")).toEqual({ rows: [], errors: [], notes: [] });
+    expect(parseXeroPaste(null)).toEqual({ rows: [], errors: [], notes: [] });
   });
 });
 

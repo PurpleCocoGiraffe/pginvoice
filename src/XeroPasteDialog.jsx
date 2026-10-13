@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef } from "react";
-import { X, AlertTriangle, CheckCircle2, ClipboardPaste } from "lucide-react";
+import { X, AlertTriangle, CheckCircle2, ClipboardPaste, Info } from "lucide-react";
 import { useEscape, useFocusTrap } from "./useDismissable.js";
 import { parseXeroPaste, matchXeroNames, normName } from "./wagesCalc.js";
 import { fmtH, fmtSigned } from "./wagesFormat.js";
@@ -73,7 +73,7 @@ export function XeroPasteDialog({ monthText, people, currentL, nameMap, onApply,
           <span className="pg-field__label">Xero hours (one "name, hours" per line; tabs, commas or columns all work)</span>
           <textarea ref={textRef} className="pg-input wr-textarea wr-textarea--big" value={text}
             onChange={(e) => { setText(e.target.value); setPicks({}); setConfirmed({}); setIgnoreErrors(false); setResult(null); }}
-            placeholder={"Holly Nguyen\t152.5\nLucy Walker\t160:30"} />
+            placeholder={"Paste the Xero report (Employee … Units columns), or name + hours pairs:\nHolly Latham\t154.76"} />
         </label>
 
         {parsed.errors.length > 0 && (
@@ -86,6 +86,16 @@ export function XeroPasteDialog({ monthText, people, currentL, nameMap, onApply,
                 <input type="checkbox" checked={ignoreErrors} onChange={(e) => setIgnoreErrors(e.target.checked)} />
                 Ignore {parsed.errors.length} unreadable line{parsed.errors.length === 1 ? "" : "s"} (their hours won't be saved)
               </label>
+            </div>
+          </div>
+        )}
+
+        {parsed.notes?.length > 0 && (
+          <div className="wr-banner wr-banner--info" role="status">
+            <Info size={13} aria-hidden="true" />
+            <div>
+              <b>Read as a Xero report: employee name and Units only</b>
+              <ul className="wr-banner__list">{parsed.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
             </div>
           </div>
         )}

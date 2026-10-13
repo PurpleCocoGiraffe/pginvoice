@@ -404,7 +404,9 @@ export function parseHoursInput(text) {
 // a decimal comma ("152,5") is reported ("Use a dot for decimals") instead of being split
 // into 152 and 5. A tab-less line that reads as name, name, hours ("Smith, Jane 152.5") is
 // reported too -- "Surname, First" can't be told apart from two names.
-// Header-ish lines ("Employee  Hours") are skipped. Returns { rows: [{name, hours, raw}], errors: [{raw, message}] }.
+// Header-ish lines ("Employee  Hours") are skipped. A full Xero report table (header row
+// with Employee + Units columns) is read by column instead -- see parseXeroTable.
+// Returns { rows: [{name, hours, raw}], errors: [{raw, message}], notes: [string] }.
 const T_HM = String.raw`\d+\s*h(?:rs?|ours?)?\s*\d{1,2}\s*m(?:ins?|inutes?)?`;
 const T_COLON = String.raw`\d+:\d{1,2}`;
 const T_DEC = String.raw`\d+(?:\.\d+)?(?:\s*(?:h|hrs?|hours?))?`;
@@ -464,9 +466,62 @@ function lineTokens(line) {
   return out;
 }
 
+// Xero's timesheet/pay report pasted whole: a tab-separated table whose header row has an
+// "Employee" column and a "Units" (or "Hours") column, e.g.
+//   Employee | Employee group | Earnings Rate | Calendar | Timesheet Category | Units
+// Only the employee name and units are used. When an "Earnings Rate" column exists, only
+// Ordinary Hours rows count -- other rates (overtime, public holiday, leave...) are listed
+// as notes, not added, because public holidays and leave are accounted for separately
+// (Q / N / O / P) and adding them here would double count. Several Ordinary Hours rows for
+// one person are summed (and noted). "Total" rows are skipped.
+const XERO_NAME_HEADERS = new Set(["employee", "employee name", "name"]);
+const XERO_HOURS_HEADERS = new Set(["units", "hours", "total hours", "hours worked", "ordinary hours"]);
+function parseXeroTable(lines) {
+  const headerIdx = lines.findIndex((l) => l.trim() !== "");
+  if (headerIdx < 0 || !lines[headerIdx].includes("\t")) return null;
+  const header = lines[headerIdx].split("\t").map((c) => normName(c));
+  const nameCol = header.findIndex((h) => XERO_NAME_HEADERS.has(h));
+  const hoursCol = header.findIndex((h) => XERO_HOURS_HEADERS.has(h));
+  if (nameCol < 0 || hoursCol < 0) return null;
+  const rateCol = header.findIndex((h) => h === "earnings rate");
+  const rows = [];
+  const errors = [];
+  const notes = [];
+  const byName = new Map();
+  for (const line of lines.slice(headerIdx + 1)) {
+    if (!line.trim()) continue;
+    const cells = line.split("\t").map((c) => c.trim());
+    const name = (cells[nameCol] || "").replace(/\s+/g, " ");
+    const rawHours = cells[hoursCol] ?? "";
+    if (!name) { errors.push({ raw: line.trim(), message: `No employee name in "${line.trim()}"` }); continue; }
+    if (/^(grand\s+)?totals?$/i.test(name)) continue;
+    if (rateCol >= 0 && cells[rateCol] && !/ordinary/i.test(cells[rateCol])) {
+      notes.push(`Skipped ${name}: ${cells[rateCol]} ${rawHours} (only Ordinary Hours are imported)`);
+      continue;
+    }
+    if (/\d,\d/.test(rawHours)) { errors.push({ raw: line.trim(), message: `${name}: remove commas from the hours ("${rawHours}")` }); continue; }
+    const hours = parseXeroTime(rawHours);
+    if (hours == null) { errors.push({ raw: line.trim(), message: `${name}: couldn't read the hours "${rawHours}"` }); continue; }
+    const key = normName(name);
+    if (byName.has(key)) {
+      const row = byName.get(key);
+      row.hours = round2(row.hours + hours);
+      notes.push(`${name} has more than one Ordinary Hours row; added together (${row.hours} h)`);
+      continue;
+    }
+    const row = { name, hours, raw: line.trim() };
+    byName.set(key, row);
+    rows.push(row);
+  }
+  return { rows, errors, notes };
+}
+
 export function parseXeroPaste(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const table = parseXeroTable(lines);
+  if (table) return table;
   const tokens = [];
-  for (const line of String(text ?? "").split(/\r?\n/)) tokens.push(...lineTokens(line));
+  for (const line of lines) tokens.push(...lineTokens(line));
   const rows = [];
   const errors = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -484,7 +539,7 @@ export function parseXeroPaste(text) {
     else if (tk.kind === "error") errors.push({ raw: tk.raw, message: tk.message });
     else errors.push({ raw: tk.raw, message: `Couldn't read "${tk.raw}"` });
   }
-  return { rows, errors };
+  return { rows, errors, notes: [] };
 }
 
 // ---------------------------------------------------------------- Xero name matching ----
