@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   monthDays, wageWeekdaysInMonth, standardMonthHours, classifyClickup, attributeToPeople,
-  expectedFor, computeLine, parseXeroPaste, resolveXeroBatch, parseXeroTime, matchXeroNames, normName,
+  expectedFor, computeLine, parseXeroPaste, resolveXeroBatch, isClientOnboardingFolder, parseXeroTime, matchXeroNames, normName,
   typeLabelFor, parseHoursInput,
 } from "./wagesCalc.js";
 
@@ -425,6 +425,34 @@ describe("parseXeroPaste: Xero report table", () => {
     const r = parseXeroPaste([H, row("Jane Doe", "Ordinary Hours", "abc"), row("John Roe", "Ordinary Hours", "1,234.5")].join("\n"));
     expect(r.rows).toEqual([]);
     expect(r.errors).toHaveLength(2);
+  });
+});
+
+describe("client onboarding / offboarding folders", () => {
+  const opts = {
+    clientNames: ["Bee Squared", "By the Rules", "Villani Jewellers", "Committee for Perth (WA)", "Russell and Suitor Wines", "GPEx"],
+    staffNames: ["Julia", "Julia Pham", "Lucy", "Lucy Wittmann", "Kasey", "Simone"],
+  };
+  it("treats a client's onboarding/offboarding folder as client", () => {
+    for (const f of ["Bee Squared Offboarding Folder", "bytherules Offboarding", "Villani Offboarding", "Committee for Perth Onboarding",
+      "Russell and Suitor Wines Client Onboarding ", "GPEX Onboarding Folder "]) expect(isClientOnboardingFolder(f, opts)).toBe(true);
+  });
+  it("keeps staff onboarding/offboarding, unknown names, WIP and handover as PG", () => {
+    for (const f of ["Julia Onboarding & Induction", "Lucy Offboarding", "Kasey Onboarding & Induction", "Vino Offboarding",
+      "Suba Onboarding & Induction", "⭐️ QLD WIP", "Bee Squared Handover"]) expect(isClientOnboardingFolder(f, opts)).toBe(false);
+  });
+  it("moves a client onboarding folder's billable and non-billable time to the client side", () => {
+    const rows = [
+      { user_name: "A", folder: "Committee for Perth Onboarding", space_id: "90167546842", billable: true, taskless: false, minutes: 300 },
+      { user_name: "A", folder: "Committee for Perth Onboarding", space_id: "90167546842", billable: false, taskless: false, minutes: 72 },
+      { user_name: "A", folder: "Committee for Perth (WA)", space_id: "90167546842", billable: true, taskless: false, minutes: 60 },
+      { user_name: "A", folder: "Julia Onboarding & Induction", space_id: "54751434", billable: false, taskless: false, minutes: 30 },
+    ];
+    const b = classifyClickup(rows, { pg_folders: ["Purple Giraffe"], staffNames: ["Julia"] }).perUser.A;
+    expect(b.clientBillable).toBe(360);
+    expect(b.clientNonBillable).toBe(72);
+    expect(b.pgNonBillable).toBe(30);
+    expect(b.total).toBe(462);
   });
 });
 

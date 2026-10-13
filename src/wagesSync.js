@@ -24,10 +24,11 @@ export const WAGE_SOURCES = [
   { key: "lines", label: "Xero hours and comments" },
   { key: "leaveEntries", label: "Typed leave" },
   { key: "clickupSummary", label: "ClickUp time" },
+  { key: "clients", label: "Client list" },
   { key: "syncMeta", label: "ClickUp sync status" },
 ];
 // Sources a live (draft) month can't be computed without. syncMeta is informational.
-export const ESSENTIAL_LIVE_SOURCES = ["roster", "capLeaves", "wagePeople", "rules", "settings", "monthRow", "lines", "leaveEntries", "clickupSummary"];
+export const ESSENTIAL_LIVE_SOURCES = ["roster", "capLeaves", "wagePeople", "rules", "settings", "monthRow", "lines", "leaveEntries", "clickupSummary", "clients"];
 
 async function rows(query) {
   const { data, error } = await query;
@@ -70,6 +71,9 @@ const LOADERS = {
   lines: (monthKey) => rows(supabase.from("pginvoice_wage_lines").select("*").eq("month_key", monthKey)),
   leaveEntries: (monthKey) => fetchLeaveEntries(monthKey),
   clickupSummary: (monthKey) => fetchClickupMonthSummary(monthKey),
+  // Registered client names/folders: lets a client onboarding/offboarding folder count as
+  // client time in the billable breakdown (classifyClickup's clientNames).
+  clients: () => rows(supabase.from("pginvoice_clients").select("client, clickup_folder")),
   syncMeta: async () => {
     const { data, error } = await supabase.from("pginvoice_sync_meta").select("*").eq("id", 1).maybeSingle();
     if (error) throw error;

@@ -6,7 +6,7 @@
 // workbook outputs are HOURS rounded to 2dp (ratios to 4dp). Dates are "YYYY-MM-DD"
 // string keys built with Date.UTC/getUTCDay -- never toISOString on a local date.
 // null always means "not entered / not applicable" and is kept distinct from 0.
-import { CLIENT_SPACE_IDS, isInternalFolder, isNonClientSpace } from "./nameMatch.js";
+import { CLIENT_SPACE_IDS, isInternalFolder, isNonClientSpace, findMatch, normalizeName } from "./nameMatch.js";
 import { holidaysFor, PUBLIC_HOLIDAYS } from "./publicHolidays.js";
 
 // Default global settings (pginvoice_wage_settings). The single source for these numbers:
@@ -88,8 +88,10 @@ function addSlice(b, { folder, pg, billable, minutes }) {
 
 // Classifies pginvoice_clickup_month_summary rows into per-user PG/client buckets.
 //   CLIENT = space_id in CLIENT_SPACE_IDS, folder not one of settings.pg_folders, not an
-//            internal-keyword folder (onboarding/induction/offboarding/handover/wip), and
-//            the entry has a task.
+//            internal-keyword folder (onboarding/induction/offboarding/handover/wip) --
+//            EXCEPT a client's own onboarding/offboarding folder (isClientOnboardingFolder,
+//            owner's rule: that time is client billable / non-billable) -- and the entry
+//            has a task. settings.clientNames / settings.staffNames feed that exception.
 //   PG     = everything else (Purple Giraffe folder, internal folders, PG HQ / BDM / any
 //            other space, task-less "Private" entries).
 // Rows with no space_id that DO have a task were synced before the space column existed:
@@ -98,8 +100,42 @@ function addSlice(b, { folder, pg, billable, minutes }) {
 // their minutes are also counted in `unknownSpace` / `unknownSpaceMinutes` so the UI can warn.
 // `taskless` and `unknownSpace` are informational subsets of `total`, not extra time.
 // Returns { perUser: { [userName]: buckets }, ignored: { [userName]: buckets }, unknownSpaceMinutes }.
+// A client's onboarding/offboarding folder ("Bee Squared Offboarding Folder", "Committee for
+// Perth Onboarding") counts as CLIENT time; a staff member's ("Julia Onboarding & Induction",
+// "Vino Offboarding") and WIP / handover folders stay PG. The folder name minus the
+// onboarding words must match a client (registered client names/folders, or this month's
+// client-space folders) and must NOT match a staff name -- staff wins, so a doubtful folder
+// stays PG as before. Matching ignores spaces too ("bytherules" = "By the Rules").
+const ONBOARDING_RE = /\b(on|off)boarding\b/i;
+const compact = (s) => normalizeName(s).replace(/\s+/g, "");
+function matchesName(rest, names) {
+  if (!rest || !names.length) return false;
+  if (findMatch(rest, names)) return true;
+  const c = compact(rest);
+  return c.length >= 4 && names.some((n) => { const nc = compact(n); return nc.length >= 4 && (nc === c || nc.startsWith(c) || c.startsWith(nc)); });
+}
+export function isClientOnboardingFolder(folder, { clientNames = [], staffNames = [] } = {}) {
+  if (!ONBOARDING_RE.test(String(folder || ""))) return false;
+  const rest = String(folder).replace(/\b(on|off)boarding\b|\binduction\b|\bfolder\b|\bclient\b|&/gi, " ").replace(/\s+/g, " ").trim();
+  if (matchesName(rest, staffNames)) return false;
+  return matchesName(rest, clientNames);
+}
+
 export function classifyClickup(summaryRows, settings = {}) {
   const pgFolders = new Set((settings.pg_folders || []).map(normName));
+  // Client names for the onboarding exception: registered clients plus this month's ordinary
+  // client-space folders (a client may not be registered yet, e.g. a new onboarding).
+  const clientNames = [...(settings.clientNames || [])];
+  for (const r of summaryRows || []) {
+    const sid = r.space_id == null ? "" : String(r.space_id).trim();
+    if (sid && CLIENT_SPACE_IDS.has(sid) && r.folder && !isInternalFolder(r.folder) && !pgFolders.has(normName(r.folder))) clientNames.push(r.folder);
+  }
+  const onboardingOpts = { clientNames: [...new Set(clientNames.filter(Boolean))], staffNames: settings.staffNames || [] };
+  const onboardingCache = new Map();
+  const clientOnboarding = (folder) => {
+    if (!onboardingCache.has(folder)) onboardingCache.set(folder, isClientOnboardingFolder(folder, onboardingOpts));
+    return onboardingCache.get(folder);
+  };
   const ignoredUsers = new Set((settings.ignored_clickup_users || []).map(normName));
   const perUser = {};
   const ignored = {};
@@ -112,7 +148,7 @@ export function classifyClickup(summaryRows, settings = {}) {
     const unknownSpace = !spaceId && !taskless;
     const folder = r.folder ?? "";
     const clientSpace = spaceId ? CLIENT_SPACE_IDS.has(spaceId) : !isNonClientSpace(null, null, folder);
-    const isClient = clientSpace && !taskless && !pgFolders.has(normName(folder)) && !isInternalFolder(folder);
+    const isClient = clientSpace && !taskless && !pgFolders.has(normName(folder)) && (!isInternalFolder(folder) || clientOnboarding(folder));
     const target = ignoredUsers.has(normName(user)) ? ignored : perUser;
     const b = target[user] || (target[user] = emptyBuckets());
     addSlice(b, { folder, pg: !isClient, billable: !!r.billable, minutes });
