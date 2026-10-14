@@ -137,7 +137,12 @@ export function computeLiveView(sources, monthKey) {
 
   // Every wage_people row claims its ClickUp names (included or not), so a login that
   // belongs to an excluded person never shows up as "unmapped".
-  const { perUser, unknownSpaceMinutes } = classifyClickup(sources.clickupSummary || [], settings);
+  const clientNames = (sources.clients || []).flatMap((c) => [c.client, c.clickup_folder]).filter(Boolean);
+  const staffNames = [
+    ...roster.flatMap((p) => [p.name, p.alias]),
+    ...wagePeople.flatMap((w) => w.clickup_user_names || []),
+  ].filter(Boolean);
+  const { perUser, unknownSpaceMinutes } = classifyClickup(sources.clickupSummary || [], { ...settings, clientNames, staffNames });
   const { byPerson, unmapped, conflicts } = attributeToPeople(perUser, wagePeople);
 
   const included = [];

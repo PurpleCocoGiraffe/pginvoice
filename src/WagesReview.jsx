@@ -60,6 +60,7 @@ const sourceData = (loaded) => {
   return {
     roster: pick("roster"), capLeaves: pick("capLeaves"), wagePeople: pick("wagePeople"), rules: pick("rules"),
     settings: pick("settings"), monthRow: pick("monthRow"), lines: pick("lines"), leaveEntries: pick("leaveEntries"), clickupSummary: pick("clickupSummary"),
+    clients: pick("clients"),
   };
 };
 
