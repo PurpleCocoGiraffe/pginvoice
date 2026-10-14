@@ -571,6 +571,14 @@ export function statusForMonth(client, events, monthKey) {
   return status;
 }
 
+// Whether `monthKey` falls before the client's start month (start_date's own month counts
+// as started, same boundary recomputeAccruals starts its ledger from). Client Invoicing
+// uses this so a client never shows -- or gets a package/carry estimated -- for months
+// before it was onboarded; typeForMonth itself has no notion of a start date.
+export function isBeforeStart(client, monthKey) {
+  return !!(client?.startDate && monthKey && monthKey < client.startDate.slice(0, 7));
+}
+
 export function typeForMonth(client, events, monthKey) {
   const segments = typeTimelineFor(client, events);
   const monthStart = `${monthKey}-01`;
