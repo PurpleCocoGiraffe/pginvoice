@@ -299,7 +299,118 @@ export const SEED_SUPPORT = [
   { id: "s20", from: "Alex", to: "Purple Giraffe (internal)", type: "pct", value: 0.20 },
 ];
 
-export const OWNERS = ["Holly", "Shreya", "Chloe", "Alice", "Amanda", "Lucy", "Vinavie", "Sarah"];
+// Fallback owner order only (seed data / before the roster loads). Capacity Planning's real
+// owner list is the Consultants roster -- see ownersFor.
+export const OWNERS = ["Holly", "Shreya", "Chloe", "Alice", "Amanda", "Vinavie"];
+
+/* ============================================================
+   CONNECTION TO THE CLIENTS + CONSULTANTS MODULES
+   The Clients module (pginvoice_clients + its dated events) is the source of truth for a
+   client's status, consultant, type and agreed hours, and the Consultants roster for who
+   the people are. Capacity Planning's own cap_clients rows used to be a separately
+   maintained copy that drifted (Kasey's Queensland clients still led by Lucy after she
+   resigned, HTSA at 80 h instead of 100, Comunet at 32 instead of 16, active clients like
+   Committee for Perth missing entirely). reconcileCapClients rewrites those fields from
+   the Clients module and adds any active client it doesn't have yet.
+============================================================ */
+export const CLIENT_TYPE_TO_BASIS = {
+  package: "Package", strategy: "Strategy", map: "MAP", quoted: "Quoted", project: "Project",
+  hourly: "Hourly", ad_hoc: "Ad hoc", digital: "Digital", queensland: "Hourly",
+};
+// Types whose agreed hours are a MONTHLY commitment -- the only ones copied into Capacity
+// Planning's monthly demand. A quote's hours are a lifetime budget (Prison Transport Group's
+// 80 h is not 80 h every month), and hourly/digital/ad hoc carry none, so those rows keep
+// their own monthly estimate (or fall back to the real ClickUp average).
+const MONTHLY_HOURS_TYPES = new Set(["package", "strategy", "map"]);
+const STATUS_TO_CAP = { active: "active", archived: "archived" }; // on_hold/offboarded -> inactive
+
+const firstWord = (s) => String(s || "").trim().split(/\s+/)[0].toLowerCase();
+// The roster person a Clients-module consultant ("Kasey Doren", "Purple Giraffe") refers to:
+// an exact full-name match first, then the first name. null when nobody on the roster fits.
+export function rosterNameFor(consultant, people) {
+  const full = String(consultant || "").trim().toLowerCase();
+  if (!full) return null;
+  const list = people || [];
+  const exact = list.find((p) => String(p.name || "").trim().toLowerCase() === full);
+  if (exact) return exact.name;
+  const byFirst = list.find((p) => firstWord(p.name) === firstWord(full));
+  return byFirst ? byFirst.name : null;
+}
+
+// `timelineFor(profile)` -> typeTimelineFor's segments ({ from, type, agreedHours }), passed
+// in so this stays pure. `parentByFolder` maps a cost-centre/sub-project ClickUp folder to
+// its parent client, so a sub-project added here joins its parent's group.
+// Rows linked 1:1 to a profile take its type and monthly hours too; when several rows share
+// one profile (Clarke Energy's sub-brands, Villani's website project beside its package)
+// only status and lead are shared -- each row keeps its own basis and hours.
+export function reconcileCapClients(capClients, pgClients, { people = [], timelineFor = null, parentByFolder = new Map(), newId = () => uid("c") } = {}) {
+  const byName = new Map((pgClients || []).map((p) => [p.client, p]));
+  const linkCount = new Map();
+  for (const c of capClients || []) if (c.pgLink && byName.has(c.pgLink)) linkCount.set(c.pgLink, (linkCount.get(c.pgLink) || 0) + 1);
+  let changed = false;
+  const next = (capClients || []).map((c) => {
+    const p = c.pgLink ? byName.get(c.pgLink) : null;
+    if (!p) return c;
+    const patch = {};
+    const status = STATUS_TO_CAP[p.status] || "inactive";
+    if (c.status !== status) patch.status = status;
+    const lead = rosterNameFor(p.consultant, people);
+    if (lead && c.lead !== lead) patch.lead = lead;
+    if (linkCount.get(p.client) === 1) {
+      const basis = CLIENT_TYPE_TO_BASIS[p.type];
+      if (basis && c.basis !== basis) patch.basis = basis;
+      if (MONTHLY_HOURS_TYPES.has(p.type)) {
+        const hours = monthlyHoursFrom(p, timelineFor);
+        if (c.agreed !== hours.agreed) patch.agreed = hours.agreed;
+        if (JSON.stringify(c.history ?? null) !== JSON.stringify(hours.history)) patch.history = hours.history;
+      }
+    }
+    if (!Object.keys(patch).length) return c;
+    changed = true;
+    return { ...c, ...patch };
+  });
+  const linked = new Set(next.map((c) => c.pgLink).filter(Boolean));
+  for (const p of pgClients || []) {
+    if (linked.has(p.client) || (p.status !== "active" && p.status !== "on_hold")) continue;
+    const monthly = MONTHLY_HOURS_TYPES.has(p.type);
+    const hours = monthly ? monthlyHoursFrom(p, timelineFor) : { agreed: null, history: null };
+    next.push({
+      id: newId(), client: p.client, group: (p.clickupFolder && parentByFolder.get(p.clickupFolder)) || p.client,
+      lead: rosterNameFor(p.consultant, people) || "Unassigned", basis: CLIENT_TYPE_TO_BASIS[p.type] || "Hourly",
+      agreed: hours.agreed, history: hours.history, actuals: null, note: "",
+      status: STATUS_TO_CAP[p.status] || "inactive", offboardedFrom: null, offboardNote: "", pgLink: p.client,
+    });
+    changed = true;
+  }
+  return { clients: next, changed };
+}
+
+// A profile's monthly hours as cap_clients' { agreed, history }: `agreed` is the base
+// (earliest) figure and `history` each later dated change, so agreedAt replays the same
+// timeline the Clients module does. Without a timeline, just the current figure.
+function monthlyHoursFrom(p, timelineFor) {
+  const segs = timelineFor ? (timelineFor(p) || []) : [];
+  if (segs.length < 2) return { agreed: p.agreedHours ?? null, history: null };
+  const toMonth = (d) => (d.slice(8, 10) === "01" ? d.slice(0, 7) : shiftMonth(d.slice(0, 7), 1));
+  const history = segs.slice(1).filter((sg) => sg.from).map((sg) => ({ from: toMonth(sg.from), agreed: MONTHLY_HOURS_TYPES.has(sg.type) ? (sg.agreedHours ?? null) : 0 }));
+  const base = segs[0];
+  return { agreed: MONTHLY_HOURS_TYPES.has(base.type) ? (base.agreedHours ?? null) : 0, history: history.length ? history : null };
+}
+function shiftMonth(mk, d) {
+  const [y, m] = mk.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1 + d, 1));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+// Capacity Planning's owner cards: everyone on the Consultants roster who is staff in
+// `month` (resignation applied) and either a Consultant or the lead on a client -- the
+// roster, not a hardcoded list, so a new consultant (Kasey) gets a card and a resigned one
+// (Lucy) drops off.
+export function ownersFor(people, month, leads = new Set()) {
+  return (people || [])
+    .filter((p) => resignationStatus(p, month).active && (p.role === "Consultant" || leads.has(p.name)))
+    .map((p) => p.name);
+}
 
 /* ============================================================
    STORAGE — backed by Supabase (pginvoice_app_state), not localStorage, so
