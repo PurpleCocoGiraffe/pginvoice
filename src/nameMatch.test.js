@@ -203,10 +203,14 @@ describe("multiFolderAccrualMatchesFor", () => {
     expect(multiFolderMatchesFor("Warrina Homes", folders)).toEqual(folders);
   });
 
-  it("keeps both Apex Comms Website and Apex Comms Sales Presenter out of Apex Energy's accrual, as sub-projects", () => {
+  it("Apex Comms' two quoted projects belong to Apex Communications, never Apex Energy", () => {
     const folders = ["Apex Energy", "Apex Comms Website (QP)", "Apex Comms Sales Presenter (QP)"];
-    expect(multiFolderAccrualMatchesFor("Apex Energy", folders)).toEqual(["Apex Energy"]);
-    expect(multiFolderMatchesFor("Apex Energy", folders)).toEqual(folders);
+    // Apex Communications is a separate client: both QP folders roll up under it as
+    // billed-separately sub-projects, never into any package accrual.
+    expect(multiFolderMatchesFor("Apex Communications", folders)).toEqual(["Apex Comms Website (QP)", "Apex Comms Sales Presenter (QP)"]);
+    expect(multiFolderAccrualMatchesFor("Apex Communications", folders) ?? []).toEqual([]);
+    // Apex Energy no longer claims either folder.
+    expect(multiFolderMatchesFor("Apex Energy", folders)).toBeNull();
   });
 });
 
