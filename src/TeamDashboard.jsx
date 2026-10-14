@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Check, Pencil, Plus, X, MoreVertical, AlertTriangle, Search, ChevronLeft, ChevronRight } from "lucide-react";
-import { SEED_PEOPLE, loadKey, MONTHS, CURRENT_MONTH, MONTH_LABELS, computeMonthlyAvailability } from "./capacityData.js";
+import { SEED_PEOPLE, loadKey, MONTHS, CURRENT_MONTH, MONTH_LABELS, computeMonthlyAvailability, resignationStatus } from "./capacityData.js";
 import { normalizeName } from "./nameMatch.js";
 import { loadState, saveState } from "./capacityStore.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
@@ -212,6 +212,9 @@ function TeamDashboardInner() {
   const [people, setPeople] = useState(SEED_PEOPLE);
   const [editing, setEditing] = useState(false);
   const [qRoster, setQRoster] = useState("");
+  // People who resigned before the selected month are hidden unless asked for (Lucy, who
+  // left in September, kept showing in October) -- still one click away to edit.
+  const [showFormer, setShowFormer] = useState(false);
   const [month, setMonth] = useState(CURRENT_MONTH);
   const [leaves, setLeaves] = useState({}); // key: `${personId}_${month}` -> hours, shared with Capacity Planning's cap_leaves
   // cap_leaves load state. Until it has loaded once, `leaves` is a placeholder {} -- writing
@@ -439,7 +442,9 @@ function TeamDashboardInner() {
     return conflicts;
   }, [people]);
 
-  const visiblePeople = people.filter((p) => !qRoster || p.name.toLowerCase().includes(qRoster.toLowerCase()));
+  const isFormer = (p) => !resignationStatus(p, month).active;
+  const formerCount = people.filter(isFormer).length;
+  const visiblePeople = people.filter((p) => (showFormer || !isFormer(p)) && (!qRoster || p.name.toLowerCase().includes(qRoster.toLowerCase())));
 
   // One row per roster entry, carrying that person's capacity/hours for the currently
   // selected month — computed via computeMonthlyAvailability, the exact same function
@@ -517,6 +522,12 @@ function TeamDashboardInner() {
                 onChange={(e) => setQRoster(e.target.value)}
               />
             </div>
+            {formerCount > 0 && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--fg-secondary)" }}>
+                <input type="checkbox" checked={showFormer} onChange={(e) => setShowFormer(e.target.checked)} />
+                Show former staff ({formerCount})
+              </label>
+            )}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <button className="pg-btn-ghost" style={{ padding: "5px 8px" }} onClick={() => shiftMonth(-1)} disabled={monthIdx === 0}><ChevronLeft size={12} /></button>
               <span style={{ fontFamily: "var(--font-display)", fontSize: 14, minWidth: 60, textAlign: "center" }}>{MONTH_LABELS[month]}</span>

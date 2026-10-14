@@ -6,12 +6,12 @@ import {
 import { idbGet, PG_DATA_EVENT } from "./idbStore.js";
 import { findMatch, multiFolderMatchesFor, basisToClientType, CLIENT_TYPE_LABELS, CLIENT_TYPE_TONES } from "./nameMatch.js";
 import { PersonAvatar } from "./avatar.jsx";
-import { fetchClients as fetchPgClients, createClient as createPgClient, createClientEvent, applyDueClientEvents } from "./clientsSync.js";
+import { fetchClients as fetchPgClients, createClient as createPgClient, createClientEvent, applyDueClientEvents, fetchClientEvents, fetchCostCentres, typeTimelineFor } from "./clientsSync.js";
 import {
   MONTHS, CURRENT_MONTH, MONTH_LABELS, resignationStatus, computeMonthlyAvailability,
   holidaysInMonthGrouped, uid, FIXED_BASES, agreedAt,
   SEED_PEOPLE, SEED_CLIENTS, SEED_SUPPORT, OWNERS, loadKey, saveKey,
-  computeDynamicAverages, demandFor, demandForGroup,
+  computeDynamicAverages, demandFor, demandForGroup, reconcileCapClients, ownersFor,
 } from "./capacityData.js";
 import { useDismissable } from "./useDismissable.js";
 import { syncCapacityLeads } from "./usersSync.js";
@@ -174,11 +174,18 @@ function CapacityDashboardInner({ onNavigateTeam }) {
   // land in this same table, via createClient/createClientEvent).
   const [pgClients, setPgClients] = useState([]);
   const [pgLoaded, setPgLoaded] = useState(false);
+  // The Clients module's dated events (type/hours timeline) and cost-centre folders --
+  // what reconcileCapClients needs to copy a client's monthly hours history and to put a
+  // sub-project into its parent's group. null = not loaded (no reconcile until both are).
+  const [pgEvents, setPgEvents] = useState(null);
+  const [pgCostCentres, setPgCostCentres] = useState(null);
   const loadPgClients = useCallback(async () => {
     try {
       await applyDueClientEvents();
-      const data = await fetchPgClients();
+      const [data, evs, ccs] = await Promise.all([fetchPgClients(), fetchClientEvents(), fetchCostCentres()]);
       setPgClients(data);
+      setPgEvents(evs);
+      setPgCostCentres(ccs);
       return data;
     } catch (e) { /* best-effort -- local SEED/cap_clients data still renders on its own */ }
     finally { setPgLoaded(true); }
@@ -435,26 +442,48 @@ function CapacityDashboardInner({ onNavigateTeam }) {
     });
   }, [loaded, pgClients, pgClientNames, matchPgClient]);
 
+  // Keeps cap_clients itself in step with the Clients + Consultants modules (status, lead,
+  // type, monthly hours; any active client it's missing) -- written back through the
+  // normal cap_clients save, so Client Invoicing and Performance, which read cap_clients
+  // directly, see the same values. Runs after pgLink linking above has had a pass; a no-op
+  // once everything already matches.
+  useEffect(() => {
+    if (!loaded || !pgLoaded || !pgClients.length || !pgEvents || !pgCostCentres) return;
+    const parentByFolder = new Map(pgCostCentres.filter((r) => r.kind !== "task_prefix" && r.folder).map((r) => [r.folder, r.client]));
+    setClients((prev) => {
+      const { clients: next, changed } = reconcileCapClients(prev, pgClients, {
+        people, timelineFor: (p) => typeTimelineFor(p, pgEvents), parentByFolder,
+      });
+      return changed ? next : prev;
+    });
+  }, [loaded, pgLoaded, pgClients, pgEvents, pgCostCentres, people]);
+
   // The list actually used for the owner-grouped ledger: each row's status and lead come
   // from the matched pginvoice_clients record when one exists (so a status/consultant change
   // made in the Clients module is reflected here without any local edit), falling back to the
   // local SEED/cap_clients value when a client genuinely isn't in that table yet -- e.g. one
   // just added here, before the Supabase round-trip completes on next load.
+  const rosterNames = useMemo(() => new Set(people.map((p) => p.name)), [people]);
   const syncedClients = useMemo(() => clients.map((c) => {
     const pg = matchPgClient(c);
     if (!pg) return { ...c, _pgClient: null, _effectiveStatus: c.status };
     const mappedLead = pg.consultant ? firstName(pg.consultant) : null;
     return {
       ...c,
-      lead: (mappedLead && OWNERS.includes(mappedLead)) ? mappedLead : c.lead,
+      lead: (mappedLead && rosterNames.has(mappedLead)) ? mappedLead : c.lead,
       _pgClient: pg.client,
       _effectiveStatus: pg.status === "active" ? "active" : "inactive",
     };
-  }), [clients, matchPgClient]);
+  }), [clients, matchPgClient, rosterNames]);
 
+  // Owner cards come from the Consultants roster (staff this month), not a fixed list.
+  const owners = useMemo(() => {
+    const leads = new Set(syncedClients.filter((c) => c._effectiveStatus === "active").map((c) => c.lead));
+    return ownersFor(people, month, leads);
+  }, [people, month, syncedClients]);
   const groupedByOwner = useMemo(() => {
     const m = {};
-    OWNERS.forEach((o) => m[o] = []);
+    owners.forEach((o) => m[o] = []);
     const seenGroups = {};
     syncedClients.forEach((c) => {
       if (!pgLoaded) return; // avoid a flash of the un-filtered list before the sync data arrives
@@ -464,7 +493,7 @@ function CapacityDashboardInner({ onNavigateTeam }) {
       seenGroups[c.group].rows.push(c);
     });
     return m;
-  }, [syncedClients, pgLoaded]);
+  }, [syncedClients, pgLoaded, owners]);
 
   const demandByOwner = useMemo(() => {
     const m = {};
@@ -515,7 +544,7 @@ function CapacityDashboardInner({ onNavigateTeam }) {
   // since a single query filled into both queries under AND would demand a
   // consultant literally named e.g. "bee" to ever show a "Bee Squared" match.
   const clientMatches = (owner, q) => (groupedByOwner[owner] || []).some((g) => g.group.toLowerCase().includes(q) || g.rows.some((r) => r.client.toLowerCase().includes(q)));
-  const visibleOwners = OWNERS.filter((owner) => {
+  const visibleOwners = owners.filter((owner) => {
     if (!peopleMap[owner]) return false; // resigned as of this month — hide their card entirely
     if (qCombined) {
       const q = qCombined.toLowerCase();
@@ -697,7 +726,7 @@ function CapacityDashboardInner({ onNavigateTeam }) {
             <label className="pg-field">
               <span className="pg-field__label">Consultant</span>
               <select className="pg-input" value={addClientForm.lead} onChange={(e) => setAddClientForm((f) => ({ ...f, lead: e.target.value }))}>
-                {OWNERS.map((o) => <option key={o} value={o}>{o}</option>)}
+                {owners.map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
             </label>
             <label className="pg-field">
@@ -805,7 +834,7 @@ function CapacityDashboardInner({ onNavigateTeam }) {
                                   {editingDemand === owner && (
                                     <select className="pg-input" style={{ marginLeft: 8, padding: "2px 4px", fontSize: 11, width: 100 }}
                                       value={owner} onChange={(e) => changeConsultant(r, e.target.value)} title="Reassign consultant -- also updates the Clients module">
-                                      {OWNERS.map((o) => <option key={o} value={o}>{o}</option>)}
+                                      {owners.map((o) => <option key={o} value={o}>{o}</option>)}
                                     </select>
                                   )}
                                 </td>

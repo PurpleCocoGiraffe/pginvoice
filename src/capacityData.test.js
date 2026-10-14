@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   agreedAt, computeMonthlyAvailability, resignationStatus,
-  demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys,
+  demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys, reconcileCapClients, ownersFor,
 } from "./capacityData.js";
 import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor } from "./dateMath.js";
 
@@ -233,5 +233,66 @@ describe("Adelaide month helpers", () => {
     expect(monthOffsetFor("2026-08", lateAug)).toBe(1);
     expect(monthOffsetFor("2025-12", lateAug)).toBe(9);
     expect(monthOffsetFor("2026-10", lateAug)).toBe(-1);
+  });
+});
+
+describe("reconcileCapClients -- Capacity Planning follows the Clients + Consultants modules", () => {
+  const people = [
+    { name: "Kasey", role: "Consultant" }, { name: "Lucy", role: "Consultant", resignationDate: "2026-09-11" },
+    { name: "Holly", role: "Consultant" }, { name: "Purple Giraffe", role: "Consultant" }, { name: "Alex", role: "Coordinator" },
+  ];
+  const pg = (o) => ({ client: "X", type: "package", agreedHours: 10, consultant: null, status: "active", clickupFolder: null, ...o });
+  let n = 0;
+  const opts = (extra = {}) => ({ people, newId: () => `new${++n}`, ...extra });
+
+  it("takes lead, status, type and monthly hours from the linked profile", () => {
+    const cap = [{ id: "c30", client: "CRA Construction", group: "CRA Construction", lead: "Lucy", basis: "Package", agreed: 24, history: null, status: "active", pgLink: "CRA Construction (Qld)" }];
+    const { clients, changed } = reconcileCapClients(cap, [pg({ client: "CRA Construction (Qld)", consultant: "Kasey Doren", agreedHours: 10 })], opts());
+    expect(changed).toBe(true);
+    expect(clients[0]).toMatchObject({ lead: "Kasey", agreed: 10, basis: "Package", status: "active" });
+  });
+  it("copies a dated hours change as history so agreedAt follows the Clients timeline", () => {
+    const cap = [{ id: "c41", client: "HTSA", group: "HTSA", lead: "Holly", basis: "Package", agreed: 80, history: null, status: "active", pgLink: "HTSA" }];
+    const p = pg({ client: "HTSA", consultant: "Holly L", agreedHours: 100 });
+    const timelineFor = () => [{ from: null, type: "package", agreedHours: 80 }, { from: "2026-09-01", type: "package", agreedHours: 100 }];
+    const { clients } = reconcileCapClients(cap, [p], opts({ timelineFor }));
+    expect(clients[0]).toMatchObject({ agreed: 80, history: [{ from: "2026-09", agreed: 100 }] });
+  });
+  it("a quote's lifetime hours never become monthly demand; on hold reads as inactive", () => {
+    const cap = [{ id: "c81", client: "Orora", group: "Orora", lead: "Holly", basis: "Quoted", agreed: 5, status: "active", pgLink: "Orora" }];
+    const { clients } = reconcileCapClients(cap, [pg({ client: "Orora", type: "quoted", agreedHours: 70, status: "on_hold" })], opts());
+    expect(clients[0]).toMatchObject({ agreed: 5, basis: "Quoted", status: "inactive" });
+  });
+  it("rows sharing one profile keep their own basis and hours", () => {
+    const cap = [
+      { id: "c44", client: "Villani Jewellers", group: "Villani", lead: "Holly", basis: "Package", agreed: 16, status: "active", pgLink: "Villani Jewellers" },
+      { id: "c45", client: "Villani: Website Project", group: "Villani", lead: "Holly", basis: "Project", agreed: 8, status: "active", pgLink: "Villani Jewellers" },
+    ];
+    const { clients, changed } = reconcileCapClients(cap, [pg({ client: "Villani Jewellers", consultant: "Holly L", agreedHours: 16 })], opts());
+    expect(changed).toBe(false);
+    expect(clients[1]).toMatchObject({ basis: "Project", agreed: 8 });
+  });
+  it("adds an active client it's missing, a sub-project into its parent's group", () => {
+    const { clients } = reconcileCapClients([], [
+      pg({ client: "Committee for Perth", consultant: "Kasey Doren", agreedHours: 32 }),
+      pg({ client: "ARAS Website Optimisation Project", type: "quoted", agreedHours: 60, clickupFolder: "ARAS Website Optimisation Project" }),
+      pg({ client: "Toto and Co", type: "hourly", agreedHours: null, consultant: "Purple Giraffe" }),
+      pg({ client: "Old Co", status: "offboarded" }),
+    ], opts({ parentByFolder: new Map([["ARAS Website Optimisation Project", "ARAS"]]) }));
+    expect(clients.map((c) => c.client)).toEqual(["Committee for Perth", "ARAS Website Optimisation Project", "Toto and Co"]);
+    expect(clients[0]).toMatchObject({ lead: "Kasey", basis: "Package", agreed: 32, pgLink: "Committee for Perth" });
+    expect(clients[1]).toMatchObject({ group: "ARAS", basis: "Quoted", agreed: null });
+    expect(clients[2]).toMatchObject({ lead: "Purple Giraffe", basis: "Hourly" });
+  });
+  it("a second run changes nothing", () => {
+    const cap = [{ id: "c30", client: "CRA", group: "CRA", lead: "Lucy", basis: "Package", agreed: 24, status: "active", pgLink: "CRA" }];
+    const pgs = [pg({ client: "CRA", consultant: "Kasey Doren", agreedHours: 10 })];
+    const first = reconcileCapClients(cap, pgs, opts());
+    expect(reconcileCapClients(first.clients, pgs, opts()).changed).toBe(false);
+  });
+  it("owner cards come from the roster: resigned people drop off, coordinators only when leading a client", () => {
+    expect(ownersFor(people, "2026-10")).toEqual(["Kasey", "Holly", "Purple Giraffe"]);
+    expect(ownersFor(people, "2026-09")).toContain("Lucy");
+    expect(ownersFor(people, "2026-10", new Set(["Alex"]))).toContain("Alex");
   });
 });
