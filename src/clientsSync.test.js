@@ -184,3 +184,16 @@ describe("isBeforeStart -- a client doesn't exist in Client Invoicing before its
     expect(isBeforeStart(null, "2020-01")).toBe(false);
   });
 });
+
+describe("sub-project profiles -- parentClient", () => {
+  it("a sub-project's profile stores its parent; a plain client doesn't send the column", () => {
+    const form = { name: "ARAS Website Optimisation Project", type: "quoted", hours: "60", consultant: "Chloe James", clickupFolder: "ARAS Website Optimisation Project", startDate: "", parentClient: "ARAS" };
+    const r = validateNewClient(form, [{ client: "ARAS" }]);
+    expect(r.fields.parentClient).toBe("ARAS");
+    const row = newClientRow(r.name, r.fields);
+    expect(row.parent_client).toBe("ARAS");
+    expect(row.agreed_hours).toBe(60);
+    const plain = newClientRow("New Co", { type: "hourly" });
+    expect("parent_client" in plain).toBe(false);
+  });
+});

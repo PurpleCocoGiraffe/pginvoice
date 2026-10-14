@@ -115,6 +115,10 @@ function rowToClient(r) {
     // from the client's website — either way, just a URL the row/drawer can drop
     // straight into an <img>.
     logoUrl: r.logo_url || null,
+    // Set on a cost centre / sub-project's own profile (e.g. "ARAS Website Optimisation
+    // Project" -> "ARAS"): it keeps its own type, hours and transitions but is part of the
+    // parent client, so it's never listed or counted as a client of its own.
+    parentClient: r.parent_client || null,
   };
 }
 
@@ -221,13 +225,15 @@ export function faviconUrlFor(website) {
 // hours for reference only. Digital is a fixed-price package with no hours at all.
 export const storesAgreedHours = (type) => type === "package" || type === "strategy" || type === "quoted" || type === "map";
 
-export function newClientRow(client, { type, agreedHours, consultant, startDate, clickupFolder }) {
+export function newClientRow(client, { type, agreedHours, consultant, startDate, clickupFolder, parentClient }) {
   const hours = storesAgreedHours(type) ? (agreedHours ?? null) : null;
   return {
     client, type, agreed_hours: hours,
     base_type: type, base_agreed_hours: hours,
     consultant: consultant || null, start_date: startDate || null, status: "active",
     clickup_folder: clickupFolder || null,
+    // Only sent for a sub-profile, so a plain create never names a column it doesn't need.
+    ...(parentClient ? { parent_client: parentClient } : {}),
   };
 }
 
@@ -260,6 +266,7 @@ export function validateNewClient(form, existingClients) {
       consultant: String(form.consultant || "").trim() || null,
       clickupFolder: String(form.clickupFolder || "").trim() || null,
       startDate: form.startDate || null,
+      parentClient: String(form.parentClient || "").trim() || null,
     },
   };
 }

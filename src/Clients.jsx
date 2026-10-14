@@ -1183,7 +1183,7 @@ function AddClientPanel({ clients, folderList, onCreated, onCancel, initial = nu
 
   return (
     <div className="pg-cap-card" style={{ display: "flex", flexDirection: "column", gap: 10 }} aria-label="Add client">
-      <span className="pg-field__label">New client</span>
+      <span className="pg-field__label">{form.parentClient ? `Sub-project of ${form.parentClient}` : "New client"}</span>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label className="pg-field" style={{ width: 240 }}>
           <span className="pg-field__label">Client name *</span>
@@ -1225,7 +1225,7 @@ function AddClientPanel({ clients, folderList, onCreated, onCancel, initial = nu
       )}
       {err && <div className="pg-banner-warn" role="alert">{err}</div>}
       <div style={{ display: "flex", gap: 8 }}>
-        <button className="pg-btn" disabled={saving || !form.name.trim()} onClick={save}>{saving ? "Saving…" : "Create client"}</button>
+        <button className="pg-btn" disabled={saving || !form.name.trim()} onClick={save}>{saving ? "Saving…" : form.parentClient ? "Create sub-project" : "Create client"}</button>
         <button className="pg-btn-ghost" disabled={saving} onClick={onCancel}>Cancel</button>
       </div>
     </div>
@@ -1405,7 +1405,7 @@ export default function Clients() {
     const existing = profileForFolder(folder);
     if (existing) { openDrawer(existing); return; }
     const parent = (clients || []).find((c) => c.client === parentName);
-    setAddClientInitial({ name: folder, type: "quoted", consultant: parent?.consultant || "", clickupFolder: folder });
+    setAddClientInitial({ name: folder, type: "quoted", consultant: parent?.consultant || "", clickupFolder: folder, parentClient: parentName });
     setShowAddClient(true);
     setOpenClient(null);
     if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1475,6 +1475,7 @@ export default function Clients() {
     if (!clients) return [];
     const q = search.trim().toLowerCase();
     return clients.filter((c) => {
+      if (c.parentClient) return false; // a sub-project's profile lives inside its parent's drawer
       if (q && !c.client.toLowerCase().includes(q)) return false;
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (typeFilter !== "all" && c.type !== typeFilter) return false;
@@ -1484,7 +1485,7 @@ export default function Clients() {
 
   const snapshot = useMemo(() => {
     if (!clients) return { total: 0, byState: [] };
-    const active = clients.filter((c) => c.status === "active");
+    const active = clients.filter((c) => c.status === "active" && !c.parentClient);
     const byState = new Map();
     active.forEach((c) => { const s = stateOf(c.client); byState.set(s, (byState.get(s) || 0) + 1); });
     return { total: active.length, byState: [...byState.entries()].sort((a, b) => b[1] - a[1]) };
@@ -1636,7 +1637,7 @@ export default function Clients() {
           onRemoveCostCentre={(f, kind) => removeCostCentre(openC.client, f, kind)}
           profileFor={profileForFolder}
           onOpenProfile={(f) => openFolderProfile(f, openC.client)}
-          parentClient={openC.clickupFolder ? costCentreInfo.parentOf.get(openC.clickupFolder) || null : null}
+          parentClient={openC.parentClient || (openC.clickupFolder ? costCentreInfo.parentOf.get(openC.clickupFolder) || null : null)}
           onOpenClient={openDrawer}
           editingLogo={editingLogo}
           onToggleLogoEditor={() => setEditingLogo((o) => !o)}

@@ -82,7 +82,8 @@ export default function Overview() {
       if (cancelled) return;
 
       const [clRes, accrualsRes, pplRes, cuRes, lvRes] = results;
-      if (clRes.status === "fulfilled") setClients(clRes.value || []);
+      // A sub-project's own profile (parentClient set) is part of its parent, never a client of its own.
+      if (clRes.status === "fulfilled") setClients((clRes.value || []).filter((c) => !c.parentClient));
       if (accrualsRes.status === "fulfilled") setAccrualClients(accrualsRes.value);
       if (pplRes.status === "fulfilled") setPeople(pplRes.value || SEED_PEOPLE);
       if (cuRes.status === "fulfilled") setClickup(cuRes.value || null);
