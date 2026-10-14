@@ -291,12 +291,21 @@ export function resolveClientType({ name, matched = false, pkg = null, monthType
 // (or banked) whether or not anyone logged time, so dropping it hid the client from the
 // list, KPIs and both accrual exports.
 // `monthSegmentAgreed` (typeForMonth's agreedHours, registered clients only) covers a month
-// the ledger has no row for yet -- e.g. the current month before a recompute has run.
-export function shouldSeedPackageMonth(accruedClient, monthKey, monthType = null, monthSegmentAgreed = null) {
+// the ledger has no row for yet -- the current month before a recompute has run. A PAST
+// month with no ledger row was never accrued (it predates the client's ledger), so it isn't
+// seeded: that estimated a phantom package and carry for months before a client began
+// (AusFlix, registered but not started, showed May-Jul with a -77 h carry).
+// An on-hold month (`monthStatus`) consumes no package, so with no hours it needs no row
+// at all -- a paused client with nothing logged stays out of the list (AusFlix again).
+export function shouldSeedPackageMonth(accruedClient, monthKey, monthType = null, monthSegmentAgreed = null, { monthStatus = null, currentMonthKey = null } = {}) {
   if (!accruedClient || !monthKey) return false;
+  if (monthStatus === "on_hold") return false;
   if (monthType != null && !isPackageLikeType(monthType)) return false;
   const agreed = accruedClient.agreedByMonth?.[monthKey];
-  if (agreed === undefined && monthType != null) return monthSegmentAgreed != null && monthSegmentAgreed > 0;
+  if (agreed === undefined && monthType != null) {
+    if (currentMonthKey && monthKey < currentMonthKey) return false;
+    return monthSegmentAgreed != null && monthSegmentAgreed > 0;
+  }
   return agreed != null && agreed > 0;
 }
 

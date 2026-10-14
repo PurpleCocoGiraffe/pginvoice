@@ -35,6 +35,7 @@ import {
 import { typeLabelShort } from "./clientTypeLabels.js";
 import { buildSummaryText } from "./clientSummary.js";
 import { runManualSync } from "./manualSync.js";
+import { adelaideMonthKey } from "./dateMath.js";
 // A <label> wrapping a <select> only focuses it on click in most browsers -- opening
 // the dropdown itself needs a second click directly on the control. Used as the
 // onClick for every pill-style filter label so one click anywhere on the pill
@@ -934,7 +935,10 @@ export default function PGReconciliation({ onNavigateClients }) {
           clientFolders: multiFolderMatchesFor(a.name, folderVariantNames, ownFolder || undefined),
         })) continue;
         const seg = profile ? typeForMonth(profile, pgClientEvents, monthKey) : null;
-        if (!shouldSeedPackageMonth(a, monthKey, seg?.type ?? null, seg?.agreedHours ?? null)) continue;
+        if (!shouldSeedPackageMonth(a, monthKey, seg?.type ?? null, seg?.agreedHours ?? null, {
+          monthStatus: profile ? statusForMonth(profile, pgClientEvents, monthKey) : null,
+          currentMonthKey: adelaideMonthKey(),
+        })) continue;
         if (profile && monthInEndPeriods(endPeriodsFor(profile, pgClientEvents), monthKey)) continue;
         const seededObj = buildClientObj({ ...newFolderEntry(a.name), costCentreAccruedName: a.name, seeded: true });
         // Offboarded in Capacity Planning for this month (e.g. Adelaide Direct Stationers,
