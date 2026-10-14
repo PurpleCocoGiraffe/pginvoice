@@ -612,6 +612,7 @@ function ClientProfileDrawer({
   onStartManageCostCentres, onCancelManageCostCentres, onDraftCostCentreFolderChange, onDraftCostCentreKindChange,
   onAddCostCentre, onRemoveCostCentre,
   editingLogo, onToggleLogoEditor, onLogoSaved,
+  profileFor, onOpenProfile, parentClient, onOpenClient,
   onClose, onSaved, onEventsChanged,
 }) {
   useEscape(onClose);
@@ -646,6 +647,11 @@ function ClientProfileDrawer({
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="pg-drawer__name">{c.client}</div>
+          {parentClient && (
+            <button type="button" className="pg-row__name-sub pg-row__name-sub--toggle" style={{ marginTop: 2 }} onClick={() => onOpenClient(parentClient)}>
+              Sub-project / cost centre of {parentClient}
+            </button>
+          )}
           <div className="pg-drawer__sub" style={{ marginTop: 4 }}>
             <StatusBalloon status={c.status} />
           </div>
@@ -751,10 +757,10 @@ function ClientProfileDrawer({
         // ever got the collapse/expand toggle, not this one.
         <>
           {costCentres.length > 0 && (
-            <CostCentreSection title="Cost Centres" items={costCentres} readOnlyNote="Built into the app — ask to have this made editable" />
+            <CostCentreSection title="Cost Centres" items={costCentres} readOnlyNote="Built into the app — ask to have this made editable" profileFor={profileFor} onOpenProfile={onOpenProfile} />
           )}
           {subProjects.length > 0 && (
-            <CostCentreSection title="Sub Project" items={subProjects} readOnlyNote="Built into the app — ask to have this made editable" />
+            <CostCentreSection title="Sub Project" items={subProjects} readOnlyNote="Built into the app — ask to have this made editable" profileFor={profileFor} onOpenProfile={onOpenProfile} />
           )}
         </>
       ) : (
@@ -764,12 +770,14 @@ function ClientProfileDrawer({
             managing={managingCostCentres === "cost_centre"} draftFolder={draftCostCentreFolder} savingCostCentre={savingCostCentre}
             onStart={() => onStartManageCostCentres("cost_centre")} onCancel={onCancelManageCostCentres}
             onDraftFolderChange={onDraftCostCentreFolderChange} onAdd={onAddCostCentre} onRemove={(f) => onRemoveCostCentre(f, "cost_centre")}
+            profileFor={profileFor} onOpenProfile={onOpenProfile}
           />
           <CostCentreSection
             title="Sub Project" kind="sub_project" items={subProjects} assigned={assigned} folderList={folderList}
             managing={managingCostCentres === "sub_project"} draftFolder={draftCostCentreFolder} savingCostCentre={savingCostCentre}
             onStart={() => onStartManageCostCentres("sub_project")} onCancel={onCancelManageCostCentres}
             onDraftFolderChange={onDraftCostCentreFolderChange} onAdd={onAddCostCentre} onRemove={(f) => onRemoveCostCentre(f, "sub_project")}
+            profileFor={profileFor} onOpenProfile={onOpenProfile}
           />
         </>
       )}
@@ -902,7 +910,7 @@ const COST_CENTRE_COLLAPSE_AT = 5;
 // `readOnlyNote` set (hardcoded MULTI_FOLDER_CLIENTS rule) -> no Edit button, no
 // add/remove, just the collapsible list plus that note. Left unset (the normal,
 // pginvoice_cost_centres-backed case) -> full add/remove editing, gated behind Edit.
-function CostCentreSection({ title, kind, items, assigned, folderList, managing, draftFolder, savingCostCentre, onStart, onCancel, onDraftFolderChange, onAdd, onRemove, readOnlyNote }) {
+function CostCentreSection({ title, kind, items, assigned, folderList, managing, draftFolder, savingCostCentre, onStart, onCancel, onDraftFolderChange, onAdd, onRemove, readOnlyNote, profileFor, onOpenProfile }) {
   const [expanded, setExpanded] = useState(false);
   const datalistId = `cc-folders-${kind}`;
   const overflows = items.length > COST_CENTRE_COLLAPSE_AT;
@@ -925,6 +933,16 @@ function CostCentreSection({ title, kind, items, assigned, folderList, managing,
         {shown.map((f) => (
           <div key={f} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
             <span style={{ flex: 1, fontSize: 13, color: "var(--fg-primary)" }}>{f}</span>
+            {!managing && onOpenProfile && (
+              // Each cost centre / sub-project can carry its own client profile (registered
+              // under this folder) -- type, quoted hours, consultant and dated transitions,
+              // exactly like a parent. Client Invoicing already prefers that registration.
+              <button type="button" className="pg-btn-ghost" style={{ padding: "2px 8px", fontSize: 11 }}
+                title={profileFor?.(f) ? `Open ${profileFor(f)}'s profile` : "Create a profile for this folder"}
+                onClick={() => onOpenProfile(f)}>
+                {profileFor?.(f) ? "Edit" : "Set up profile"}
+              </button>
+            )}
             {managing && (
               <button type="button" className="pg-icon-btn-sm" style={{ padding: 0 }} title="Remove" disabled={savingCostCentre} onClick={() => onRemove(f)}>
                 <X size={10} />
@@ -1128,8 +1146,8 @@ function HistorySection({ client }) {
 // createClient Capacity Planning's add form uses. Validation lives in the pure
 // validateNewClient (clientsSync.js) so it's testable without rendering this.
 const EMPTY_NEW_CLIENT = { name: "", type: "package", hours: "", consultant: "", clickupFolder: "", startDate: "" };
-function AddClientPanel({ clients, folderList, onCreated, onCancel }) {
-  const [form, setForm] = useState(EMPTY_NEW_CLIENT);
+function AddClientPanel({ clients, folderList, onCreated, onCancel, initial = null }) {
+  const [form, setForm] = useState(() => ({ ...EMPTY_NEW_CLIENT, ...initial }));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -1233,6 +1251,9 @@ export default function Clients() {
   const [draftCostCentreKind, setDraftCostCentreKind] = useState("cost_centre");
   const [savingCostCentre, setSavingCostCentre] = useState(false);
   const [showAddClient, setShowAddClient] = useState(false);
+  // Prefill for the Add client form when it's opened from a cost centre / sub-project row
+  // ("Set up profile"); null for a plain "Add client". `key` remounts the form per prefill.
+  const [addClientInitial, setAddClientInitial] = useState(null);
   const [capPeople, setCapPeople] = useState(SEED_PEOPLE);
   // nameMatch.js's dynamic cost-centre rules are a module-level singleton (see
   // setDynamicCostCentres) fed by Shell.jsx, not React state -- costCentreInfo below reads
@@ -1255,12 +1276,13 @@ export default function Clients() {
   const costCentreInfo = useMemo(() => {
     const info = new Map();
     const subProjectOf = new Map();
+    const parentOf = new Map(); // cost centre or sub-project folder -> parent client
     // `clients` starts null until fetchClients() resolves (see the useState above) --
     // this ran unguarded against that null on first render, which is exactly what took
     // the whole page down: iterating null throws immediately inside a useMemo, with no
     // error boundary to catch it, so React unmounts everything -- the "loads then goes
     // black" symptom, on every single load, since this runs before data ever arrives.
-    if (!clients || !folderList.length) return { info, subProjectOf };
+    if (!clients || !folderList.length) return { info, subProjectOf, parentOf };
     for (const c of clients) {
       const all = multiFolderMatchesFor(c.client, folderList);
       if (!all) continue;
@@ -1281,8 +1303,9 @@ export default function Clients() {
       const subProjects = all.filter((f) => !accrual.includes(f));
       if (costCentres.length || subProjects.length) info.set(c.client, { costCentres, subProjects });
       subProjects.forEach((f) => subProjectOf.set(f, c.client));
+      [...costCentres, ...subProjects].forEach((f) => parentOf.set(f, c.client));
     }
-    return { info, subProjectOf };
+    return { info, subProjectOf, parentOf };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- costCentreVersion isn't read
     // in the body; it's here purely to force a rerun when the dynamic table changes (see
     // its declaration above).
@@ -1359,6 +1382,35 @@ export default function Clients() {
   // Any per-client editor state (folder edit, cost-centre add, logo popover) resets
   // whenever a different client's drawer opens, so switching clients never leaves a
   // stale draft or open editor pointed at the wrong client.
+  // A cost centre / sub-project folder's own registered profile, if it has one (matched by
+  // ClickUp folder, then by client name -- the same lookup Client Invoicing uses).
+  const profileByFolder = useMemo(() => {
+    const m = new Map();
+    for (const c of clients || []) {
+      if (c.clickupFolder) m.set(c.clickupFolder.trim().toLowerCase(), c.client);
+    }
+    for (const c of clients || []) {
+      const k = c.client.trim().toLowerCase();
+      if (!m.has(k)) m.set(k, c.client);
+    }
+    return m;
+  }, [clients]);
+  const profileForFolder = (folder) => profileByFolder.get(String(folder || "").trim().toLowerCase()) || null;
+
+  // Opens a cost centre / sub-project's own profile, or -- when it has none yet -- the Add
+  // client form prefilled for it (named after the folder, registered to it, the parent's
+  // consultant, Quoted as the usual sub-project arrangement), so it gets the same type,
+  // hours and dated transitions as any parent client.
+  function openFolderProfile(folder, parentName) {
+    const existing = profileForFolder(folder);
+    if (existing) { openDrawer(existing); return; }
+    const parent = (clients || []).find((c) => c.client === parentName);
+    setAddClientInitial({ name: folder, type: "quoted", consultant: parent?.consultant || "", clickupFolder: folder });
+    setShowAddClient(true);
+    setOpenClient(null);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function openDrawer(clientName) {
     setOpenClient(clientName);
     setEditingFolder(false);
@@ -1484,18 +1536,21 @@ export default function Clients() {
               {TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
             </select>
           </label>
-          <button className="pg-btn" style={{ marginLeft: "auto", gap: 6 }} onClick={() => setShowAddClient((s) => !s)}>
+          <button className="pg-btn" style={{ marginLeft: "auto", gap: 6 }} onClick={() => { setAddClientInitial(null); setShowAddClient((s) => !s); }}>
             <Plus size={12} /> Add client
           </button>
         </div>
 
         {showAddClient && (
           <AddClientPanel
+            key={addClientInitial?.clickupFolder || "new"}
+            initial={addClientInitial}
             clients={clients}
             folderList={folderList}
-            onCancel={() => setShowAddClient(false)}
+            onCancel={() => { setShowAddClient(false); setAddClientInitial(null); }}
             onCreated={async (name) => {
               setShowAddClient(false);
+              setAddClientInitial(null);
               await load();
               // Make sure the new (active) client isn't hidden by the current filters.
               setSearch(""); setStatusFilter("active"); setTypeFilter("all");
@@ -1579,6 +1634,10 @@ export default function Clients() {
           onDraftCostCentreKindChange={setDraftCostCentreKind}
           onAddCostCentre={() => addCostCentre(openC.client)}
           onRemoveCostCentre={(f, kind) => removeCostCentre(openC.client, f, kind)}
+          profileFor={profileForFolder}
+          onOpenProfile={(f) => openFolderProfile(f, openC.client)}
+          parentClient={openC.clickupFolder ? costCentreInfo.parentOf.get(openC.clickupFolder) || null : null}
+          onOpenClient={openDrawer}
           editingLogo={editingLogo}
           onToggleLogoEditor={() => setEditingLogo((o) => !o)}
           onLogoSaved={(patch) => {
