@@ -579,6 +579,25 @@ export function isBeforeStart(client, monthKey) {
   return !!(client?.startDate && monthKey && monthKey < client.startDate.slice(0, 7));
 }
 
+// A client's state for the Clients module snapshot. There's no state column: a "(Qld)" /
+// "(WA)" tag in the client name or its ClickUp folder decides it (also "(Bunbury, WA)"),
+// then the consultant -- every one of Amanda's clients is in WA and every one of Kasey's
+// in Queensland, whether or not the name carries the tag -- else SA / Other.
+const CONSULTANT_STATE = [[/^amanda\b/i, "WA"], [/^kasey\b/i, "QLD"]];
+export function clientState(client) {
+  const tagged = (s) => {
+    const inParens = [...String(s || "").matchAll(/\(([^)]*)\)/g)].map((m) => m[1].toLowerCase());
+    if (inParens.some((t) => /\bqld\b/.test(t))) return "QLD";
+    if (inParens.some((t) => /\bwa\b/.test(t))) return "WA";
+    return null;
+  };
+  const byTag = tagged(client?.client) || tagged(client?.clickupFolder);
+  if (byTag) return byTag;
+  const consultant = String(client?.consultant || "").trim();
+  for (const [re, state] of CONSULTANT_STATE) if (re.test(consultant)) return state;
+  return "SA / Other";
+}
+
 export function typeForMonth(client, events, monthKey) {
   const segments = typeTimelineFor(client, events);
   const monthStart = `${monthKey}-01`;
