@@ -702,3 +702,20 @@ describe("first month after a pre-start month carries nothing in", () => {
     expect(r.newBalance).toBe(4);
   });
 });
+
+describe("shouldSeedPackageMonth -- on hold and pre-ledger months (AusFlix)", () => {
+  const ausflix = accrued({ agreedByMonth: { "2026-09": 77, "2026-10": 77 } });
+  it("an on-hold month with no hours gets no row", () => {
+    expect(shouldSeedPackageMonth(ausflix, "2026-09", "package", 77, { monthStatus: "on_hold", currentMonthKey: "2026-10" })).toBe(false);
+    expect(shouldSeedPackageMonth(ausflix, "2026-10", "package", 77, { monthStatus: "on_hold", currentMonthKey: "2026-10" })).toBe(false);
+  });
+  it("a past month the ledger never accrued isn't seeded from the profile's package", () => {
+    expect(shouldSeedPackageMonth(ausflix, "2026-06", "package", 77, { monthStatus: "active", currentMonthKey: "2026-10" })).toBe(false);
+  });
+  it("the current month is still seeded before a recompute has written its row", () => {
+    expect(shouldSeedPackageMonth(accrued(), "2026-10", "package", 20, { monthStatus: "active", currentMonthKey: "2026-10" })).toBe(true);
+  });
+  it("an active month with a ledger row is still seeded", () => {
+    expect(shouldSeedPackageMonth(ausflix, "2026-09", "package", 77, { monthStatus: "active", currentMonthKey: "2026-10" })).toBe(true);
+  });
+});
