@@ -12,7 +12,7 @@ import { findMatch, multiFolderMatchesFor, multiFolderAccrualMatchesFor, isInter
 import { fetchClickupFromSupabase, fetchSyncMeta, triggerManualSync, LIVE_SYNC_LABEL } from "./clickupSync.js";
 import { fetchAccruedForReconciliation, ACCRUALS_LIVE_SYNC_LABEL, endPeriodsFor } from "./accrualsSync.js";
 import { SEED_CLIENTS as CAP_SEED_CLIENTS, SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
-import { fetchClients as fetchPgClients, fetchClientEvents, applyDueClientEvents, typeForMonth, statusForMonth, typeTimelineFor } from "./clientsSync.js";
+import { fetchClients as fetchPgClients, fetchClientEvents, applyDueClientEvents, typeForMonth, statusForMonth, typeTimelineFor, isBeforeStart } from "./clientsSync.js";
 import { ClientAvatar } from "./avatar.jsx";
 import { useDismissable } from "./useDismissable.js";
 import { fmt, esc, filenameSafe, timeAgo, isPackageLikeType } from "./format.js";
@@ -754,8 +754,14 @@ export default function PGReconciliation({ onNavigateClients }) {
       const isSubProject = !!c.costCentreParentAccName;
       const ownProfile = pgProfileByFolder.get(folderKey(c.name)) || pgClientByName.get(c.name) || null;
       const pgProfile = isSubProject ? ownProfile : resolveProfile(c);
-      const seg = pgProfile && monthKey ? typeForMonth(pgProfile, pgClientEvents, monthKey) : null;
-      const priorSeg = pgProfile && priorKey ? typeForMonth(pgProfile, pgClientEvents, priorKey) : null;
+      // Before the client's start date there's no package at all -- typeForMonth would
+      // otherwise report the profile's base type for every earlier month, so a client
+      // onboarded in September showed in July with a phantom package and an estimated
+      // "carry" from June. Time logged before the start month bills as hourly, and the
+      // start month itself carries nothing in (its prior month is pre-start).
+      const preStart = (k) => pgProfile && isBeforeStart(pgProfile, k) ? { type: "hourly", agreedHours: null } : null;
+      const seg = pgProfile && monthKey ? (preStart(monthKey) || typeForMonth(pgProfile, pgClientEvents, monthKey)) : null;
+      const priorSeg = pgProfile && priorKey ? (preStart(priorKey) || typeForMonth(pgProfile, pgClientEvents, priorKey)) : null;
       // This exact folder's own Capacity Planning row (not a fuzzy group match), see below.
       const capRow = capRowByClientName.get(folderKey(c.name));
       const capType = capRow ? basisToClientType(capRow.basis) : null;
@@ -921,6 +927,7 @@ export default function PGReconciliation({ onNavigateClients }) {
       for (const a of accrued.clients) {
         if (takenNames.has(folderKey(a.name))) continue;
         const profile = pgClientByName.get(a.name);
+        if (profile && isBeforeStart(profile, monthKey)) continue; // not a client yet that month
         const ownFolder = profile?.clickupFolder || null;
         if (seedBlockedBy({
           ledgerName: a.name, matchedLedgerNames, ownFolder, monthFolderKeys,

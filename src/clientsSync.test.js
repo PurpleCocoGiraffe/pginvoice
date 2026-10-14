@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { recomputeClientCurrentState, typeTimelineFor, typeForMonth, validateNewClient, newClientRow, storesAgreedHours } from "./clientsSync.js";
+import { recomputeClientCurrentState, typeTimelineFor, typeForMonth, validateNewClient, newClientRow, storesAgreedHours, isBeforeStart } from "./clientsSync.js";
 import { endPeriodsFor } from "./accrualsSync.js";
 
 const ev = (id, kind, effective_date, fields = {}) => ({ id, client: "A", kind, effective_date, applied: true, ...fields });
@@ -165,5 +165,22 @@ describe("Add client -- validateNewClient / newClientRow", () => {
     expect(newClientRow("X", { type: "digital", agreedHours: 10 })).toMatchObject({ type: "digital", agreed_hours: null, base_agreed_hours: null, clickup_folder: null });
     expect(newClientRow("X", { type: "map", agreedHours: 6 })).toMatchObject({ agreed_hours: 6, base_agreed_hours: 6 });
     expect(storesAgreedHours("digital")).toBe(false);
+  });
+});
+
+describe("isBeforeStart -- a client doesn't exist in Client Invoicing before its start month", () => {
+  const rs = { client: "Russell and Suitor Wines", startDate: "2026-09-01" };
+  it("months before the start month are pre-start; the start month and later are not", () => {
+    expect(isBeforeStart(rs, "2026-07")).toBe(true);
+    expect(isBeforeStart(rs, "2026-08")).toBe(true);
+    expect(isBeforeStart(rs, "2026-09")).toBe(false);
+    expect(isBeforeStart(rs, "2026-10")).toBe(false);
+  });
+  it("a mid-month start still counts its own month as started", () => {
+    expect(isBeforeStart({ startDate: "2026-09-15" }, "2026-09")).toBe(false);
+  });
+  it("no start date on file never hides a month", () => {
+    expect(isBeforeStart({ startDate: null }, "2020-01")).toBe(false);
+    expect(isBeforeStart(null, "2020-01")).toBe(false);
   });
 });

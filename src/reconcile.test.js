@@ -690,3 +690,15 @@ describe("fixed-fee quote (no hour budget)", () => {
     expect(html).toContain("$57.47/h");
   });
 });
+
+describe("first month after a pre-start month carries nothing in", () => {
+  it("a pre-start prior month (passed as hourly) is never estimated as a package carry", () => {
+    const a = { name: "Russell and Suitor Wines", package: 16, balances: { "2026-09": 4 }, agreedByMonth: { "2026-09": 16 } };
+    const r = reconcileClientMonth({
+      worked: 20, accruedClient: a, monthKey: "2026-09", priorKey: "2026-08",
+      priorWorkedH: 0, monthType: "package", priorType: "hourly", monthSegmentAgreed: 16,
+    });
+    expect(r.priorBalance).toBe(0);
+    expect(r.newBalance).toBe(4);
+  });
+});
