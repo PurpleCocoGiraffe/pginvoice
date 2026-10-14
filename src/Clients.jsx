@@ -3,7 +3,7 @@ import { Search, ArrowRight, Pencil, Check, AlertTriangle, Upload, X, ChevronRig
 import {
   fetchClients, fetchClientEvents, createClientEvent, deleteClientEvent, applyDueClientEvents,
   updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, updateFixedFee, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
-  addTaskPrefixCostCentre, createClient, storesAgreedHours, validateNewClient,
+  addTaskPrefixCostCentre, createClient, storesAgreedHours, validateNewClient, clientState,
   fetchClientHistory, fetchClientNotes, addClientNote, updateClientNote, deleteClientNote,
 } from "./clientsSync.js";
 import {
@@ -125,14 +125,6 @@ function hoursLabelFor(t) {
 }
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
-// Client names carry their state as a "(Qld)"/"(WA)" suffix rather than a dedicated
-// column -- this just reads that same convention back out for the snapshot breakdown.
-function stateOf(clientName) {
-  const n = (clientName || "").toLowerCase();
-  if (n.includes("(qld)")) return "QLD";
-  if (n.includes("(wa)")) return "WA";
-  return "SA / Other";
-}
 
 function arrangementLabel(c) {
   if (c.type === "hourly") return "Time-based billing";
@@ -1486,7 +1478,7 @@ export default function Clients() {
     if (!clients) return { total: 0, byState: [] };
     const active = clients.filter((c) => c.status === "active");
     const byState = new Map();
-    active.forEach((c) => { const s = stateOf(c.client); byState.set(s, (byState.get(s) || 0) + 1); });
+    active.forEach((c) => { const s = clientState(c); byState.set(s, (byState.get(s) || 0) + 1); });
     return { total: active.length, byState: [...byState.entries()].sort((a, b) => b[1] - a[1]) };
   }, [clients]);
 

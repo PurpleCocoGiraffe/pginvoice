@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { recomputeClientCurrentState, typeTimelineFor, typeForMonth, validateNewClient, newClientRow, storesAgreedHours, isBeforeStart } from "./clientsSync.js";
+import { recomputeClientCurrentState, typeTimelineFor, typeForMonth, validateNewClient, newClientRow, storesAgreedHours, isBeforeStart, clientState } from "./clientsSync.js";
 import { endPeriodsFor } from "./accrualsSync.js";
 
 const ev = (id, kind, effective_date, fields = {}) => ({ id, client: "A", kind, effective_date, applied: true, ...fields });
@@ -182,5 +182,22 @@ describe("isBeforeStart -- a client doesn't exist in Client Invoicing before its
   it("no start date on file never hides a month", () => {
     expect(isBeforeStart({ startDate: null }, "2020-01")).toBe(false);
     expect(isBeforeStart(null, "2020-01")).toBe(false);
+  });
+});
+
+describe("clientState -- Clients snapshot breakdown", () => {
+  it("reads a (Qld)/(WA) tag from the name or the ClickUp folder", () => {
+    expect(clientState({ client: "Mary Di Marco (Qld)" })).toBe("QLD");
+    expect(clientState({ client: "Filter Supplies (WA)" })).toBe("WA");
+    expect(clientState({ client: "Rent Busters (Bunbury, WA)" })).toBe("WA");
+    expect(clientState({ client: "Blueforce", clickupFolder: "Blueforce (WA)" })).toBe("WA");
+  });
+  it("every Amanda client is WA and every Kasey client is QLD, tagged or not", () => {
+    expect(clientState({ client: "Committee for Perth", consultant: "Amanda S" })).toBe("WA");
+    expect(clientState({ client: "Prison Transport Group", consultant: "Kasey Doren" })).toBe("QLD");
+  });
+  it("anything else is SA / Other", () => {
+    expect(clientState({ client: "Apex Energy", consultant: "Chloe James", clickupFolder: "Apex Energy" })).toBe("SA / Other");
+    expect(clientState({ client: "Wash Co (Adelaide)" })).toBe("SA / Other");
   });
 });
