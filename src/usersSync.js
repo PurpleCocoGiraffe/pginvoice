@@ -6,22 +6,9 @@
 // deletes a user goes through the manage-users Edge Function instead, since
 // only it holds the service-role key needed to touch auth.users.
 import { supabase } from "./supabaseClient.js";
+import { CLIENT_SCOPED_ROLES } from "./roles.js";
 
-export const ROLES = ["super_admin", "admin", "consultant", "coordinator"];
-export const ROLE_LABELS = {
-  super_admin: "Super Admin",
-  admin: "Admin",
-  consultant: "Consultant",
-  coordinator: "Coordinator",
-};
-// Roles scoped to only their assigned clients, rather than the whole client base.
-export const CLIENT_SCOPED_ROLES = new Set(["consultant", "coordinator"]);
-export const ADMIN_TIER_ROLES = new Set(["super_admin", "admin"]);
-// These two need a linked ClickUp identity -- it's how their client access
-// mostly gets derived. Admin-tier roles see everything regardless, so it's
-// optional for them.
-export const CLICKUP_REQUIRED_ROLES = new Set(["consultant", "coordinator"]);
-export const CLIENT_SOURCE_LABELS = { manual: "manual", clickup: "via ClickUp", capacity_lead: "via Capacity lead" };
+export { ROLES, ROLE_LABELS, CLIENT_SCOPED_ROLES, ADMIN_TIER_ROLES, CLICKUP_REQUIRED_ROLES, CLIENT_SOURCE_LABELS } from "./roles.js";
 
 // Called once per session (Shell.jsx) to know what nav/data this signed-in
 // user gets. Returns null if the user has no pginvoice_profiles row yet
@@ -94,10 +81,11 @@ export async function createUser({ email, password, role, clients, clickupUserNa
 }
 
 // Roster person link + module overrides for a non-admin. personId: undefined = unchanged,
-// null = unlink. modules: { module_key: scope | null } for just the modules being changed,
-// null = back to the role default. The server refuses self-edits and admin-tier targets.
-export async function setUserAccess({ userId, personId, modules }) {
-  return callManageUsers({ action: "set_access", userId, personId, modules });
+// null = unlink. moduleChanges: { module_key: scope | null } for just the modules being
+// changed (see permissions.js overrideChanges), null = back to the role default. The
+// server refuses self-edits and admin-tier targets.
+export async function setUserAccess({ userId, personId, moduleChanges }) {
+  return callManageUsers({ action: "set_access", userId, personId, moduleChanges });
 }
 
 export async function updateUserRoleAndClients({ userId, role, clients, clickupUserName }) {

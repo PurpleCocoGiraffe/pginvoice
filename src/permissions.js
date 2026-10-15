@@ -4,7 +4,7 @@
 //   { role, isAdminTier, personId, clickupUserName, modules: { key: scope }, clients: [...] }
 // Scopes: none / own / assigned / all. Admin tier is always "all" and ignores overrides.
 // Nav built from this is cosmetic -- RLS is the real gate.
-import { ADMIN_TIER_ROLES, CLIENT_SCOPED_ROLES } from "./usersSync.js";
+import { ADMIN_TIER_ROLES, CLIENT_SCOPED_ROLES } from "./roles.js";
 
 export const SCOPES = ["none", "own", "assigned", "all"];
 export const SCOPE_LABELS = { none: "Off", own: "Own", assigned: "Their clients", all: "All" };
@@ -77,8 +77,8 @@ export function reachableKeys(access) {
   return [...modules, ...secondary].map((m) => m.key);
 }
 
-// The module scope a non-admin resolves to from their role preset and own overrides,
-// mirroring pg_module_scope(): override ?? preset ?? "none". Used by Settings to show a
+// The module scope a non-admin resolves to from their role preset and own overrides.
+// Mirrors pg_module_scope() (SQL) and scopeFor in manage-users: override ?? preset ?? "none". Used by Settings to show a
 // user's effective access and whether each module is "Role default" or "Custom".
 export function resolveModuleScope({ role, overrides, presets }, moduleKey) {
   if (ADMIN_TIER_ROLES.has(role)) return { scope: "all", source: "admin" };
@@ -87,32 +87,69 @@ export function resolveModuleScope({ role, overrides, presets }, moduleKey) {
   return { scope: presets?.[role]?.[moduleKey] ?? "none", source: "preset" };
 }
 
-// The access object the pre-migration code implied from role alone. Used only while
-// pginvoice_my_access() isn't deployed yet, so the frontend can ship before the migration.
+// TEMPORARY (remove once 20261016_user_permissions is applied everywhere): the access the
+// pre-permissions code implied from role alone -- client-scoped roles got these four
+// modules. Used when pginvoice_my_access() isn't deployed, and to keep an admin in when it
+// fails. Admin tier needs no modules map: effectiveScope is "all" for them regardless.
 export const LEGACY_CLIENT_SCOPED_MODULES = ["overview", "clients", "accruals", "performance"];
 export function accessFromRole(role, clients = []) {
   const isAdminTier = ADMIN_TIER_ROLES.has(role);
   const modules = {};
-  if (isAdminTier) for (const k of LEGACY_CLIENT_SCOPED_MODULES) modules[k] = "all";
-  else if (CLIENT_SCOPED_ROLES.has(role)) for (const k of LEGACY_CLIENT_SCOPED_MODULES) modules[k] = "assigned";
+  if (!isAdminTier && CLIENT_SCOPED_ROLES.has(role)) for (const k of LEGACY_CLIENT_SCOPED_MODULES) modules[k] = "assigned";
   return { role, isAdminTier, personId: null, clickupUserName: null, modules, clients: isAdminTier ? [] : clients, legacy: true };
 }
 
-// True when an RPC error means "this function isn't deployed yet" (PostgREST's schema-cache
-// miss PGRST202, or Postgres undefined_function 42883) rather than a real failure.
+// Shell's effective access for a freshly fetched profile, given the pginvoice_my_access()
+// result ({ access } or { error }) and the previous profile state:
+// - RPC not deployed yet: derive from role, exactly the pre-permissions behaviour.
+// - Any other RPC failure: admin tier still derives from role (Lynda/Kelly must never be
+//   locked out); everyone else keeps their previous access (a refocus blip mustn't change
+//   the nav) or, on first load, null -> a reload screen. Non-admins fail closed.
+// - Success: the RPC's answer; a profile with no access row (race with a delete) gets nothing.
+export function resolveAccess(profile, result, prev) {
+  if (result.error) {
+    if (isMissingRpcError(result.error) || ADMIN_TIER_ROLES.has(profile.role)) return accessFromRole(profile.role, profile.clients);
+    return prev && prev.userId === profile.userId ? prev.access ?? null : null;
+  }
+  return result.access ?? { role: profile.role, isAdminTier: false, modules: {}, clients: [] };
+}
+
+// True when an RPC error means "this function isn't deployed yet" rather than a real
+// failure: PostgREST's schema-cache miss (PGRST202), or Postgres undefined_function
+// (42883), which is what a stale schema cache passes through when the function is gone.
 export function isMissingRpcError(error) {
   if (!error) return false;
   if (error.code === "PGRST202" || error.code === "42883") return true;
   return /could not find the function|function .* does not exist/i.test(error.message || "");
 }
 
+// { module_key: scope | null } for the modules whose override differs between two override
+// maps (null = cleared, back to the role default) -- the set_access `moduleChanges` payload.
+export function overrideChanges(before = {}, after = {}) {
+  const changes = {};
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if ((before[k] ?? null) !== (after[k] ?? null)) changes[k] = after[k] ?? null;
+  }
+  return changes;
+}
+
+// True once manage-users' `list` has returned the grantable modules. An older function
+// (deployed before the permissions migration) returns none: the UI then hides the module
+// editor and roster-person picker rather than collect input it would silently drop.
+export function hasAccessConfig(moduleScopes) {
+  return !!moduleScopes && Object.keys(moduleScopes).length > 0;
+}
+
 // One-line summary for a user row, e.g. "Overview · Clients (12 clients) · Reporting".
+// Without access config (older manage-users) it shows the role default.
 export function accessSummary({ role, overrides, presets, moduleScopes, clientCount = 0 }) {
   if (ADMIN_TIER_ROLES.has(role)) return "Full access";
+  const known = hasAccessConfig(moduleScopes);
+  const legacy = accessFromRole(role).modules;
   const parts = [];
   for (const m of NAV_MODULES) {
-    if (!moduleScopes?.[m.key]) continue;
-    const { scope } = resolveModuleScope({ role, overrides, presets }, m.key);
+    if (known ? !moduleScopes[m.key] : !legacy[m.key]) continue;
+    const scope = known ? resolveModuleScope({ role, overrides, presets }, m.key).scope : legacy[m.key];
     if (scope === "none") continue;
     if (scope === "assigned") parts.push(`${m.label} (${clientCount} client${clientCount === 1 ? "" : "s"})`);
     else if (scope === "own") parts.push(`${m.label} (own)`);

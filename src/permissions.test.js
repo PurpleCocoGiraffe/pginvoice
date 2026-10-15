@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   effectiveScope, visibleNav, bottomNavFor, settingsTabsFor, reachableKeys, resolveModuleScope,
-  accessFromRole, isMissingRpcError, accessSummary,
+  accessFromRole, isMissingRpcError, accessSummary, resolveAccess, overrideChanges, hasAccessConfig,
 } from "./permissions.js";
 
 // What Shell.jsx rendered before per-user permissions (main @ 106b899), copied verbatim
@@ -72,15 +72,10 @@ describe("nav is unchanged for existing users (pins Lynda/Kelly and today's cons
     });
   }
 
-  it("secondary nav: the same pages as before, with Users and Integrations folded into Settings tabs", () => {
-    const fold = (role) => {
-      const access = rpcAccess(role);
-      const tabs = settingsTabsFor(access).map((t) => t.key === "users" ? ["users", "Users"] : ["integrations", "Integrations"]);
-      return [...pairs(visibleNav(access).secondary), ...tabs];
-    };
-    for (const role of ["super_admin", "admin"]) {
-      expect(fold(role).sort()).toEqual(oldNav(role).secondary.sort());
-    }
+  it("secondary nav: Settings + Help; the old Users / Integrations items are now Settings tabs (approved change)", () => {
+    expect(oldNav("super_admin").secondary.map(([k]) => k)).toEqual(["settings", "integrations", "help", "users"]);
+    expect(oldNav("admin").secondary.map(([k]) => k)).toEqual(["settings", "help", "users"]);
+    expect(pairs(visibleNav(rpcAccess("super_admin")).secondary)).toEqual([["settings", "Settings"], ["help", "Help"]]);
     expect(pairs(visibleNav(rpcAccess("admin")).secondary)).toEqual([["settings", "Settings"], ["help", "Help"]]);
     expect(settingsTabsFor(rpcAccess("super_admin")).map((t) => t.key)).toEqual(["users", "integrations"]);
     expect(settingsTabsFor(rpcAccess("admin")).map((t) => t.key)).toEqual(["users"]);
@@ -129,6 +124,43 @@ describe("accessFromRole (fallback while pginvoice_my_access isn't deployed)", (
   });
 });
 
+describe("resolveAccess (Shell's access for a fetched profile)", () => {
+  const admin = { userId: "a", role: "admin", clients: [] };
+  const consultant = { userId: "c", role: "consultant", clients: ["Aus3C"] };
+  const missing = { error: { code: "PGRST202", message: "Could not find the function" } };
+  const outage = { error: new TypeError("Failed to fetch") };
+
+  it("RPC not deployed: derived from role for everyone", () => {
+    expect(resolveAccess(consultant, missing, null)).toMatchObject({ isAdminTier: false, clients: ["Aus3C"], modules: { overview: "assigned" } });
+    expect(resolveAccess(admin, missing, null)).toMatchObject({ isAdminTier: true });
+  });
+  it("any other RPC failure: an admin is never locked out", () => {
+    const a = resolveAccess(admin, outage, null);
+    expect(a.isAdminTier).toBe(true);
+    expect(pairs(visibleNav(a).modules)).toEqual(oldNav("admin").modules);
+  });
+  it("any other RPC failure: a non-admin keeps their previous access, else fails closed (null)", () => {
+    const prevAccess = rpcAccess("consultant", { overview: "assigned", clients: "none" });
+    expect(resolveAccess(consultant, outage, { userId: "c", access: prevAccess })).toBe(prevAccess);
+    expect(resolveAccess(consultant, outage, null)).toBeNull();
+    expect(resolveAccess(consultant, outage, { userId: "someone-else", access: prevAccess })).toBeNull();
+  });
+  it("success: the RPC's answer; no access row means nothing", () => {
+    const a = rpcAccess("consultant");
+    expect(resolveAccess(consultant, { access: a }, null)).toBe(a);
+    expect(visibleNav(resolveAccess(consultant, { access: null }, null)).modules).toEqual([]);
+  });
+});
+
+describe("overrideChanges -> set_access moduleChanges", () => {
+  it("only the modules that differ; cleared overrides are null", () => {
+    expect(overrideChanges({ clients: "none", performance: "none" }, { clients: "none", accruals: "none" }))
+      .toEqual({ performance: null, accruals: "none" });
+    expect(overrideChanges({}, {})).toEqual({});
+    expect(overrideChanges(undefined, { overview: "none" })).toEqual({ overview: "none" });
+  });
+});
+
 describe("isMissingRpcError", () => {
   it("recognises PostgREST's schema-cache miss and Postgres undefined_function", () => {
     expect(isMissingRpcError({ code: "PGRST202", message: "Could not find the function public.pginvoice_my_access without parameters in the schema cache" })).toBe(true);
@@ -148,6 +180,12 @@ describe("accessSummary", () => {
   it("lists granted modules in nav order with client counts", () => {
     expect(accessSummary({ role: "consultant", overrides: { performance: "none" }, presets, moduleScopes, clientCount: 12 }))
       .toBe("Overview (12 clients) · Clients (12 clients) · Client Accruals (12 clients)");
+  });
+  it("an older manage-users (no moduleScopes): the role default, never 'No modules'", () => {
+    expect(hasAccessConfig({})).toBe(false);
+    expect(hasAccessConfig(undefined)).toBe(false);
+    expect(accessSummary({ role: "consultant", overrides: {}, presets: {}, moduleScopes: {}, clientCount: 2 }))
+      .toBe("Overview (2 clients) · Clients (2 clients) · Client Accruals (2 clients) · Reporting (2 clients)");
   });
   it("admins are full access; nothing granted says so", () => {
     expect(accessSummary({ role: "admin", overrides: {}, presets, moduleScopes })).toBe("Full access");

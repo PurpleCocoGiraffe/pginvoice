@@ -19,7 +19,7 @@ import { PG_DATA_EVENT, idbClear } from "./idbStore.js";
 import { ensureCacheOwner, releaseCacheOwner } from "./cacheOwner.js";
 import { PG_COST_CENTRES_KEY, THEME_KEY, COLLAPSE_KEY } from "./storageKeys.js";
 import { fetchOwnProfile, fetchOwnAccess, ROLE_LABELS } from "./usersSync.js";
-import { visibleNav, bottomNavFor, reachableKeys, canSee, settingsTabsFor, accessFromRole, isMissingRpcError } from "./permissions.js";
+import { visibleNav, bottomNavFor, reachableKeys, canSee, settingsTabsFor, resolveAccess } from "./permissions.js";
 
 // Which nav items a user gets comes from permissions.js (driven by pginvoice_my_access());
 // this only adds the icons. Order/labels live there and are pinned by permissions.test.js.
@@ -30,18 +30,17 @@ const NAV_ICONS = {
 };
 const withIcon = (m) => ({ ...m, icon: NAV_ICONS[m.key] });
 
-// Effective access for a freshly-fetched profile. Until the 20261016_user_permissions
-// migration is applied the RPC doesn't exist, so access is derived from role exactly as
-// before; any other failure keeps this user's previous access (a refocus blip mustn't
-// change the nav) or, on first load, null -> an error screen rather than a guessed nav.
-function resolveAccess(profile, result, prev) {
-  if (result.error) {
-    if (isMissingRpcError(result.error)) return accessFromRole(profile.role, profile.clients);
-    console.warn("Couldn't load module access", result.error);
-    return prev && prev.userId === profile.userId ? prev.access ?? null : null;
-  }
-  // Profile but no access row would be a race with a delete -- show nothing rather than guess.
-  return result.access ?? { role: profile.role, isAdminTier: false, modules: {}, clients: [] };
+// Centred message + actions, for every "can't show the app" state below.
+function FullScreenNotice({ children, onReload, onSignOut }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
+      <div>
+        <p>{children}</p>
+        {onReload && <button className="pg-btn" onClick={() => window.location.reload()} style={{ marginTop: 12, marginRight: 8 }}>Reload</button>}
+        {onSignOut && <button className="pg-btn" onClick={onSignOut} style={{ marginTop: 12 }}>Sign out</button>}
+      </div>
+    </div>
+  );
 }
 
 // Real Supabase Auth — checked server-side. Every pginvoice_* table's RLS
@@ -184,6 +183,7 @@ export default function Shell() {
       ]);
       if (cancelled) return;
       if (!p) { setProfile(false); return; }
+      if (result.error) console.warn("Couldn't load module access", result.error);
       setProfile((prev) => ({ ...p, access: resolveAccess(p, result, prev) }));
     };
     reload();
@@ -213,27 +213,12 @@ export default function Shell() {
   if (session === null) return null; // brief check, avoids a login-screen flash
   if (!session) return <LoginGate onSuccess={setSession} />;
   if (cacheError) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
-        <div>
-          <p>Couldn't clear data saved in this browser by a previous account. Reload to try again.</p>
-          <button className="pg-btn" onClick={() => window.location.reload()} style={{ marginTop: 12, marginRight: 8 }}>Reload</button>
-          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
-        </div>
-      </div>
-    );
+    return <FullScreenNotice onReload onSignOut={logOut}>Couldn't clear data saved in this browser by a previous account. Reload to try again.</FullScreenNotice>;
   }
   if (!userId || cacheReadyFor !== userId) return null; // brief: previous user's cache being cleared
   if (profile === null) return null; // brief check, avoids a nav flash of the wrong scope
   if (!profile) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
-        <div>
-          <p>Your account isn't set up with access yet. Ask an Admin to add you in Settings → Users &amp; permissions.</p>
-          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
-        </div>
-      </div>
-    );
+    return <FullScreenNotice onSignOut={logOut}>Your account isn't set up with access yet. Ask an Admin to add you in Settings → Users &amp; permissions.</FullScreenNotice>;
   }
   if (profile.mustChangePassword) {
     return <ForcePasswordChange userId={profile.userId} onDone={() => setProfile((p) => ({ ...p, mustChangePassword: false }))} />;
@@ -241,15 +226,7 @@ export default function Shell() {
 
   const access = profile.access;
   if (!access) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
-        <div>
-          <p>Couldn't load what your account can access. Check your connection and reload.</p>
-          <button className="pg-btn" onClick={() => window.location.reload()} style={{ marginTop: 12, marginRight: 8 }}>Reload</button>
-          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
-        </div>
-      </div>
-    );
+    return <FullScreenNotice onReload onSignOut={logOut}>Couldn't load what your account can access. Check your connection and reload.</FullScreenNotice>;
   }
   const nav = visibleNav(access);
   const visibleModules = nav.modules.map(withIcon);
@@ -258,14 +235,7 @@ export default function Shell() {
   const settingsTabs = settingsTabsFor(access);
   const reachable = reachableKeys(access);
   if (!reachable.length) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
-        <div>
-          <p>No modules have been turned on for your account yet. Ask an Admin to grant access in Settings → Users &amp; permissions.</p>
-          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
-        </div>
-      </div>
-    );
+    return <FullScreenNotice onSignOut={logOut}>No modules have been turned on for your account yet. Ask an Admin to grant access in Settings → Users &amp; permissions.</FullScreenNotice>;
   }
   // Redirect guard: access can shrink while a tab is open (refetched on focus).
   if (!reachable.includes(active)) { setActive(reachable[0]); return null; }

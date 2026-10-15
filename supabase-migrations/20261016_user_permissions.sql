@@ -1,7 +1,13 @@
 -- Per-user module permissions (plan phase 1, task 3). Safe to re-run: every statement is
 -- IF NOT EXISTS / ON CONFLICT DO NOTHING / CREATE OR REPLACE / DROP ... IF EXISTS first.
--- NOT yet applied to project fzvlnzlecchsubkpsmew -- apply this before deploying the
--- manage-users version that reads person_id / the new tables (its `list` selects them).
+-- NOT yet applied to project fzvlnzlecchsubkpsmew.
+--
+-- DEPLOY ORDER: (1) this migration, (2) the manage-users Edge Function, (3) the frontend.
+-- Each step tolerates the previous one being missing: the frontend falls back to role-
+-- derived access while pginvoice_my_access() is absent and hides the access editors while
+-- manage-users doesn't return module scopes; manage-users `list` degrades without the new
+-- column/tables. But only this order never offers an edit the next layer can't store.
+--
 -- Validated locally against stub auth/profiles tables by supabase-tests/user_permissions_check.sql.
 --
 -- Model: a non-admin's scope for a module is their per-user override, else their role's
@@ -15,6 +21,10 @@
 --
 -- Nav built from this is still cosmetic; RLS stays the real gate. Writes to the new tables
 -- happen only through the manage-users Edge Function (service role); browsers only read.
+--
+-- Also closes a pre-existing hole: the live profiles_insert/update/delete_admin policies let
+-- an admin JWT write pginvoice_profiles straight through PostgREST (e.g. set role =
+-- 'super_admin', or person_id), bypassing manage-users' guards. See the last section.
 
 -- ---------------------------------------------------------------------------
 -- Link an account to its roster/wage person (cap_people[].id == pginvoice_wage_people.person_id).
@@ -101,7 +111,7 @@ create policy select_own_or_admin on public.pginvoice_user_module_access for sel
 -- The caller's effective scope for one module: admin tier 'all'; else override ?? preset ?? 'none'.
 create or replace function public.pg_module_scope(p_module text)
 returns text
-language sql stable security definer set search_path = public as $fn$
+language sql stable security definer set search_path = public, pg_temp as $fn$
   select case
     when pg_is_admin_tier() then 'all'
     else coalesce(
@@ -121,7 +131,7 @@ $fn$;
 -- Returns null when the caller has no pginvoice_profiles row (no access).
 create or replace function public.pginvoice_my_access()
 returns jsonb
-language sql stable security definer set search_path = public as $fn$
+language sql stable security definer set search_path = public, pg_temp as $fn$
   select jsonb_build_object(
     'role', p.role,
     'isAdminTier', pg_is_admin_tier(),
@@ -144,3 +154,39 @@ revoke all on function public.pg_module_scope(text) from public, anon;
 revoke all on function public.pginvoice_my_access() from public, anon;
 grant execute on function public.pg_module_scope(text) to authenticated, service_role;
 grant execute on function public.pginvoice_my_access() to authenticated, service_role;
+
+-- ---------------------------------------------------------------------------
+-- pginvoice_profiles writes: service role only, except one self-service column.
+-- The only browser write is ForcePasswordChange -> clearMustChangePassword (src/usersSync.js),
+-- which sets the caller's OWN must_change_password to false. So instead of the live admin
+-- insert/update/delete policies: no browser insert/delete at all, and an update policy for
+-- your own row whose trigger allows nothing but must_change_password true -> false.
+-- (Under the old update policy only admins matched, so a consultant's clear silently updated
+-- 0 rows and they were asked to change their password again on every sign-in.)
+-- ---------------------------------------------------------------------------
+drop policy if exists profiles_insert_admin on public.pginvoice_profiles;
+drop policy if exists profiles_update_admin on public.pginvoice_profiles;
+drop policy if exists profiles_delete_admin on public.pginvoice_profiles;
+drop policy if exists profiles_update_own_password_flag on public.pginvoice_profiles;
+create policy profiles_update_own_password_flag on public.pginvoice_profiles for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- SECURITY INVOKER on purpose: current_user is then the PostgREST request role. Only the
+-- browser roles are restricted; service_role (manage-users) and postgres are unaffected.
+create or replace function public.pginvoice_profiles_browser_write_guard()
+returns trigger
+language plpgsql set search_path = public, pg_temp as $fn$
+begin
+  if current_user in ('authenticated', 'anon') then
+    if (to_jsonb(new) - 'must_change_password' - 'updated_at') is distinct from (to_jsonb(old) - 'must_change_password' - 'updated_at')
+       or (new.must_change_password and not old.must_change_password) then
+      raise exception 'pginvoice_profiles can only be changed through manage-users (you may only clear your own must_change_password)'
+        using errcode = '42501';
+    end if;
+  end if;
+  return new;
+end;
+$fn$;
+drop trigger if exists pginvoice_profiles_browser_write_guard on public.pginvoice_profiles;
+create trigger pginvoice_profiles_browser_write_guard before update on public.pginvoice_profiles
+  for each row execute function public.pginvoice_profiles_browser_write_guard();

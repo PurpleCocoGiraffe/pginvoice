@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Settings as SettingsIcon, Users as UsersIcon, Plug } from "lucide-react";
-import { TabBar, tabPanelProps } from "./WageCard.jsx";
+import { TabBar, tabPanelProps } from "./TabBar.jsx";
 import UsersPanel from "./Users.jsx";
 import Integrations from "./Integrations.jsx";
 

@@ -4,7 +4,9 @@
 -- auth.uid(), pginvoice_profiles / pginvoice_clients / pginvoice_user_clients tables and the
 -- live pg_* helpers (copied from 00000000_live_rls_record.sql), applies the migration twice
 -- (idempotency), then checks pginvoice_my_access() / pg_module_scope() / RLS for an admin,
--- a consultant with no overrides and a consultant with an override. Everything runs in one
+-- a consultant with no overrides and a consultant with an override, plus the
+-- pginvoice_profiles write lockdown (browser may only clear its own must_change_password).
+-- Everything runs in one
 -- transaction that is rolled back, so the scratch database is left empty again.
 --
 -- Run from the repo root against an empty Postgres 15+ database, e.g.
@@ -66,12 +68,18 @@ create policy profiles_select_own_or_admin on public.pginvoice_profiles for sele
   using (user_id = auth.uid() or pg_is_admin_tier());
 create policy user_clients_select_own_or_admin on public.pginvoice_user_clients for select to authenticated
   using (user_id = auth.uid() or pg_is_admin_tier());
+-- The live admin write policies the migration drops.
+create policy profiles_delete_admin on public.pginvoice_profiles for delete to authenticated using (pg_is_admin_tier());
+create policy profiles_insert_admin on public.pginvoice_profiles for insert to authenticated with check (pg_is_admin_tier());
+create policy profiles_update_admin on public.pginvoice_profiles for update to authenticated
+  using (pg_is_admin_tier()) with check (pg_is_admin_tier());
 
 -- ---- fixtures ---------------------------------------------------------------------------
 -- a1 admin (Kelly), c1 consultant no overrides, c2 consultant with overrides, k1 coordinator.
+insert into public.pginvoice_profiles (user_id, email, role, clickup_user_name, must_change_password) values
+  ('00000000-0000-0000-0000-0000000000a1', 'kelly@example.test', 'admin', null, false),
+  ('00000000-0000-0000-0000-0000000000c1', 'holly@example.test', 'consultant', 'Holly Fraser', true);
 insert into public.pginvoice_profiles (user_id, email, role, clickup_user_name) values
-  ('00000000-0000-0000-0000-0000000000a1', 'kelly@example.test', 'admin', null),
-  ('00000000-0000-0000-0000-0000000000c1', 'holly@example.test', 'consultant', 'Holly Fraser'),
   ('00000000-0000-0000-0000-0000000000c2', 'chloe@example.test', 'consultant', 'Chloe Smith'),
   ('00000000-0000-0000-0000-0000000000d1', 'coord@example.test', 'coordinator', 'Coord One');
 insert into public.pginvoice_clients values ('Aus3C'), ('Majestic Plumbing'), ('Warrina Homes');
@@ -89,7 +97,14 @@ do $$
 begin
   if (select count(*) from pginvoice_module_scopes) <> 8 then raise exception 'module_scopes: expected 8 rows after two runs'; end if;
   if (select count(*) from pginvoice_role_presets) <> 8 then raise exception 'role_presets: expected 8 rows after two runs'; end if;
-  raise notice 'ok: migration applied twice, seeds not duplicated';
+  if exists (select 1 from pg_proc where proname in ('pg_module_scope', 'pginvoice_my_access', 'pginvoice_profiles_browser_write_guard')
+             and not ('search_path=public, pg_temp' = any(proconfig))) then
+    raise exception 'new functions must set search_path = public, pg_temp';
+  end if;
+  if exists (select 1 from pg_policies where tablename = 'pginvoice_profiles' and policyname in ('profiles_insert_admin', 'profiles_update_admin', 'profiles_delete_admin')) then
+    raise exception 'admin write policies on pginvoice_profiles should be dropped';
+  end if;
+  raise notice 'ok: migration applied twice, seeds not duplicated, search_path pinned, admin profile write policies gone';
 end $$;
 
 -- What the manage-users set_access action writes (as service role): c2 loses Clients and
@@ -190,6 +205,65 @@ begin
   if pginvoice_my_access() is not null then raise exception 'no profile should return null'; end if;
   if pg_module_scope('overview') <> 'none' then raise exception 'no profile should be none'; end if;
   raise notice 'ok: no profile -> null access';
+end $$;
+
+-- ---- pginvoice_profiles writes from the browser ------------------------------------------
+\echo '--- profiles write lockdown ---'
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a1', true);
+do $$
+declare n int;
+begin
+  -- Admin JWT escalating someone else through PostgREST: no policy matches -> 0 rows.
+  update pginvoice_profiles set role = 'super_admin' where user_id = '00000000-0000-0000-0000-0000000000c1';
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'admin JWT changed another user''s role directly'; end if;
+  begin
+    update pginvoice_profiles set role = 'super_admin' where user_id = '00000000-0000-0000-0000-0000000000a1';
+    raise exception 'admin JWT changed its own role directly';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into pginvoice_profiles (user_id, email, role) values ('00000000-0000-0000-0000-0000000000e1', 'x@example.test', 'super_admin');
+    raise exception 'admin JWT inserted a profile directly';
+  exception when insufficient_privilege then null;
+  end;
+  delete from pginvoice_profiles where user_id = '00000000-0000-0000-0000-0000000000d1';
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'admin JWT deleted a profile directly'; end if;
+  raise notice 'ok: admin JWT cannot insert, delete, or change role on pginvoice_profiles';
+end $$;
+
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000c1', true);
+do $$
+declare n int;
+begin
+  -- What ForcePasswordChange does (clearMustChangePassword): allowed, for a consultant too.
+  update pginvoice_profiles set must_change_password = false where user_id = '00000000-0000-0000-0000-0000000000c1';
+  get diagnostics n = row_count;
+  if n <> 1 then raise exception 'consultant could not clear own must_change_password'; end if;
+  begin
+    update pginvoice_profiles set must_change_password = true where user_id = '00000000-0000-0000-0000-0000000000c1';
+    raise exception 'setting must_change_password back to true should be refused';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update pginvoice_profiles set person_id = 'p1' where user_id = '00000000-0000-0000-0000-0000000000c1';
+    raise exception 'consultant linked their own person_id directly';
+  exception when insufficient_privilege then null;
+  end;
+  update pginvoice_profiles set must_change_password = false where user_id = '00000000-0000-0000-0000-0000000000c2';
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'consultant updated another user''s row'; end if;
+  raise notice 'ok: a user may only clear their own must_change_password';
+end $$;
+
+reset role;
+set local role service_role;
+do $$
+begin
+  update pginvoice_profiles set role = 'coordinator', person_id = 'p9' where user_id = '00000000-0000-0000-0000-0000000000d1';
+  if not found then raise exception 'service role (manage-users) should still write profiles'; end if;
+  raise notice 'ok: service role writes profiles';
 end $$;
 
 reset role;
