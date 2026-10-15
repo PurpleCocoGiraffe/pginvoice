@@ -24,7 +24,7 @@ import {
   parseAccruedWorkbook, findHeader, SKIP_FOLDERS, parseStartTextMonth, dateKeyStr, parseClickupCsv,
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
-import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY } from "./storageKeys.js";
+import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY } from "./storageKeys.js";
 import { filterClientList, computePrimaryNameByGroup, searchMatchesInOtherTypes, hasWorkedHours } from "./clientListFilter.js";
 import {
   folderKey, buildFolderCanonicalizer, newFolderEntry, aggregateMonthRows, billableMinutesByFolder,
@@ -69,10 +69,6 @@ const TYPE_LABELS = {
 
 // isPackageLikeType now lives in ./format.js, shared with the print template.
 // TYPE_LABELS_SHORT now lives in ./nameMatch.js, shared with ClientRow.jsx/ClientDrawer.jsx.
-
-// ------------------------------- storage keys --------------------------------
-const NAMEMAP_KEY = "pg-name-map-v1";
-const VIEWSTATE_KEY = "pg-view-state-v1";
 
 // computePrimaryNameByGroup (one "primary" row per Capacity Planning group, the rest nested
 // under it) lives in clientListFilter.js next to the filter that depends on it.
@@ -350,6 +346,9 @@ export default function PGReconciliation({ onNavigateClients }) {
     if (accrued === justHydratedAccruedRef.current) { justHydratedAccruedRef.current = undefined; return; }
     idbSet(ACCRUED_DB_KEY, accrued);
   }, [accrued, hydrated]);
+  // Drop pending debounced saves on unmount: Shell unmounts every module before wiping a
+  // previous user's cache (cacheOwner.js), and a late write would put their data back.
+  useEffect(() => () => { clearTimeout(viewSaveTimer.current); clearTimeout(saveTimer.current); }, []);
   useEffect(() => {
     if (!hydrated) return;
     if (viewSaveTimer.current) clearTimeout(viewSaveTimer.current);

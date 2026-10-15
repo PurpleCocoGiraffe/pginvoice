@@ -8,11 +8,9 @@ import { findMatch, multiFolderMatchesFor, folderVariants, isInternalFolder, bas
 import { SEED_CLIENTS, SEED_PEOPLE, FIXED_BASES, loadKey, agreedAt } from "./capacityData.js";
 import { useDismissable } from "./useDismissable.js";
 import { SearchBox } from "./SearchBox.jsx";
-import { CLICKUP_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
+import { CLICKUP_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PERF_NOTES_KEY } from "./storageKeys.js";
 import { LineChart } from "./LineChart.jsx";
 import { teamMonthlyTotals } from "./overviewData.js";
-
-const NOTES_KEY = "perf_notes_v1";
 
 function monthLabelShort(key) {
   const [y, m] = key.split("-").map(Number);
@@ -119,7 +117,7 @@ function PerformanceInner() {
       // never part of the Capacity Planning data now backed by Supabase — read it the
       // same way it's written, not via the shared (Supabase-backed) loadKey.
       let localNotes = [];
-      try { const raw = window.localStorage.getItem(NOTES_KEY); localNotes = raw ? JSON.parse(raw) : []; } catch (e) { /* ignore */ }
+      try { const raw = window.localStorage.getItem(PERF_NOTES_KEY); localNotes = raw ? JSON.parse(raw) : []; } catch (e) { /* ignore */ }
       setNotes(localNotes);
       setLoaded(true);
     };
@@ -133,7 +131,7 @@ function PerformanceInner() {
     if (!noteDraft.trim()) return;
     setNotes((ns) => {
       const next = [{ id: uid("n"), text: noteDraft.trim(), ts: Date.now() }, ...ns];
-      try { window.localStorage.setItem(NOTES_KEY, JSON.stringify(next)); } catch (e) {}
+      try { window.localStorage.setItem(PERF_NOTES_KEY, JSON.stringify(next)); } catch (e) {}
       return next;
     });
     setNoteDraft("");
@@ -142,7 +140,7 @@ function PerformanceInner() {
     if (!window.confirm("Delete this note? This cannot be undone.")) return;
     setNotes((ns) => {
       const next = ns.filter((n) => n.id !== id);
-      try { window.localStorage.setItem(NOTES_KEY, JSON.stringify(next)); } catch (e) {}
+      try { window.localStorage.setItem(PERF_NOTES_KEY, JSON.stringify(next)); } catch (e) {}
       return next;
     });
   };

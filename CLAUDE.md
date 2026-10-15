@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - `npm test` — run the vitest suite once (`npm run test:coverage` for coverage)
 
-Tests: a handful of vitest `*.test.js` files (`nameMatch.test.js`, `accrualsSync.test.js`, `capacityData.test.js`, `overviewData.test.js`, `DateRangePicker.test.js`, `parsers.test.js`, `clientListFilter.test.js`, `reconcile.test.js`, `clientsSync.test.js`, `syncQueries.test.js`, `clickupSyncEdge.test.js`, `invoiceSplit.test.js`, `publicHolidays.test.js`, `wagesCalc.test.js`, `wagesView.test.js`, `leaveSync.test.js`, `timesheetCopy.test.js`; `capacityData.test.js` also covers `dateMath.js`). Client Invoicing's per-client month math lives in the pure `src/reconcile.js` (tested) rather than inline in App.jsx. Playwright is a devDependency with no `.spec` files checked in; if you add any, wire up an `npm` script for them.
+Tests: a handful of vitest `*.test.js` files (`nameMatch.test.js`, `accrualsSync.test.js`, `capacityData.test.js`, `overviewData.test.js`, `DateRangePicker.test.js`, `parsers.test.js`, `clientListFilter.test.js`, `reconcile.test.js`, `clientsSync.test.js`, `syncQueries.test.js`, `clickupSyncEdge.test.js`, `invoiceSplit.test.js`, `publicHolidays.test.js`, `wagesCalc.test.js`, `wagesView.test.js`, `leaveSync.test.js`, `timesheetCopy.test.js`, `cacheOwner.test.js`; `capacityData.test.js` also covers `dateMath.js`). Client Invoicing's per-client month math lives in the pure `src/reconcile.js` (tested) rather than inline in App.jsx. Playwright is a devDependency with no `.spec` files checked in; if you add any, wire up an `npm` script for them.
 
 This test suite is small and pointed: it exists almost entirely to pin previously-shipped **silent bugs** as permanent regressions (wrong active-client counts, sign-cancellation in accrual health, UTC date off-by-one, several stale-scalar bugs — see below), not for general coverage. Treat the files/behaviors they cover as fragile and re-check them after touching adjacent logic.
 
@@ -93,6 +93,8 @@ Schema in `supabase-migrations/20261012_wages_review.sql`. Every table is RLS **
 
 ### Supabase access pattern
 
+The live RLS policies and `pg_*` helpers (`pg_is_admin_tier`, `pg_has_client_access`) are recorded, not runnable, in `supabase-migrations/00000000_live_rls_record.sql` (the original RBAC migration was never checked in); re-export with `supabase-tests/export_live_rls.sql` before writing new policies.
+
 `src/supabaseClient.js` uses the anon/publishable key only, which grants nothing on its own — every `pginvoice_*` table's RLS requires the `authenticated` role, not `anon`; real access comes from the signed-in session's JWT that `supabase-js` attaches automatically. All writes beyond what RLS allows a normal authenticated user go through an Edge Function using its own service-role key, which never reaches the client:
 
 - `clickup-sync` — the scheduled ClickUp pull (see above).
@@ -103,6 +105,7 @@ Schema in `supabase-migrations/20261012_wages_review.sql`. Every table is RLS **
 
 - `src/idbStore.js` — IndexedDB key-value store, used only for the two large datasets (parsed ClickUp export can be several MB / 18k+ rows) that would risk hitting localStorage's ~5-10MB quota. Writing a value dispatches a `pg-idb-updated` window event so other mounted modules can react live to data another module just saved, instead of only picking it up on their own next mount.
 - Everything else (filters, name-match overrides, theme) uses `localStorage` directly.
+- Cache isolation (`src/cacheOwner.js`): Shell.jsx records the cache's owner user id (`CACHE_OWNER_KEY`) and, before any module mounts, wipes the IndexedDB store and every `USER_DATA_LOCAL_KEYS` entry when a different (or unrecorded) user signs in, and on explicit sign-out; a failed wipe shows a reload screen rather than mounting over the previous user's data; the same user keeps their cache, and theme/sidebar prefs and supabase-js's `sb-*` auth keys are never touched -- add any new data-bearing localStorage key to `USER_DATA_LOCAL_KEYS`.
 - `src/storageKeys.js` centralizes every localStorage/IndexedDB/cross-module-event key as a named constant specifically so a writer and reader can't silently mismatch on a raw string literal.
 
 ### Utility layers
