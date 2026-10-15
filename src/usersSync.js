@@ -46,6 +46,17 @@ export async function fetchOwnProfile() {
   return { userId: data.user_id, role: data.role, mustChangePassword: !!data.must_change_password, clients };
 }
 
+// The signed-in user's effective module access, from pginvoice_my_access() (one RPC,
+// computed server-side: admin tier "all", else override ?? role preset ?? "none"). Returns
+// null when they have no profile. Throws the raw PostgREST error on failure -- Shell.jsx
+// checks it with permissions.js's isMissingRpcError to fall back to role-derived access
+// while the 20261016_user_permissions migration isn't applied yet.
+export async function fetchOwnAccess() {
+  const { data, error } = await supabase.rpc("pginvoice_my_access");
+  if (error) throw error;
+  return data ?? null;
+}
+
 // After a successful password change, clear the flag so LoginGate/Shell.jsx
 // stop showing the forced-change screen on future logins.
 export async function clearMustChangePassword(userId) {
@@ -71,13 +82,22 @@ async function callManageUsers(payload) {
   return data;
 }
 
+// { users, presets: { role: { module: scope } }, moduleScopes: { module: [scopes] } } --
+// moduleScopes lists only the modules a non-admin can be granted.
 export async function fetchUsers() {
   const body = await callManageUsers({ action: "list" });
-  return body.users || [];
+  return { users: body.users || [], presets: body.presets || {}, moduleScopes: body.moduleScopes || {} };
 }
 
-export async function createUser({ email, password, role, clients, clickupUserName }) {
-  return callManageUsers({ action: "create", email, password, role, clients, clickupUserName });
+export async function createUser({ email, password, role, clients, clickupUserName, personId, moduleOverrides }) {
+  return callManageUsers({ action: "create", email, password, role, clients, clickupUserName, personId, moduleOverrides });
+}
+
+// Roster person link + module overrides for a non-admin. personId: undefined = unchanged,
+// null = unlink. modules: { module_key: scope | null } for just the modules being changed,
+// null = back to the role default. The server refuses self-edits and admin-tier targets.
+export async function setUserAccess({ userId, personId, modules }) {
+  return callManageUsers({ action: "set_access", userId, personId, modules });
 }
 
 export async function updateUserRoleAndClients({ userId, role, clients, clickupUserName }) {

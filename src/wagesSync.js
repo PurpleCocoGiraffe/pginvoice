@@ -36,6 +36,11 @@ async function rows(query) {
   return data || [];
 }
 
+// Wage setup per roster person, for Settings' "Wage setup found" check on a user's linked person.
+export async function fetchWagePeople() {
+  return rows(supabase.from("pginvoice_wage_people").select("person_id, include, xero_name").order("person_id"));
+}
+
 // The RPC is a set-returning function, so the 1000-row cap applies to it too. Ordered
 // by every group-by column (unique per row) so pages never skip/duplicate.
 export async function fetchClickupMonthSummary(monthKey) {
