@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Search, ChevronLeft, ChevronRight, Download } from "lucide-react";
+import { Search, ChevronLeft, ChevronRight, Download, Copy, Check } from "lucide-react";
 import { idbGet, PG_DATA_EVENT } from "./idbStore.js";
 import { findPersonMatch } from "./nameMatch.js";
 import { SEED_PEOPLE, loadKey } from "./capacityData.js";
 import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
 import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { SearchBox } from "./SearchBox.jsx";
+import { buildXeroTimesheetText, copyText } from "./timesheetCopy.js";
 import { CLICKUP_DB_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -167,6 +168,8 @@ function TimesheetInner() {
   const [selectedConsultant, setSelectedConsultant] = useState(null);
   const [monthKeyState, setMonthKeyState] = useState("");
   const [weekIdx, setWeekIdx] = useState(0);
+  // Feedback for the Copy-for-Xero button: null, { ok: true, days } or { ok: false, msg }.
+  const [copyState, setCopyState] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -270,6 +273,16 @@ function TimesheetInner() {
     return total;
   }, [weeks, personDaily]);
 
+  async function copyForXero() {
+    const text = buildXeroTimesheetText(monthKeyState, personDaily);
+    if (!text) { setCopyState({ ok: false, msg: "No time logged this month" }); }
+    else {
+      const ok = await copyText(text);
+      setCopyState(ok ? { ok: true, days: text.split("\n").length } : { ok: false, msg: "Couldn't copy, the browser blocked the clipboard" });
+    }
+    setTimeout(() => setCopyState(null), 2500);
+  }
+
   const monthIdx = availableMonths.indexOf(monthKeyState);
   const shiftMonth = (dir) => { const ni = monthIdx + dir; if (ni >= 0 && ni < availableMonths.length) setMonthKeyState(availableMonths[ni]); };
   const shiftWeek = (dir) => { const ni = weekIdx + dir; if (ni >= 0 && ni < weeks.length) setWeekIdx(ni); };
@@ -309,8 +322,17 @@ function TimesheetInner() {
           </div>
         </label>
         <button
+          className="pg-btn-ghost"
+          style={{ marginLeft: "auto", gap: 6 }}
+          disabled={!selectedConsultant || !monthKeyState}
+          onClick={copyForXero}
+          title="Copies every day with time this month, one per line (e.g. 20 Oct-6.53), for the Xero extension"
+        >
+          {copyState?.ok ? <Check size={14} /> : <Copy size={14} />}
+          {copyState ? (copyState.ok ? `Copied ${copyState.days} day${copyState.days === 1 ? "" : "s"}` : copyState.msg) : "Copy for Xero"}
+        </button>
+        <button
           className="pg-btn"
-          style={{ marginLeft: "auto" }}
           disabled={!selectedConsultant || !monthKeyState}
           onClick={() => printTimesheetPdf(selectedConsultant, monthKeyState, weeks, personDaily, monthlyTotal)}
         >
