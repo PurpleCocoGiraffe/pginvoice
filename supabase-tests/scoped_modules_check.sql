@@ -6,13 +6,14 @@
 -- twice (idempotency), then checks as an admin, consultants and a coordinator:
 --   - presets / grantable scopes, admin still 'all' everywhere;
 --   - a consultant can no longer write pginvoice_accruals (admin still can);
---   - pginvoice_client_directory(): refuses a caller with Invoicing and Overview off; for a
+--   - pginvoice_client_directory(): refuses a caller with Invoicing off (Overview alone isn't
+--     enough -- least privilege); for a
 --     consultant returns every client / applied event / cost centre / ledger row, with
 --     fees, notes, agreed hours and balances withheld for unassigned clients; admin gets
 --     exactly the tables;
 --   - pginvoice_my_wage_months() / _line(): closed months only, own person only, comments
 --     and the Xero name map stripped; refuses no linked person, wages off, and admins;
---   - pginvoice_my_access().clickupUserNames.
+--   - pginvoice_my_access().clickupUserNames (via pg_my_clickup_user_names + its index).
 -- Everything runs in one transaction that is rolled back.
 --
 -- Run from the repo root against an empty Postgres 15+ database, e.g.
@@ -118,7 +119,7 @@ create policy admin_tier_all on public.pginvoice_wage_months for all to authenti
 
 -- ---- fixtures ---------------------------------------------------------------------------
 -- a1 admin (Kelly); c1 consultant, no person; c2 consultant linked to p3; c3 consultant with
--- Invoicing + Overview + Wages off; k1 coordinator linked to p4.
+-- Invoicing + Wages off (Overview left on its "assigned" preset); k1 coordinator linked to p4.
 insert into public.pginvoice_profiles (user_id, email, role, clickup_user_name) values
   ('00000000-0000-0000-0000-0000000000a1', 'kelly@example.test', 'admin', null),
   ('00000000-0000-0000-0000-0000000000c1', 'holly@example.test', 'consultant', 'Holly Fraser'),
@@ -187,14 +188,17 @@ do $$
 begin
   if (select count(*) from pginvoice_module_scopes) <> 14 then raise exception 'module_scopes: expected 14 rows, got %', (select count(*) from pginvoice_module_scopes); end if;
   if (select count(*) from pginvoice_role_presets) <> 14 then raise exception 'role_presets: expected 14 rows, got %', (select count(*) from pginvoice_role_presets); end if;
-  if exists (select 1 from pg_proc where proname in ('pginvoice_client_directory', 'pginvoice_my_wage_person', 'pginvoice_my_wage_months', 'pginvoice_my_wage_line', 'pginvoice_my_access')
-             and not ('search_path=public, pg_temp' = any (proconfig))) then
+  if (select count(*) from pg_proc where proname in ('pginvoice_client_directory', 'pginvoice_my_wage_person', 'pginvoice_my_wage_months', 'pginvoice_my_wage_line', 'pginvoice_my_access', 'pg_my_clickup_user_names')
+             and 'search_path=public, pg_temp' = any (proconfig)) <> 6 then
     raise exception 'new functions must set search_path = public, pg_temp';
   end if;
-  if exists (select 1 from pg_proc where proname in ('pginvoice_client_directory', 'pginvoice_my_wage_months', 'pginvoice_my_wage_line') and not prosecdef) then
+  if exists (select 1 from pg_proc where proname in ('pginvoice_client_directory', 'pginvoice_my_wage_months', 'pginvoice_my_wage_line', 'pg_my_clickup_user_names') and not prosecdef) then
     raise exception 'new RPCs must be SECURITY DEFINER';
   end if;
-  raise notice 'ok: migrations applied (phase 2 twice), 14 scopes, 14 presets, search_path pinned, security definer';
+  if not exists (select 1 from pg_indexes where indexname = 'pginvoice_clickup_entries_user_name_norm_idx') then
+    raise exception 'missing the normalised user_name index on pginvoice_clickup_entries';
+  end if;
+  raise notice 'ok: migrations applied (phase 2 twice), 14 scopes, 14 presets, search_path pinned, security definer, user_name index';
 end $$;
 
 -- Overrides as manage-users set_access would write them (service role).
@@ -202,7 +206,6 @@ update public.pginvoice_profiles set person_id = 'p3' where user_id = '00000000-
 update public.pginvoice_profiles set person_id = 'p4' where user_id = '00000000-0000-0000-0000-0000000000d1';
 insert into public.pginvoice_user_module_access (user_id, module_key, scope) values
   ('00000000-0000-0000-0000-0000000000c3', 'invoicing', 'none'),
-  ('00000000-0000-0000-0000-0000000000c3', 'overview', 'none'),
   ('00000000-0000-0000-0000-0000000000c3', 'wages', 'none');
 
 set local role authenticated;
@@ -374,14 +377,14 @@ begin
   raise notice 'ok: coordinator = consultant defaults, gets its own line';
 end $$;
 
--- ---- c3: Invoicing, Overview and Wages turned off ----------------------------------------
+-- ---- c3: Invoicing and Wages turned off, Overview still on -------------------------------
 \echo '--- consultant with modules off (c3) ---'
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000c3', true);
 do $$
 begin
   begin
     perform pginvoice_client_directory();
-    raise exception 'c3 (invoicing + overview none) got the directory';
+    raise exception 'c3 (invoicing none, overview assigned) got the directory';
   exception when insufficient_privilege then null;
   end;
   begin
@@ -389,7 +392,8 @@ begin
     raise exception 'c3 (wages none) got a wage line';
   exception when insufficient_privilege then null;
   end;
-  raise notice 'ok: directory refuses a caller with Invoicing and Overview off; wages refuses wages off';
+  if pginvoice_my_access()->'modules'->>'overview' <> 'assigned' then raise exception 'c3: overview should still be on'; end if;
+  raise notice 'ok: directory refuses a caller with Invoicing off even with Overview on; wages refuses wages off';
 end $$;
 
 reset role;
@@ -399,6 +403,7 @@ begin
   begin perform pginvoice_client_directory(); raise exception 'anon ran the directory'; exception when insufficient_privilege then null; end;
   begin perform pginvoice_my_wage_months(); raise exception 'anon ran my_wage_months'; exception when insufficient_privilege then null; end;
   begin perform pginvoice_my_wage_line('2026-07'); raise exception 'anon ran my_wage_line'; exception when insufficient_privilege then null; end;
+  begin perform pg_my_clickup_user_names(); raise exception 'anon ran pg_my_clickup_user_names'; exception when insufficient_privilege then null; end;
   raise notice 'ok: anon cannot execute the new RPCs';
 end $$;
 reset role;

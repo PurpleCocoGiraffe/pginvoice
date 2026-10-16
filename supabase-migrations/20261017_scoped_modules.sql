@@ -75,8 +75,9 @@ create policy authenticated_write on public.pginvoice_accruals for insert to aut
 -- matching would silently differ from an admin's. This returns all of it, in the same order
 -- the admin path reads it (clients by name, events by date + id, accruals by client + month).
 --
--- For a client the caller can't access (pg_has_client_access, or a sub-project registered as
--- its own client under one they can) it withholds fees, event notes,
+-- For a client that isn't the caller's (no pginvoice_user_clients row -- the non-admin half of
+-- pg_has_client_access -- and not a sub-project registered as its own client under one of
+-- theirs) it withholds fees, event notes,
 -- agreed hours and ledger balances: agreed hours come back as sign(hours) -- 1 / 0 / null --
 -- which keeps every structural decision identical (seed a zero-hour package row? is this a
 -- package? which group member is primary?) without the figure, and accrual_value /
@@ -85,8 +86,9 @@ create policy authenticated_write on public.pginvoice_accruals for insert to aut
 -- card built from a non-assigned row (only reachable when fuzzy/prefix matching ties the
 -- user's own hours to a client they aren't assigned).
 --
--- Admin tier gets every row unredacted. Callers with neither Invoicing nor Overview get an
--- error, not an empty result.
+-- Admin tier gets every row unredacted. Least privilege: only Client Invoicing needs this
+-- (Overview reads its own clients through RLS), so a caller whose Invoicing scope is "none"
+-- gets an error, not an empty result.
 -- ---------------------------------------------------------------------------
 create or replace function public.pginvoice_client_directory()
 returns jsonb
@@ -95,12 +97,14 @@ declare
   v_admin boolean := pg_is_admin_tier();
   v_mine text[];
 begin
-  if auth.uid() is null or (pg_module_scope('invoicing') = 'none' and pg_module_scope('overview') = 'none') then
-    raise exception 'The client directory needs Client Invoicing or Overview access' using errcode = '42501';
+  if auth.uid() is null or pg_module_scope('invoicing') = 'none' then
+    raise exception 'The client directory needs Client Invoicing access' using errcode = '42501';
   end if;
-  -- The caller's clients (pg_has_client_access, evaluated once rather than per row), plus any
-  -- client whose own ClickUp folder is a cost-centre / sub-project folder of one of them --
-  -- a separately registered sub-project follows its parent, as its card does.
+  -- The caller's clients: their pginvoice_user_clients rows, read once into an array (the
+  -- same rows pg_has_client_access checks for a non-admin, without calling it per row; the
+  -- admin tier ignores the array and gets everything unredacted). Plus any client whose own
+  -- ClickUp folder is a cost-centre / sub-project folder of one of them -- a separately
+  -- registered sub-project follows its parent, as its card does.
   select coalesce(array_agg(distinct uc.client), '{}') into v_mine
     from pginvoice_user_clients uc where uc.user_id = auth.uid();
   select coalesce(array_agg(distinct x), '{}') into v_mine from (
@@ -238,6 +242,8 @@ begin
     'status', 'closed',
     'closedAt', v_month.closed_at,
     'computedAt', v_month.snapshot -> 'computed_at',
+    -- Keep in step with wagesView.js: COMMENT_FIELDS (REVIEW_FIELDS keys) + SELF_HIDDEN_FIELDS,
+    -- which strips the same keys again client-side.
     'line', v_line - array['pg_comment', 'kw_comment', 'ls_comment', 'phil_comment', 'kw2_comment',
                            'phil_leave_applied', 'expected_override_reason'],
     'settings', jsonb_build_object(
@@ -252,12 +258,37 @@ end;
 $fn$;
 
 -- ---------------------------------------------------------------------------
--- 6. pginvoice_my_access(): + clickupUserNames -- every exact spelling in
--- pginvoice_clickup_entries.user_name matching (case-insensitively, trimmed) the profile's
--- clickup_user_name or one of the linked person's pginvoice_wage_people.clickup_user_names.
--- Timesheets (own) and Overview fetch with these. Admin tier: [] (they see everyone, and
--- this runs on every window focus).
+-- 6. pginvoice_my_access(): + clickupUserNames (pg_my_clickup_user_names) -- every exact
+-- spelling in pginvoice_clickup_entries.user_name matching (case-insensitively, trimmed) the
+-- profile's clickup_user_name or one of the linked person's
+-- pginvoice_wage_people.clickup_user_names. Invoicing, Timesheets (own) and Overview fetch
+-- with these. Admin tier: [] (they see everyone). my_access runs on every window focus, so
+-- the lookup goes through an expression index on the normalised name (with user_name as a
+-- second key, so the distinct spellings come from an index-only scan of the caller's own
+-- entries) instead of rescanning the whole entries table.
 -- ---------------------------------------------------------------------------
+create index if not exists pginvoice_clickup_entries_user_name_norm_idx
+  on public.pginvoice_clickup_entries ((lower(trim(user_name))), user_name);
+
+create or replace function public.pg_my_clickup_user_names()
+returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $fn$
+  with keys as (
+    select distinct lower(trim(k)) as k from (
+      select p.clickup_user_name as k
+        from pginvoice_profiles p where p.user_id = auth.uid()
+      union all
+      select unnest(w.clickup_user_names)
+        from pginvoice_profiles p
+        join pginvoice_wage_people w on w.person_id = p.person_id
+       where p.user_id = auth.uid()
+    ) raw where k is not null and trim(k) <> ''
+  )
+  select coalesce(jsonb_agg(n.user_name order by n.user_name), '[]'::jsonb)
+    from (select distinct e.user_name from pginvoice_clickup_entries e
+           where lower(trim(e.user_name)) = any (array(select k from keys))) n;
+$fn$;
+
 create or replace function public.pginvoice_my_access()
 returns jsonb
 language sql stable security definer set search_path = public, pg_temp as $fn$
@@ -274,17 +305,7 @@ language sql stable security definer set search_path = public, pg_temp as $fn$
       (select jsonb_agg(c.client order by c.client)
          from (select distinct client from pginvoice_user_clients where user_id = p.user_id) c),
       '[]'::jsonb) end,
-    'clickupUserNames', case when pg_is_admin_tier() then '[]'::jsonb else coalesce(
-      (select jsonb_agg(n.user_name order by n.user_name)
-         from (select distinct e.user_name from pginvoice_clickup_entries e
-                where lower(trim(e.user_name)) in (
-                  select lower(trim(k)) from (
-                    select p.clickup_user_name as k
-                    union all
-                    select unnest(w.clickup_user_names) from pginvoice_wage_people w
-                     where p.person_id is not null and w.person_id = p.person_id
-                  ) keys where k is not null and trim(k) <> '')) n),
-      '[]'::jsonb) end
+    'clickupUserNames', case when pg_is_admin_tier() then '[]'::jsonb else pg_my_clickup_user_names() end
   )
   from pginvoice_profiles p
   where p.user_id = auth.uid();
@@ -298,8 +319,10 @@ revoke all on function public.pginvoice_my_wage_person() from public, anon;
 revoke all on function public.pginvoice_my_wage_months() from public, anon;
 revoke all on function public.pginvoice_my_wage_line(text) from public, anon;
 revoke all on function public.pginvoice_my_access() from public, anon;
+revoke all on function public.pg_my_clickup_user_names() from public, anon;
 grant execute on function public.pginvoice_client_directory() to authenticated, service_role;
 grant execute on function public.pginvoice_my_wage_person() to authenticated, service_role;
 grant execute on function public.pginvoice_my_wage_months() to authenticated, service_role;
 grant execute on function public.pginvoice_my_wage_line(text) to authenticated, service_role;
 grant execute on function public.pginvoice_my_access() to authenticated, service_role;
+grant execute on function public.pg_my_clickup_user_names() to authenticated, service_role;
