@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { AlertTriangle, Info, Lock } from "lucide-react";
 import { loadState } from "./capacityStore.js";
 import { CAP_PEOPLE_KEY } from "./storageKeys.js";
-import { adelaideMonthKey, adelaideDayOfMonth } from "./dateMath.js";
+import { wagesReviewMonthKey } from "./dateMath.js";
 import { isMissingRpcError } from "./permissions.js";
 import { fetchMyWageMonths, fetchMyWageLine } from "./wagesSync.js";
 import { selfWageView } from "./wagesView.js";
@@ -15,17 +15,6 @@ import { WageCard } from "./WageCard.jsx";
 // payroll tables stay admin-tier-only under RLS. A month that isn't closed shows "Not yet
 // reviewed" and no numbers (never zeros). No drawer, inputs, settings, Xero paste or close
 // controls exist on this page at all.
-
-const shiftMonth = (mk, d) => {
-  const [y, m] = mk.split("-").map(Number);
-  const t = y * 12 + (m - 1) + d;
-  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
-};
-// Same "month being reviewed" rule as WagesReview.jsx: last month until the 15th.
-function reviewMonth() {
-  const cur = adelaideMonthKey();
-  return adelaideDayOfMonth() <= 15 ? shiftMonth(cur, -1) : cur;
-}
 
 function Notice({ tone = "warn", icon: Icon = AlertTriangle, children }) {
   return (
@@ -42,7 +31,8 @@ export default function WagesSelf({ personId }) {
   const [monthKey, setMonthKey] = useState(null);
   const [result, setResult] = useState(null); // { monthKey, data } | { monthKey, error }
   const [photo, setPhoto] = useState("");
-  const pending = reviewMonth();
+  // The month currently under review (same rule as WagesReview.jsx).
+  const pending = wagesReviewMonthKey();
 
   useEffect(() => {
     if (!personId) return;

@@ -116,7 +116,10 @@ export function ShowWorking({ line, view }) {
           {e.missingRule && <p className="wr-popover__warn">Some employed days have no hours rule, so over/under isn't assessed.</p>}
           {e.unknownState && <p className="wr-popover__warn">State "{line.state || "?"}" isn't SA/WA/QLD: no public holidays applied.</p>}
           {line.ph_override_h != null && <p>Q overridden to {fmtH(line.ph_override_h, 2)}.</p>}
-          {line.expected_override_h != null && <p>S overridden to {fmtH(line.expected_override_h, 2)}: {line.expected_override_reason}</p>}
+          {line.expected_override_h != null && (
+            // The reason is stripped from the self view (selfWageView), so it can be absent.
+            <p>S overridden to {fmtH(line.expected_override_h, 2)}{line.expected_override_reason ? `: ${line.expected_override_reason}` : "."}</p>
+          )}
         </div>
       )}
     </span>

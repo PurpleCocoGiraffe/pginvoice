@@ -3,6 +3,7 @@
 import { fmt, isPackageLikeType } from "./format.js";
 import { typeLabelShort } from "./clientTypeLabels.js";
 import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
+import { WITHHELD_NOTE } from "./clientListFilter.js";
 import { costCentreInvoicesFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
 
 export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}) {
@@ -26,7 +27,11 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
     lines.push("");
   }
   lines.push(`Time tracked this month: ${fmt(c.workedFiltered)} h`);
-  if (c.status === "wrap_up") {
+  if (c.withheld) {
+    // Scoped view, not one of the user's clients: its package inputs were withheld
+    // (withholdRedactedFigures), so say that rather than "no package on file".
+    lines.push(WITHHELD_NOTE);
+  } else if (c.status === "wrap_up") {
     // Offboarded, still owed unutilised hours: this month's work is deducted from them.
     lines.push(`Offboarded: unutilised hours owed carried in: ${fmt(Math.abs(c.priorBalance))} h`);
     if (Math.abs(billable - c.worked) > 0.005) lines.push(`Billable wrap-up time deducted: ${fmt(billable)} h`);

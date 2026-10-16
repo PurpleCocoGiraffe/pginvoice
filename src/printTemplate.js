@@ -2,6 +2,7 @@ import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
 import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { fmt, esc, filenameSafe, isPackageLikeType } from "./format.js";
 import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
+import { WITHHELD_NOTE } from "./clientListFilter.js";
 import { costCentreInvoicesFor, costCentreInvoice, invoiceCapRuleFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
 
 // "Invoices by cost centre" rows for a client with a per-cost-centre invoice cap
@@ -58,7 +59,11 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
 
   const isWrapUp = c.status === "wrap_up" && !c.isLineItemExport;
   const feeOnly = isQuoted && c.quotedAmount == null && !!c.fixedFee;
-  const reconciliation = isWrapUp ? `
+  // Scoped view, not one of the user's clients (withholdRedactedFigures): hours only.
+  const reconciliation = c.withheld && !c.isLineItemExport ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
+    <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">${esc(WITHHELD_NOTE)}</td></tr>` : isWrapUp ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Unutilised hours owed${priorMonthText ? ` (carried in from ${esc(priorMonthText)})` : ""}</td><td class="right">${fmt(priorAbs)} h</td></tr>
     <tr class="datarow"><td class="label">Wrap-up time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>

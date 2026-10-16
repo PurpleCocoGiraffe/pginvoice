@@ -49,3 +49,13 @@ export function monthOffsetFor(monthKey, now = new Date()) {
   const [y, m] = String(monthKey).split("-").map(Number);
   return (cy * 12 + cm) - (y * 12 + m);
 }
+
+// The payroll month being reviewed (Wages review and the Wages self view): Kelly reconciles
+// last month in the first half of the month; after the 15th the current month is the more
+// likely one being looked at.
+export function wagesReviewMonthKey(now = new Date()) {
+  const cur = adelaideMonthKey(now);
+  if (adelaideDayOfMonth(now) > 15) return cur;
+  const [y, m] = cur.split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}

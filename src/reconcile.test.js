@@ -13,6 +13,7 @@ import { runManualSync } from "./manualSync.js";
 import { afterEach } from "vitest";
 import { buildPrintHtml } from "./printTemplate.js";
 import { buildSummaryText } from "./clientSummary.js";
+import { WITHHELD_FIELDS } from "./clientListFilter.js";
 
 // Regression coverage for QA-confirmed silent wrong-number bugs in Client Invoicing
 // (App.jsx's buildClientsForMonth, whose math now lives in reconcile.js).
@@ -268,6 +269,17 @@ describe("fix 12: package client with no package on file", () => {
       expect(text).not.toMatch(/Over by|Remaining this month/);
     });
   }
+  it("a withheld card (scoped view) says the figures aren't shared, never \"No package on file\"", () => {
+    for (const type of ["package", "quoted"]) {
+      const c = { ...pdfClient({ type }), ...WITHHELD_FIELDS, withheld: true };
+      const html = buildPrintHtml(c, "September 2026", "August 2026");
+      const text = buildSummaryText(c, {});
+      for (const out of [html, text]) {
+        expect(out).toContain("Package figures not shared");
+        expect(out).not.toMatch(/No package on file|No quoted amount on file/);
+      }
+    }
+  });
   it("an on-hold month's PDF says the package is paused", () => {
     const html = buildPrintHtml(pdfClient({ status: "on_hold", newBalance: -2, balanceForward: -2, remaining: 2, remainingShown: 2, kpiPct: null }), "September 2026", "August 2026");
     expect(html).toContain("On hold this month");

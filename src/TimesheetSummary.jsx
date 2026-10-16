@@ -179,7 +179,7 @@ function TimesheetInner({ own = null }) {
   // Feedback for the Copy-for-Xero button: null, { ok: true, days } or { ok: false, msg }.
   const [copyState, setCopyState] = useState(null);
 
-  const ownKey = own ? `${own.personId || ""}|${(own.userNames || []).join("\n")}|${own.userNames ? 1 : 0}` : null;
+  // `own` is memoized by Shell (permissions.js moduleScopeProps): a stable dependency.
   useEffect(() => {
     if (!own) return;
     let cancelled = false;
@@ -204,7 +204,7 @@ function TimesheetInner({ own = null }) {
       if (!cancelled) setLoaded(true);
     })();
     return () => { cancelled = true; };
-  }, [ownKey]); // eslint-disable-line
+  }, [own]);
 
   useEffect(() => {
     if (own) return;
@@ -339,16 +339,16 @@ function TimesheetInner({ own = null }) {
 
   const hasData = availableMonths.length > 0;
 
-  if (!loaded && !(own && (!own.personId || !own.userNames))) return <div className="pg-cap-container"><div className="pg-empty">Loading…</div></div>;
-  // Own mode can't show anything honest without a linked person / the user's ClickUp names.
+  // Own mode can't show anything honest without a linked person / the user's ClickUp names:
+  // just the header and the reason, no empty picker/table.
   const ownBlocker = !own ? null
     : !own.userNames ? "Your own timesheet isn't available yet: it needs a database update that hasn't been applied. Ask an Admin."
     : !own.personId ? "No roster person is linked to your account yet, so there's no timesheet to show. Ask an Admin to link you in Settings → Users & permissions."
     : loaded && !ownPerson ? "Your linked roster person wasn't found on the Consultants roster. Ask an Admin to check your account in Settings → Users & permissions."
     : null;
+  if (!loaded && !ownBlocker) return <div className="pg-cap-container"><div className="pg-empty">Loading…</div></div>;
 
-  return (
-    <div className="pg-cap-container">
+  const header = (
       <div className="pg-app-header">
         <div>
           <span className="pg-eyebrow">Purple Giraffe · Internal</span>
@@ -358,10 +358,21 @@ function TimesheetInner({ own = null }) {
             : "Total time logged in ClickUp per day, for whichever consultant and month you pick. Not filtered to billable hours, this mirrors the raw timesheet, not the invoicing view."}</p>
         </div>
       </div>
+  );
+  if (ownBlocker) {
+    return (
+      <div className="pg-cap-container">
+        {header}
+        <div className="pg-banner-warn">{ownBlocker}</div>
+      </div>
+    );
+  }
 
-      {ownBlocker && <div className="pg-banner-warn">{ownBlocker}</div>}
+  return (
+    <div className="pg-cap-container">
+      {header}
       {loadError && <div className="pg-banner-warn">Couldn't load your ClickUp time: {loadError}. Reload to try again.</div>}
-      {own && !ownBlocker && !loadError && !hasData && (
+      {own && !loadError && !hasData && (
         <div className="pg-banner-warn">No ClickUp time logged under your ClickUp name{(own.userNames || []).length > 1 ? "s" : ""} yet.</div>
       )}
       {!own && !hasData && (
@@ -372,10 +383,10 @@ function TimesheetInner({ own = null }) {
 
       <div className="pg-panel" style={{ alignItems: "center" }}>
         {own ? (
-          <label className="pg-field">
+          <div className="pg-field">
             <span className="pg-field__label">Consultant</span>
             <span style={{ fontFamily: "var(--font-display)", fontSize: 16 }}>{ownPerson?.name || "—"}</span>
-          </label>
+          </div>
         ) : (
           <SearchBox label="Consultant" value={qConsultant} onChange={setQConsultant} options={allConsultants.map((c) => c.name)} onSelect={(name) => setSelectedConsultant(name)} />
         )}
