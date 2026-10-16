@@ -7,7 +7,7 @@ import { setDynamicCostCentres } from "./nameMatch.js";
 import { rowToClient } from "./clientsSync.js";
 import { rowsToClients, buildReconciliationClients, ACCRUALS_LIVE_SYNC_LABEL } from "./accrualsSync.js";
 import { directoryToInputs } from "./clientDirectory.js";
-import { scopeClientList, withholdRedactedFigures, computePrimaryNameByGroup, filterClientList } from "./clientListFilter.js";
+import { scopeClientList, withholdRedactedFigures, computePrimaryNameByGroup, filterClientList, scopedCardLists, WITHHELD_FIELDS } from "./clientListFilter.js";
 import { sumCarry } from "./reconcile.js";
 
 // Parity: a scoped (Invoicing "assigned") user runs the admin pipeline over the directory's
@@ -128,11 +128,8 @@ const build = ({ pgClients, pgClientEvents, accrued }, costCentres, monthKey = M
   return buildClientsForMonth(ctx, monthKey, priorKey, { currentMonthKey: MONTH });
 };
 
-// What App.jsx shows a scoped user: the full list, filtered, withheld where needed.
-const scopedView = (full, dir) => withholdRedactedFigures(
-  scopeClientList(full, { clients: [...dir.assignedClients], userNames: HOLLY_NAMES }, computePrimaryNameByGroup(full)),
-  dir.redactedClients,
-);
+// What App.jsx shows a scoped user: the SAME scopedCardLists call App makes (its `clients`).
+const scopedView = (full, dir, opts) => scopedCardLists(full, dir, HOLLY_NAMES, opts).inScope;
 
 // Everything a card displays or exports that comes out of the reconciliation.
 const FIGURES = [
@@ -166,8 +163,7 @@ describe("scoped Client Invoicing: same numbers as admin", () => {
     const adminByName = new Map(admin.map((c) => [c.name, c]));
     for (const c of view.filter((v) => !v.withheld)) {
       expect(adminByName.has(c.name)).toBe(true);
-      const { profileClient: _a, ...rest } = c;
-      expect(figures(rest)).toEqual(figures(adminByName.get(c.name)));
+      expect(figures(c)).toEqual(figures(adminByName.get(c.name)));
     }
   });
 
@@ -221,13 +217,35 @@ describe("scoped Client Invoicing: same numbers as admin", () => {
     expect(b.status).toBe("no-pkg");
   });
 
-  it("the previous month (prevStats) is filtered and computed the same way", () => {
+  it("the previous month (prevStats) keeps this month's cards, computed the same way", () => {
     const adminPrev = build(adminInputs(), COST_CENTRE_ROWS, PRIOR, "2026-07");
     const scopedPrev = build(dir, dir.costCentres, PRIOR, "2026-07");
-    const prevView = scopedView(scopedPrev, dir);
-    expect(prevView.map((c) => c.name).sort()).toEqual(["Apex", "Majestic Plumbing", "Majestic Plumbing Quoted Web Project (WA)"]);
+    // As App.jsx does: last month filtered to THIS month's in-scope card names.
+    const keepNames = new Set(view.map((c) => c.name));
+    const prevView = scopedView(scopedPrev, dir, { keepNames });
+    expect(prevView.map((c) => c.name).every((n) => keepNames.has(n))).toBe(true);
+    expect(prevView.map((c) => c.name).sort()).toEqual(scopedPrev.map((c) => c.name).filter((n) => keepNames.has(n)).sort());
     const adminByName = new Map(adminPrev.map((c) => [c.name, c]));
-    for (const c of prevView) expect(figures(c)).toEqual(figures(adminByName.get(c.name)));
+    for (const c of prevView.filter((v) => !v.withheld)) expect(figures(c)).toEqual(figures(adminByName.get(c.name)));
+  });
+
+  it("the previous month never adds a card this month doesn't show (filter by kept names, not last month's minutes)", () => {
+    const scopedPrev = build(dir, dir.costCentres, PRIOR, "2026-07");
+    const keepNames = new Set(["Apex"]);
+    expect(scopedView(scopedPrev, dir, { keepNames }).map((c) => c.name)).toEqual(["Apex"]);
+  });
+
+  it("admin tier (no directory): scopedCardLists returns the full list for all three", () => {
+    const { shown, inScope, primary } = scopedCardLists(admin, null, []);
+    expect(shown).toBe(admin);
+    expect(inScope).toBe(admin);
+    expect([...primary]).toEqual([...computePrimaryNameByGroup(admin)]);
+  });
+
+  it("every WITHHELD_FIELDS key is a real card field (a renamed field can't silently stop being withheld)", () => {
+    // Some fields only exist on some card types (quoted, fixed fee), so check the union.
+    const cardKeys = new Set(admin.flatMap((c) => Object.keys(c)));
+    expect(Object.keys(WITHHELD_FIELDS).filter((k) => !cardKeys.has(k))).toEqual([]);
   });
 
   it("control: Holly's own RLS-scoped rows alone would misroute hours (why the directory exists)", () => {

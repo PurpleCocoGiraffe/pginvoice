@@ -121,16 +121,21 @@ export function buildWorkedByFolderMonth(clickup) {
 
 // Every input buildClientsForMonth reads, built exactly as App.jsx builds them (App.jsx
 // memoizes each piece separately). For tests and any other non-React caller.
-export function buildInvoicingContext({ clickup, accrued, nameMap = {}, billableOnly, pgClients = [], pgClientEvents = [], capClients = [] }) {
+// The one context assembly App.jsx and invoicingScope.test.js share. `prebuilt` lets App
+// pass the pieces it memoizes separately (each derived from one input, so e.g. a nameMap
+// edit doesn't rebuild the folder canon); any piece not passed is built here from the raw
+// inputs, with the same builder -- so the test and production compose the same context.
+export function buildInvoicingContext({ clickup, accrued, nameMap = {}, billableOnly, pgClients = [], pgClientEvents = [], capClients = [] }, prebuilt = {}) {
+  const has = (k) => prebuilt[k] !== undefined;
   return {
     clickup, accrued, nameMap, billableOnly, pgClientEvents,
-    accruedNames: accruedNamesOf(accrued),
-    folderCanon: buildFolderCanon(clickup, pgClients),
-    allRawFolders: allRawFoldersOf(clickup),
-    computeMonthWorked: monthWorkedFn(clickup),
-    workedByFolderMonth: buildWorkedByFolderMonth(clickup),
-    ...buildCapIndexes(capClients),
-    ...buildPgIndexes(pgClients),
+    accruedNames: has("accruedNames") ? prebuilt.accruedNames : accruedNamesOf(accrued),
+    folderCanon: has("folderCanon") ? prebuilt.folderCanon : buildFolderCanon(clickup, pgClients),
+    allRawFolders: has("allRawFolders") ? prebuilt.allRawFolders : allRawFoldersOf(clickup),
+    computeMonthWorked: has("computeMonthWorked") ? prebuilt.computeMonthWorked : monthWorkedFn(clickup),
+    workedByFolderMonth: has("workedByFolderMonth") ? prebuilt.workedByFolderMonth : buildWorkedByFolderMonth(clickup),
+    ...(has("capIndexes") ? prebuilt.capIndexes : buildCapIndexes(capClients)),
+    ...(has("pgIndexes") ? prebuilt.pgIndexes : buildPgIndexes(pgClients)),
   };
 }
 

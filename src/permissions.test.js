@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   effectiveScope, visibleNav, bottomNavFor, settingsTabsFor, reachableKeys, resolveModuleScope,
-  accessFromRole, isMissingRpcError, accessSummary, resolveAccess, overrideChanges, hasAccessConfig,
+  accessFromRole, isMissingRpcError, accessSummary, resolveAccess, overrideChanges, hasAccessConfig, moduleScopeProps,
 } from "./permissions.js";
 
 // What Shell.jsx rendered before per-user permissions (main @ 106b899), copied verbatim
@@ -61,7 +61,7 @@ describe("resolveModuleScope -- preset + override, mirrors pg_module_scope()", (
   });
 });
 
-describe("nav is unchanged for existing users (pins Lynda/Kelly and today's consultants)", () => {
+describe("nav: admin tier unchanged; phase-1 consultants keep their sidebar", () => {
   for (const role of ["super_admin", "admin"]) {
     it(`${role}: sidebar and mobile bottom bar identical to before`, () => {
       for (const access of [rpcAccess(role), accessFromRole(role)]) {
@@ -214,5 +214,24 @@ describe("accessSummary", () => {
   it("admins are full access; nothing granted says so", () => {
     expect(accessSummary({ role: "admin", overrides: {}, presets, moduleScopes })).toBe("Full access");
     expect(accessSummary({ role: "coordinator", overrides: {}, presets, moduleScopes })).toBe("No modules");
+  });
+});
+
+describe("moduleScopeProps", () => {
+  it("admin tier: every module null (everything, as before)", () => {
+    expect(moduleScopeProps(rpcAccess("admin"))).toEqual({ overview: null, invoicing: null, timesheet: null, wages: null });
+    expect(moduleScopeProps(null)).toEqual({ overview: null, invoicing: null, timesheet: null, wages: null });
+  });
+  it("consultant preset: one shape for every scoped module; userNames null when the RPC predates them", () => {
+    const a = { ...rpcAccess("consultant", { overview: "assigned", invoicing: "assigned", timesheet: "own", wages: "own" }),
+      personId: "p1", clients: ["Apex"], clickupUserNames: ["Holly Fraser"] };
+    const shape = { personId: "p1", userNames: ["Holly Fraser"], clients: ["Apex"] };
+    expect(moduleScopeProps(a)).toEqual({ overview: shape, invoicing: shape, timesheet: shape, wages: shape });
+    const { clickupUserNames: _drop, ...old } = a;
+    expect(moduleScopeProps(old).timesheet.userNames).toBeNull();
+  });
+  it("a non-admin granted all / none gets null", () => {
+    const a = rpcAccess("consultant", { overview: "all", invoicing: "none" });
+    expect(moduleScopeProps(a)).toEqual({ overview: null, invoicing: null, timesheet: null, wages: null });
   });
 });

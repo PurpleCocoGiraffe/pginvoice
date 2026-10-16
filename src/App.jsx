@@ -25,14 +25,11 @@ import {
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY } from "./storageKeys.js";
-import { filterClientList, computePrimaryNameByGroup, searchMatchesInOtherTypes, hasWorkedHours, scopeClientList, withholdRedactedFigures } from "./clientListFilter.js";
-import { fetchClientDirectory, directoryToInputs } from "./clientDirectory.js";
-import { setDynamicCostCentres } from "./nameMatch.js";
-import { isMissingRpcError } from "./permissions.js";
+import { filterClientList, searchMatchesInOtherTypes, hasWorkedHours, scopedCardLists } from "./clientListFilter.js";
 import { sumCarry, lastMonthAccruedClients, isLifetimeBudgetType } from "./reconcile.js";
 import {
   buildCapIndexes, buildPgIndexes, accruedNamesOf, buildFolderCanon, allRawFoldersOf, monthWorkedFn, buildWorkedByFolderMonth,
-  buildClientsForMonth as buildClientsForMonthPure,
+  buildInvoicingContext, buildClientsForMonth as buildClientsForMonthPure,
 } from "./invoicingPipeline.js";
 import { typeLabelShort } from "./clientTypeLabels.js";
 import { buildSummaryText } from "./clientSummary.js";
@@ -76,17 +73,16 @@ const TYPE_LABELS = {
 
 // ================================ COMPONENT =================================
 // `scope`: null for the admin tier (everything, exactly as before). For Invoicing scope
-// "assigned" (permissions.js): { userNames } -- the user's exact ClickUp spellings. A scoped
+// "assigned" (permissions.js moduleScopeProps, memoized by Shell): { userNames } -- the
+// user's exact ClickUp spellings; `directory` is Shell's parsed client directory. A scoped
 // user's inputs come from pginvoice_client_directory() + the live ClickUp sync (never a
 // manual upload or the shared IndexedDB cache), the reconciliation runs unchanged over them,
 // and only then are the cards filtered to their own clients (scopeClientList) -- "compute
 // over full inputs, filter at display". Writes, uploads, sync, name-match overrides, the
 // excluded-internal list and all-client exports are admin only.
-export default function PGReconciliation({ onNavigateClients, scope = null }) {
+export default function PGReconciliation({ onNavigateClients, scope = null, directory = null }) {
   const scoped = !!scope;
-  // Stable across Shell re-renders (scope arrives as a fresh object each time).
-  const scopeUserKey = scoped ? (scope.userNames || []).join("\n") : "";
-  const scopeUserNames = useMemo(() => (scopeUserKey ? scopeUserKey.split("\n") : []), [scopeUserKey]);
+  const scopeUserNames = useMemo(() => scope?.userNames || [], [scope]);
   const [clickup, setClickup] = useState(null);
   const [accrued, setAccrued] = useState(null);
   const [invoiceMonth, setInvoiceMonth] = useState("");
@@ -160,7 +156,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null }) {
   }, []);
   // Group-level Capacity Planning lookups (dominant type, offboarded groups, group names,
   // exact folder -> row) -- see buildCapIndexes in invoicingPipeline.js.
-  const { capTypeByGroup, capOffboardedByGroup, capGroupNames, capRowByClientName } = useMemo(() => buildCapIndexes(capClients), [capClients]);
+  const capIndexes = useMemo(() => buildCapIndexes(capClients), [capClients]);
 
   // The Clients module's roster + scheduled type-change events (Supabase-backed) — the
   // authoritative source for "what type was this client actually on in a given month,"
@@ -189,49 +185,47 @@ export default function PGReconciliation({ onNavigateClients, scope = null }) {
 
   // Scoped view: every input from pginvoice_client_directory() (all clients, applied events,
   // cost centres and ledger rows -- the user's own RLS reads would cover only their clients,
-  // which changes folder matching) plus the live ClickUp sync. The directory's cost centres
-  // go into nameMatch.js BEFORE the entries are fetched, since the task-prefix split runs at
-  // fetch time. "unavailable" = the RPC isn't deployed yet (frontend ahead of the migration):
-  // say so rather than show a reconciliation over partial inputs.
+  // which changes folder matching) plus the live ClickUp sync. Shell.jsx owns the directory
+  // fetch and the nameMatch.js cost-centre singleton, and hands the parsed directory down as
+  // `directory` ({ status, inputs, message }) only AFTER applying its cost centres -- so the
+  // task-prefix split that runs when the entries are fetched below already sees them.
+  // "unavailable" = the RPC isn't deployed yet (frontend ahead of the migration): say so
+  // rather than show a reconciliation over partial inputs.
   const [scopedLoad, setScopedLoad] = useState(scoped ? { status: "loading" } : null);
-  const [scopedDir, setScopedDir] = useState({ assignedClients: new Set(), redactedClients: new Set() });
+  const scopedDir = useMemo(() => {
+    if (!scoped) return null;
+    const inputs = directory?.status === "ready" ? directory.inputs : null;
+    return { assignedClients: inputs?.assignedClients || new Set(), redactedClients: inputs?.redactedClients || new Set() };
+  }, [scoped, directory]);
   useEffect(() => {
     if (!scoped) return;
+    if (!directory || directory.status !== "ready") {
+      setScopedLoad(directory?.status === "unavailable" ? { status: "unavailable" }
+        : directory?.status === "error" ? { status: "error", message: directory.message }
+        : { status: "loading" });
+      return;
+    }
     let cancelled = false;
-    (async () => {
-      let dir;
-      try {
-        dir = directoryToInputs(await fetchClientDirectory());
-      } catch (e) {
-        if (cancelled) return;
-        console.error("Client directory fetch failed:", e);
-        setScopedLoad(isMissingRpcError(e) ? { status: "unavailable" } : { status: "error", message: e?.message || String(e) });
-        return;
-      }
+    const dir = directory.inputs;
+    setPgClients(dir.pgClients);
+    setPgClientEvents(dir.pgClientEvents);
+    setAccrued(dir.accrued);
+    setAccruedSource("supabase");
+    fetchSyncMeta().then((m) => { if (!cancelled) setSyncMeta(m); }).catch(() => {});
+    fetchClickupFromSupabase().then((live) => {
       if (cancelled) return;
-      setDynamicCostCentres(dir.costCentres);
-      setPgClients(dir.pgClients);
-      setPgClientEvents(dir.pgClientEvents);
-      setScopedDir({ assignedClients: dir.assignedClients, redactedClients: dir.redactedClients });
-      setAccrued(dir.accrued);
-      setAccruedSource("supabase");
-      fetchSyncMeta().then((m) => { if (!cancelled) setSyncMeta(m); }).catch(() => {});
-      try {
-        const live = await fetchClickupFromSupabase();
-        if (cancelled) return;
-        setClickup(live);
-        setClickupSource("supabase");
-        setScopedLoad({ status: "ready" });
-      } catch (e) {
-        if (cancelled) return;
-        console.error("Supabase ClickUp fetch failed:", e);
-        setScopedLoad({ status: "error", message: e?.message || String(e) });
-      }
-    })();
+      setClickup(live);
+      setClickupSource("supabase");
+      setScopedLoad({ status: "ready" });
+    }, (e) => {
+      if (cancelled) return;
+      console.error("Supabase ClickUp fetch failed:", e);
+      setScopedLoad({ status: "error", message: e?.message || String(e) });
+    });
     return () => { cancelled = true; };
-  }, [scoped]);
+  }, [scoped, directory]);
   // Name list, exact ClickUp-folder -> profile and name -> profile lookups (see buildPgIndexes).
-  const { pgClientNames, pgProfileByFolder, pgClientByName } = useMemo(() => buildPgIndexes(pgClients), [pgClients]);
+  const pgIndexes = useMemo(() => buildPgIndexes(pgClients), [pgClients]);
 
   // Restore the uploaded data and filters from a previous session. The parsed CSV can run
   // several MB as JSON, too close to localStorage's shared per-origin quota to risk — so the
@@ -483,10 +477,13 @@ export default function PGReconciliation({ onNavigateClients, scope = null }) {
   // Full per-client reconciliation for (monthKey, priorKey) -- the pure pipeline in
   // invoicingPipeline.js, so the KPI trend row (previous month) and the last-month export
   // run the exact same logic. WITHOUT consultant filter (base data).
-  const buildClientsForMonth = useCallback((monthKey, priorKey) => buildClientsForMonthPure({
-    clickup, accrued, accruedNames, nameMap, billableOnly, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth,
-    capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents,
-  }, monthKey, priorKey), [clickup, accrued, accruedNames, nameMap, billableOnly, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth, capGroupNames, capTypeByGroup, capOffboardedByGroup, capRowByClientName, pgProfileByFolder, pgClientNames, pgClientByName, pgClientEvents]);
+  // The context goes through buildInvoicingContext -- the same assembly invoicingScope.test.js
+  // uses -- with App's separately memoized pieces passed in as `prebuilt`.
+  const invoicingCtx = useMemo(() => buildInvoicingContext(
+    { clickup, accrued, nameMap, billableOnly, pgClients, pgClientEvents, capClients },
+    { accruedNames, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth, capIndexes, pgIndexes },
+  ), [clickup, accrued, nameMap, billableOnly, pgClients, pgClientEvents, capClients, accruedNames, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth, capIndexes, pgIndexes]);
+  const buildClientsForMonth = useCallback((monthKey, priorKey) => buildClientsForMonthPure(invoicingCtx, monthKey, priorKey), [invoicingCtx]);
 
   // allClients: every card, exactly as an admin computes it. shownClients: the same, with
   // the figures withheld on any card built from a client a scoped user isn't assigned (see
@@ -494,13 +491,10 @@ export default function PGReconciliation({ onNavigateClients, scope = null }) {
   // i.e. the scoped user's own cards (scopeClientList). For the admin tier all three are
   // the same list.
   const allClients = useMemo(() => buildClientsForMonth(dataMonthKey, priorMonthKey), [buildClientsForMonth, dataMonthKey, priorMonthKey]);
-  const scopeView = useCallback((list) => {
-    if (!scoped) return { shown: list, inScope: list, primary: computePrimaryNameByGroup(list) };
-    const primary = computePrimaryNameByGroup(list);
-    const shown = withholdRedactedFigures(list, scopedDir.redactedClients);
-    return { shown, inScope: scopeClientList(shown, { clients: [...scopedDir.assignedClients], userNames: scopeUserNames }, primary), primary };
-  }, [scoped, scopeUserNames, scopedDir]);
-  const { shown: shownClients, inScope: clients, primary: primaryNameByGroup } = useMemo(() => scopeView(allClients), [scopeView, allClients]);
+  // scopedCardLists (clientListFilter.js) is the one composition production and the parity
+  // test share; scopedDir is null for the admin tier.
+  const { shown: shownClients, inScope: clients, primary: primaryNameByGroup } = useMemo(
+    () => scopedCardLists(allClients, scopedDir, scopeUserNames), [allClients, scopedDir, scopeUserNames]);
 
   // Same reconciliation, one month earlier — real, fully-computed numbers (not a
   // fabricated estimate), used only to power the "vs last month" KPI comparisons.
@@ -510,12 +504,15 @@ export default function PGReconciliation({ onNavigateClients, scope = null }) {
   // Data-driven, not tied to any specific month: the "Remaining Reset" column only appears
   // for a viewed month where at least one client carries a macro-sheet reset.
   const showResetCol = useMemo(() => clients.some((c) => c.resetValue != null), [clients]);
-  // Filtered exactly like `clients` (a scoped user's "vs last month" covers their cards only).
+  // A scoped user's "vs last month" covers the same cards as this month (keepNames), not
+  // whichever cards happened to carry their minutes last month.
   const prevAllClients = useMemo(
     () => (dataMonthKey ? buildClientsForMonth(prevMonthDataKey, prevMonthKeyStr(priorMonthKey || prevMonthDataKey)) : []),
     [buildClientsForMonth, dataMonthKey, prevMonthDataKey, priorMonthKey]
   );
-  const { inScope: prevClients, primary: prevPrimaryNameByGroup } = useMemo(() => scopeView(prevAllClients), [scopeView, prevAllClients]);
+  const keptNames = useMemo(() => (scopedDir ? new Set(clients.map((c) => c.name)) : null), [scopedDir, clients]);
+  const { inScope: prevClients, primary: prevPrimaryNameByGroup } = useMemo(
+    () => scopedCardLists(prevAllClients, scopedDir, scopeUserNames, { keepNames: keptNames }), [prevAllClients, scopedDir, scopeUserNames, keptNames]);
 
   // counts by type — "map" also counts c.isMap (Capacity Planning's overlay tag) on a client
   // that keeps its own type, matching the MAP filter in filterClientList; a month typed

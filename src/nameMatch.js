@@ -193,7 +193,8 @@ const MULTI_FOLDER_CLIENTS = [
 // User-editable cost-centre/sub-project links (Clients module -> pginvoice_cost_centres),
 // keyed by EXACT client name rather than a fuzzy substring like MULTI_FOLDER_CLIENTS below --
 // these are explicit, individually-added rows, so there's no ambiguity to resolve. Populated
-// once via setDynamicCostCentres (called from App.jsx/Clients.jsx after fetching the table);
+// via setDynamicCostCentres, called ONLY by Shell.jsx (its single owner: the table, or the
+// client directory for a scoped non-admin -- see Shell.jsx);
 // every other module that imports multiFolderMatchesFor/multiFolderAccrualMatchesFor picks up
 // the same data automatically since this module is a singleton, without needing its own fetch
 // or becoming async. Starts empty, which is indistinguishable from "no dynamic rows for any

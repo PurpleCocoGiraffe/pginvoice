@@ -2,16 +2,16 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Search, ArrowRight, Pencil, Check, AlertTriangle, Upload, X, ChevronRight, ChevronDown, ArrowLeft, Plus, Trash2 } from "lucide-react";
 import {
   fetchClients, fetchClientEvents, createClientEvent, deleteClientEvent, applyDueClientEvents,
-  updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, updateFixedFee, fetchCostCentres, addCostCentreFolder, removeCostCentreFolder,
+  updateClickupFolder, updateClientWebsite, updateClientLogo, updateQuotedAmount, updateFixedFee, addCostCentreFolder, removeCostCentreFolder,
   addTaskPrefixCostCentre, createClient, storesAgreedHours, validateNewClient, clientState,
   fetchClientHistory, fetchClientNotes, addClientNote, updateClientNote, deleteClientNote,
 } from "./clientsSync.js";
 import {
-  multiFolderMatchesFor, multiFolderAccrualMatchesFor, setDynamicCostCentres, isDynamicCostCentreClient, findPersonMatch,
+  multiFolderMatchesFor, multiFolderAccrualMatchesFor, isDynamicCostCentreClient, findPersonMatch,
   taskPrefixRulesFor,
 } from "./nameMatch.js";
 import { idbGet, PG_DATA_EVENT } from "./idbStore.js";
-import { CLICKUP_DB_KEY, PG_CLIENTS_KEY, PG_COST_CENTRES_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
+import { CLICKUP_DB_KEY, PG_CLIENTS_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
 import { SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
 import { ClientAvatar, PersonAvatar, resizePhotoFile } from "./avatar.jsx";
 import { useDismissable, useEscape } from "./useDismissable.js";
@@ -1226,7 +1226,11 @@ function AddClientPanel({ clients, folderList, onCreated, onCancel, initial = nu
 
 // `canWrite`: admin tier. Only gates applying due client events on load; client edits
 // are already admin-only under RLS.
-export default function Clients({ canWrite = false }) {
+// `costCentres`: Shell.jsx's { version, error, refresh } -- Shell is the one owner of
+// nameMatch.js's cost-centre singleton (for a non-admin this page must never overwrite it
+// with their RLS-trimmed table read).
+const NO_COST_CENTRES = { version: 0, error: null, refresh: () => Promise.resolve() };
+export default function Clients({ canWrite = false, costCentres: costCentreSource = NO_COST_CENTRES }) {
   const [clients, setClients] = useState(null);
   const [clientEvents, setClientEvents] = useState([]); // full history across all clients, filtered per-row when the drawer opens
   const [loadError, setLoadError] = useState(null);
@@ -1251,10 +1255,10 @@ export default function Clients({ canWrite = false }) {
   const [capPeople, setCapPeople] = useState(SEED_PEOPLE);
   // nameMatch.js's dynamic cost-centre rules are a module-level singleton (see
   // setDynamicCostCentres) fed by Shell.jsx, not React state -- costCentreInfo below reads
-  // them via a plain function call, so it has no way to know they changed on its own. This
-  // is bumped whenever the underlying table changes (via this tab's own edits or another
-  // tab's, both arrive as the same PG_DATA_EVENT) purely to force that useMemo to rerun.
-  const [costCentreVersion, setCostCentreVersion] = useState(0);
+  // them via a plain function call, so it has no way to know they changed on its own.
+  // Shell bumps this version each time it applies the rules (on load, on this tab's own
+  // edits and on another tab's PG_DATA_EVENT) purely to force that useMemo to rerun.
+  const costCentreVersion = costCentreSource.version;
 
   const folderList = useMemo(() => (folderSet ? [...folderSet].sort((a, b) => a.localeCompare(b)) : []), [folderSet]);
   // Reflects the cost-centre/sub-project relationships defined in nameMatch.js's
@@ -1337,15 +1341,12 @@ export default function Clients({ canWrite = false }) {
     setFolderSet(new Set((cu?.rows || []).map((r) => r.folder).filter(Boolean)));
   }
 
-  // Fetched independently here (Shell.jsx also fetches this to feed every other module) rather
-  // than just relying on Shell's own fetch to finish and trusting the timing -- awaiting it
-  // directly before bumping costCentreVersion means this page's own display can never show a
-  // stale dynamic-rules snapshot after an edit, regardless of when Shell's fetch resolves.
+  // After this page's own cost-centre edit: awaits Shell's refresh (which re-applies the
+  // rules and bumps the version) so the just-edited folder shows in the same interaction,
+  // instead of waiting on the PG_DATA_EVENT round-trip.
   async function loadCostCentres() {
     try {
-      const rows = await fetchCostCentres();
-      setDynamicCostCentres(rows);
-      setCostCentreVersion((v) => v + 1);
+      await costCentreSource.refresh();
     } catch (e) {
       // Previously silent -- a failure here left every dynamic/task-prefix cost-centre
       // rule stale with zero indication, the same failure class that made a real
@@ -1358,7 +1359,6 @@ export default function Clients({ canWrite = false }) {
   useEffect(() => {
     load();
     loadFolders();
-    loadCostCentres();
     loadEvents();
     let cancelled = false;
     loadCapKey(CAP_PEOPLE_KEY, SEED_PEOPLE).then((v) => { if (!cancelled) setCapPeople(v || SEED_PEOPLE); });
@@ -1367,7 +1367,6 @@ export default function Clients({ canWrite = false }) {
       // A consultant/status/new-client change made from Capacity Planning writes to the same
       // pginvoice_clients table -- refresh so it shows here without a full page reload.
       if (!e.detail || e.detail.key === PG_CLIENTS_KEY) { load(); loadEvents(); }
-      if (!e.detail || e.detail.key === PG_COST_CENTRES_KEY) loadCostCentres();
       if (!e.detail || e.detail.key === CAP_PEOPLE_KEY) loadCapKey(CAP_PEOPLE_KEY, SEED_PEOPLE).then((v) => setCapPeople(v || SEED_PEOPLE));
     };
     window.addEventListener(PG_DATA_EVENT, onUpdate);
@@ -1503,6 +1502,7 @@ export default function Clients({ canWrite = false }) {
         </div>
 
         {loadError && <div className="pg-banner-warn">{loadError}</div>}
+        {costCentreSource.error && <div className="pg-banner-warn">Couldn't load cost-centre rules: {costCentreSource.error}</div>}
 
         <div className="pg-panel" style={{ gap: 24, flexWrap: "wrap" }}>
           <Stat value={snapshot.total} label="Active clients" />

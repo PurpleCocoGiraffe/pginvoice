@@ -6,6 +6,7 @@
 import { findPersonMatch } from "./nameMatch.js";
 import { computeMonthlyAvailability, last6MonthKeys } from "./capacityData.js";
 import { carryOutOf } from "./format.js";
+import { ownNameSet, isOwnName } from "./ownTime.js";
 
 /* ============================================================
    SCOPE (Overview "assigned" mode)
@@ -25,7 +26,6 @@ function clientInScope(scope) {
   const names = new Set(scope.clients || []);
   return (name) => names.has(name);
 }
-const normUser = (s) => String(s ?? "").trim().toLowerCase();
 
 /* ============================================================
    TEAM — per-consultant, per-month billable/non-billable/PG-time totals
@@ -50,9 +50,9 @@ export function teamMonthlyTotals(people, clickupData, monthKeys, scope) {
   const userMatch = new Map();
   const usernames = new Set();
   for (const r of clickupData.rows) if (r.user) usernames.add(r.user);
-  const mine = scope ? new Set((scope.userNames || []).map(normUser).filter(Boolean)) : null;
+  const mine = scope ? ownNameSet(scope.userNames) : null;
   usernames.forEach((u) => {
-    if (mine) { userMatch.set(u, scope.personName && mine.has(normUser(u)) ? scope.personName : null); return; }
+    if (mine) { userMatch.set(u, scope.personName && isOwnName(mine, u) ? scope.personName : null); return; }
     // The "Purple Giraffe" ClickUp login is a shared account DMA (an external
     // contractor) logs time under — attribute it to DMA rather than dropping it.
     if (u.trim().toLowerCase() === "purple giraffe") { userMatch.set(u, "DMA (external)"); return; }

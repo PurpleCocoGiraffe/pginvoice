@@ -11,9 +11,14 @@ export function ownNameSet(userNames) {
   return new Set((userNames || []).map(norm).filter(Boolean));
 }
 
+// Whether one ClickUp user_name is in an ownNameSet.
+export function isOwnName(mine, userName) {
+  return mine.has(norm(userName));
+}
+
 // Only the rows logged by one of `userNames`; others' time on shared folders is dropped.
 export function filterOwnRows(rows, userNames) {
   const mine = ownNameSet(userNames);
   if (!mine.size) return [];
-  return (rows || []).filter((r) => mine.has(norm(r.user)));
+  return (rows || []).filter((r) => isOwnName(mine, r.user));
 }

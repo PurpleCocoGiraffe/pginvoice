@@ -57,6 +57,23 @@ export function canSee(access, moduleKey) {
   return effectiveScope(access, moduleKey) !== "none";
 }
 
+// Per-module scope props Shell hands each scoped module, one shape for all of them:
+// null = everything (admin tier, or a module at "all" -- exactly as before), otherwise
+// { personId, userNames, clients }. userNames null = pginvoice_my_access() predates
+// clickupUserNames (modules say "not available yet" where they need it). Overview at
+// anything short of "all" counts only the user's clients and their own hours.
+export function moduleScopeProps(access) {
+  const scoped = (key, scopes) => (scopes.includes(effectiveScope(access, key))
+    ? { personId: access.personId || null, userNames: access.clickupUserNames ?? null, clients: access.clients || [] }
+    : null);
+  return {
+    overview: scoped("overview", ["own", "assigned"]),
+    invoicing: scoped("invoicing", ["assigned"]),
+    timesheet: scoped("timesheet", ["own"]),
+    wages: scoped("wages", ["own"]),
+  };
+}
+
 // Settings tabs this user gets: Users & permissions for admin tier, Integrations for Super Admin.
 export function settingsTabsFor(access) {
   if (!access?.isAdminTier) return [];
