@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, Plug, HelpCircle, Menu, X, MoreHorizontal, Handshake, Wallet } from "lucide-react";
+import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, HelpCircle, Menu, X, MoreHorizontal, Handshake, Wallet } from "lucide-react";
 import Overview from "./Overview.jsx";
 import PlaceholderPage from "./PlaceholderPage.jsx";
 import PGReconciliation from "./App.jsx";
@@ -10,7 +10,6 @@ import ClientAccruals from "./ClientAccruals.jsx";
 import Clients from "./Clients.jsx";
 import TeamDashboard from "./TeamDashboard.jsx";
 import SettingsPage from "./Settings.jsx";
-import UsersPage from "./Users.jsx";
 import WagesReview from "./WagesReview.jsx";
 import ForcePasswordChange from "./ForcePasswordChange.jsx";
 import { supabase } from "./supabaseClient.js";
@@ -19,48 +18,30 @@ import { setDynamicCostCentres } from "./nameMatch.js";
 import { PG_DATA_EVENT, idbClear } from "./idbStore.js";
 import { ensureCacheOwner, releaseCacheOwner } from "./cacheOwner.js";
 import { PG_COST_CENTRES_KEY, THEME_KEY, COLLAPSE_KEY } from "./storageKeys.js";
-import { fetchOwnProfile, ROLE_LABELS, ADMIN_TIER_ROLES, CLIENT_SCOPED_ROLES } from "./usersSync.js";
+import { fetchOwnProfile, fetchOwnAccess, ROLE_LABELS } from "./usersSync.js";
+import { visibleNav, bottomNavFor, reachableKeys, canSee, settingsTabsFor, resolveAccess } from "./permissions.js";
 
-// Nav order/labels follow the approved Purple Giraffe Design OS mockup.
-// Consultant/Coordinator (client-scoped roles) only get a subset — see
-// CLIENT_SCOPED_MODULE_KEYS below. Everything here is the full, Admin-tier nav.
-const MODULES = [
-  { key: "overview", label: "Overview", icon: LayoutDashboard },
-  { key: "invoicing", label: "Client Invoicing", icon: FileText },
-  { key: "capacity", label: "Capacity Planning", icon: BarChart3 },
-  { key: "team", label: "Consultants", icon: Users },
-  { key: "clients", label: "Clients", icon: Building2 },
-  { key: "timesheet", label: "Timesheets", icon: CalendarDays },
-  { key: "accruals", label: "Client Accruals", icon: Clock },
-  { key: "performance", label: "Reporting", icon: TrendingUp },
-  { key: "wages", label: "Wages review", icon: Wallet },
-  { key: "bdm", label: "BDM", icon: Handshake },
-];
-// Payroll-adjacent: Super Admin + Admin only (the wage tables' RLS is admin tier too).
-const ADMIN_ONLY_MODULE_KEYS = new Set(["wages"]);
-// What Consultant/Coordinator can see: Overview, Clients, Client Accruals,
-// Reporting only — real enforcement is the RLS scoping to their assigned
-// clients (usersSync/pginvoice_rbac migration), this is just matching nav to it.
-const CLIENT_SCOPED_MODULE_KEYS = new Set(["overview", "clients", "accruals", "performance"]);
-// Mobile bottom tab bar: the 4 most-used modules, short labels so 5 tabs
-// (these plus "More") fit comfortably on a phone-width bar.
-const BOTTOM_NAV_MODULES = [
-  { key: "overview", label: "Overview", icon: LayoutDashboard },
-  { key: "invoicing", label: "Invoicing", icon: FileText },
-  { key: "capacity", label: "Capacity", icon: BarChart3 },
-  { key: "team", label: "Team", icon: Users },
-];
-// Present in the approved nav, but no real functionality behind them yet —
-// each renders an honest "not built" placeholder rather than fake content.
-const SECONDARY_MODULES = [
-  { key: "settings", label: "Settings", icon: Settings },
-  { key: "integrations", label: "Integrations", icon: Plug },
-  { key: "help", label: "Help", icon: HelpCircle },
-];
-// Users management: Super Admin + Admin only (spec: "Super Admins have access
-// to integration and all other features. Admins have access to all other
-// features" — Integrations is Super Admin-only, Users is both admin tiers).
-const USERS_MODULE = { key: "users", label: "Users", icon: Users };
+// Which nav items a user gets comes from permissions.js (driven by pginvoice_my_access());
+// this only adds the icons. Order/labels live there and are pinned by permissions.test.js.
+const NAV_ICONS = {
+  overview: LayoutDashboard, invoicing: FileText, capacity: BarChart3, team: Users, clients: Building2,
+  timesheet: CalendarDays, accruals: Clock, performance: TrendingUp, wages: Wallet, bdm: Handshake,
+  settings: Settings, help: HelpCircle,
+};
+const withIcon = (m) => ({ ...m, icon: NAV_ICONS[m.key] });
+
+// Centred message + actions, for every "can't show the app" state below.
+function FullScreenNotice({ children, onReload, onSignOut }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
+      <div>
+        <p>{children}</p>
+        {onReload && <button className="pg-btn" onClick={() => window.location.reload()} style={{ marginTop: 12, marginRight: 8 }}>Reload</button>}
+        {onSignOut && <button className="pg-btn" onClick={onSignOut} style={{ marginTop: 12 }}>Sign out</button>}
+      </div>
+    </div>
+  );
+}
 
 // Real Supabase Auth — checked server-side. Every pginvoice_* table's RLS
 // policy requires the `authenticated` role, so signing in here is what
@@ -119,6 +100,7 @@ export default function Shell() {
   // for someone who's already signed in); false/session once known.
   const [session, setSession] = useState(null);
   // null = still loading; false = loaded but no pginvoice_profiles row (no access).
+  // Otherwise the profile plus `access` (permissions.js shape; null = couldn't load it).
   const [profile, setProfile] = useState(null);
   // User id whose cached data (IndexedDB + user-data localStorage) has been verified as
   // theirs -- modules don't mount until this matches the session, see cacheOwner.js.
@@ -188,13 +170,22 @@ export default function Shell() {
       .catch((e) => console.warn("Couldn't clear cached data on sign-out", e));
   };
 
-  // Own role + (if client-scoped) assigned clients — decides which nav items
-  // render. The actual data access restriction happens at the RLS layer
-  // regardless of what's shown here; this just keeps the UI honest about it.
+  // Own role + effective module access (pginvoice_my_access) — decides which nav items
+  // render and which modules mount. The actual data access restriction happens at the
+  // RLS layer regardless of what's shown here; this just keeps the UI honest about it.
   useEffect(() => {
     if (!session) { setProfile(session === false ? false : null); return; }
     let cancelled = false;
-    const reload = () => fetchOwnProfile().then((p) => { if (!cancelled) setProfile(p ?? false); });
+    const reload = async () => {
+      const [p, result] = await Promise.all([
+        fetchOwnProfile(),
+        fetchOwnAccess().then((access) => ({ access }), (error) => ({ error })),
+      ]);
+      if (cancelled) return;
+      if (!p) { setProfile(false); return; }
+      if (result.error) console.warn("Couldn't load module access", result.error);
+      setProfile((prev) => ({ ...p, access: resolveAccess(p, result, prev) }));
+    };
     reload();
     // An admin changing someone's role while they have a tab open otherwise leaves
     // that tab's nav stale until a manual reload -- refetch on refocus so the common
@@ -222,45 +213,33 @@ export default function Shell() {
   if (session === null) return null; // brief check, avoids a login-screen flash
   if (!session) return <LoginGate onSuccess={setSession} />;
   if (cacheError) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
-        <div>
-          <p>Couldn't clear data saved in this browser by a previous account. Reload to try again.</p>
-          <button className="pg-btn" onClick={() => window.location.reload()} style={{ marginTop: 12, marginRight: 8 }}>Reload</button>
-          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
-        </div>
-      </div>
-    );
+    return <FullScreenNotice onReload onSignOut={logOut}>Couldn't clear data saved in this browser by a previous account. Reload to try again.</FullScreenNotice>;
   }
   if (!userId || cacheReadyFor !== userId) return null; // brief: previous user's cache being cleared
   if (profile === null) return null; // brief check, avoids a nav flash of the wrong scope
   if (!profile) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
-        <div>
-          <p>Your account isn't set up with access yet. Ask a Super Admin to add you in Users.</p>
-          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
-        </div>
-      </div>
-    );
+    return <FullScreenNotice onSignOut={logOut}>Your account isn't set up with access yet. Ask an Admin to add you in Settings → Users &amp; permissions.</FullScreenNotice>;
   }
   if (profile.mustChangePassword) {
     return <ForcePasswordChange userId={profile.userId} onDone={() => setProfile((p) => ({ ...p, mustChangePassword: false }))} />;
   }
 
-  const isClientScoped = CLIENT_SCOPED_ROLES.has(profile.role);
-  const isAdminTier = ADMIN_TIER_ROLES.has(profile.role);
-  const isSuperAdmin = profile.role === "super_admin";
-  const visibleModules = isClientScoped
-    ? MODULES.filter((m) => CLIENT_SCOPED_MODULE_KEYS.has(m.key))
-    : MODULES.filter((m) => isAdminTier || !ADMIN_ONLY_MODULE_KEYS.has(m.key));
-  const visibleBottomNav = isClientScoped ? BOTTOM_NAV_MODULES.filter((m) => CLIENT_SCOPED_MODULE_KEYS.has(m.key)) : BOTTOM_NAV_MODULES;
-  const visibleSecondary = isClientScoped
-    ? []
-    : SECONDARY_MODULES.filter((m) => m.key !== "integrations" || isSuperAdmin);
-  if (isAdminTier) visibleSecondary.push(USERS_MODULE);
-  if (isClientScoped && !CLIENT_SCOPED_MODULE_KEYS.has(active)) { setActive("overview"); return null; }
-  if (!isAdminTier && ADMIN_ONLY_MODULE_KEYS.has(active)) { setActive("overview"); return null; }
+  const access = profile.access;
+  if (!access) {
+    return <FullScreenNotice onReload onSignOut={logOut}>Couldn't load what your account can access. Check your connection and reload.</FullScreenNotice>;
+  }
+  const nav = visibleNav(access);
+  const visibleModules = nav.modules.map(withIcon);
+  const visibleSecondary = nav.secondary.map(withIcon);
+  const visibleBottomNav = bottomNavFor(access).map(withIcon);
+  const settingsTabs = settingsTabsFor(access);
+  const reachable = reachableKeys(access);
+  if (!reachable.length) {
+    return <FullScreenNotice onSignOut={logOut}>No modules have been turned on for your account yet. Ask an Admin to grant access in Settings → Users &amp; permissions.</FullScreenNotice>;
+  }
+  // Redirect guard: access can shrink while a tab is open (refetched on focus).
+  if (!reachable.includes(active)) { setActive(reachable[0]); return null; }
+  const show = (key) => ({ display: active === key ? "block" : "none" });
 
   const username = session.user?.email?.split("@")[0] || "Account";
 
@@ -354,34 +333,31 @@ export default function Shell() {
         {/* All modules stay mounted at once — switching tabs used to unmount the
             inactive one and wipe its in-memory state (an uploaded CSV, filters,
             etc). Hiding with CSS instead of conditional rendering keeps that
-            state alive across tab switches. Client-scoped roles (Consultant/
-            Coordinator) don't even mount the modules outside their nav — no
-            point fetching data for a page they can't reach, on top of RLS
-            already scoping what comes back. */}
-        <div style={{ display: active === "overview" ? "block" : "none" }}><Overview /></div>
-        {!isClientScoped && <>
-          <div style={{ display: active === "invoicing" ? "block" : "none" }}><PGReconciliation onNavigateClients={() => setActive("clients")} /></div>
-          <div style={{ display: active === "capacity" ? "block" : "none" }}><CapacityDashboard onNavigateTeam={() => setActive("team")} /></div>
-          <div style={{ display: active === "team" ? "block" : "none" }}><TeamDashboard /></div>
-          <div style={{ display: active === "timesheet" ? "block" : "none" }}><TimesheetSummary /></div>
-          <div style={{ display: active === "bdm" ? "block" : "none" }}>
+            state alive across tab switches. Only modules this user can open are
+            mounted at all — no point fetching data for a page they can't reach,
+            on top of RLS already scoping what comes back. */}
+        {canSee(access, "overview") && <div style={show("overview")}><Overview /></div>}
+        {canSee(access, "invoicing") && <div style={show("invoicing")}><PGReconciliation onNavigateClients={() => setActive("clients")} /></div>}
+        {canSee(access, "capacity") && <div style={show("capacity")}><CapacityDashboard onNavigateTeam={() => setActive("team")} /></div>}
+        {canSee(access, "team") && <div style={show("team")}><TeamDashboard /></div>}
+        {canSee(access, "timesheet") && <div style={show("timesheet")}><TimesheetSummary /></div>}
+        {canSee(access, "bdm") && (
+          <div style={show("bdm")}>
             <PlaceholderPage title="BDM." subtitle="Business development tracking isn't built yet." icon={Handshake} empty="BDM module coming soon." />
           </div>
-        </>}
-        <div style={{ display: active === "performance" ? "block" : "none" }}><PerformanceScorecard /></div>
-        <div style={{ display: active === "accruals" ? "block" : "none" }}><ClientAccruals /></div>
-        <div style={{ display: active === "clients" ? "block" : "none" }}><Clients /></div>
-        {!isClientScoped && <>
-          <div style={{ display: active === "settings" ? "block" : "none" }}>
-            <PlaceholderPage title="Settings." subtitle="Workspace preferences aren't built yet." icon={Settings} empty="Settings module coming soon." />
-          </div>
-          {isSuperAdmin && <div style={{ display: active === "integrations" ? "block" : "none" }}><SettingsPage /></div>}
-          <div style={{ display: active === "help" ? "block" : "none" }}>
+        )}
+        {canSee(access, "performance") && <div style={show("performance")}><PerformanceScorecard /></div>}
+        {canSee(access, "accruals") && <div style={show("accruals")}><ClientAccruals /></div>}
+        {canSee(access, "clients") && <div style={show("clients")}><Clients /></div>}
+        {canSee(access, "wages") && <div style={show("wages")}><WagesReview /></div>}
+        {reachable.includes("settings") && (
+          <div style={show("settings")}><SettingsPage tabs={settingsTabs} ownRole={profile.role} ownUserId={profile.userId} /></div>
+        )}
+        {reachable.includes("help") && (
+          <div style={show("help")}>
             <PlaceholderPage title="Help." subtitle="Documentation and support aren't built yet." icon={HelpCircle} empty="Help module coming soon." />
           </div>
-          {isAdminTier && <div style={{ display: active === "wages" ? "block" : "none" }}><WagesReview /></div>}
-          {isAdminTier && <div style={{ display: active === "users" ? "block" : "none" }}><UsersPage ownRole={profile.role} ownUserId={profile.userId} /></div>}
-        </>}
+        )}
       </main>
       {/* Mobile only (see .pg-bottom-nav's media query) -- a persistent bottom
           tab bar instead of the sidebar's hamburger, matching how a native

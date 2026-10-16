@@ -6,22 +6,9 @@
 // deletes a user goes through the manage-users Edge Function instead, since
 // only it holds the service-role key needed to touch auth.users.
 import { supabase } from "./supabaseClient.js";
+import { CLIENT_SCOPED_ROLES } from "./roles.js";
 
-export const ROLES = ["super_admin", "admin", "consultant", "coordinator"];
-export const ROLE_LABELS = {
-  super_admin: "Super Admin",
-  admin: "Admin",
-  consultant: "Consultant",
-  coordinator: "Coordinator",
-};
-// Roles scoped to only their assigned clients, rather than the whole client base.
-export const CLIENT_SCOPED_ROLES = new Set(["consultant", "coordinator"]);
-export const ADMIN_TIER_ROLES = new Set(["super_admin", "admin"]);
-// These two need a linked ClickUp identity -- it's how their client access
-// mostly gets derived. Admin-tier roles see everything regardless, so it's
-// optional for them.
-export const CLICKUP_REQUIRED_ROLES = new Set(["consultant", "coordinator"]);
-export const CLIENT_SOURCE_LABELS = { manual: "manual", clickup: "via ClickUp", capacity_lead: "via Capacity lead" };
+export { ROLES, ROLE_LABELS, CLIENT_SCOPED_ROLES, ADMIN_TIER_ROLES, CLICKUP_REQUIRED_ROLES, CLIENT_SOURCE_LABELS } from "./roles.js";
 
 // Called once per session (Shell.jsx) to know what nav/data this signed-in
 // user gets. Returns null if the user has no pginvoice_profiles row yet
@@ -44,6 +31,17 @@ export async function fetchOwnProfile() {
     clients = (rows || []).map((r) => r.client);
   }
   return { userId: data.user_id, role: data.role, mustChangePassword: !!data.must_change_password, clients };
+}
+
+// The signed-in user's effective module access, from pginvoice_my_access() (one RPC,
+// computed server-side: admin tier "all", else override ?? role preset ?? "none"). Returns
+// null when they have no profile. Throws the raw PostgREST error on failure -- Shell.jsx
+// checks it with permissions.js's isMissingRpcError to fall back to role-derived access
+// while the 20261016_user_permissions migration isn't applied yet.
+export async function fetchOwnAccess() {
+  const { data, error } = await supabase.rpc("pginvoice_my_access");
+  if (error) throw error;
+  return data ?? null;
 }
 
 // After a successful password change, clear the flag so LoginGate/Shell.jsx
@@ -71,13 +69,23 @@ async function callManageUsers(payload) {
   return data;
 }
 
+// { users, presets: { role: { module: scope } }, moduleScopes: { module: [scopes] } } --
+// moduleScopes lists only the modules a non-admin can be granted.
 export async function fetchUsers() {
   const body = await callManageUsers({ action: "list" });
-  return body.users || [];
+  return { users: body.users || [], presets: body.presets || {}, moduleScopes: body.moduleScopes || {} };
 }
 
-export async function createUser({ email, password, role, clients, clickupUserName }) {
-  return callManageUsers({ action: "create", email, password, role, clients, clickupUserName });
+export async function createUser({ email, password, role, clients, clickupUserName, personId, moduleOverrides }) {
+  return callManageUsers({ action: "create", email, password, role, clients, clickupUserName, personId, moduleOverrides });
+}
+
+// Roster person link + module overrides for a non-admin. personId: undefined = unchanged,
+// null = unlink. moduleChanges: { module_key: scope | null } for just the modules being
+// changed (see permissions.js overrideChanges), null = back to the role default. The
+// server refuses self-edits and admin-tier targets.
+export async function setUserAccess({ userId, personId, moduleChanges }) {
+  return callManageUsers({ action: "set_access", userId, personId, moduleChanges });
 }
 
 export async function updateUserRoleAndClients({ userId, role, clients, clickupUserName }) {
