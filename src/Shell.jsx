@@ -11,6 +11,7 @@ import Clients from "./Clients.jsx";
 import TeamDashboard from "./TeamDashboard.jsx";
 import SettingsPage from "./Settings.jsx";
 import WagesReview from "./WagesReview.jsx";
+import WagesSelf from "./WagesSelf.jsx";
 import ForcePasswordChange from "./ForcePasswordChange.jsx";
 import { supabase } from "./supabaseClient.js";
 import { fetchCostCentres } from "./clientsSync.js";
@@ -374,7 +375,9 @@ export default function Shell() {
         {canSee(access, "performance") && <div style={show("performance")}><PerformanceScorecard /></div>}
         {canSee(access, "accruals") && <div style={show("accruals")}><ClientAccruals canWrite={access.isAdminTier} /></div>}
         {canSee(access, "clients") && <div style={show("clients")}><Clients canWrite={access.isAdminTier} /></div>}
-        {canSee(access, "wages") && <div style={show("wages")}><WagesReview /></div>}
+        {canSee(access, "wages") && <div style={show("wages")}>
+          {effectiveScope(access, "wages") === "own" ? <WagesSelf personId={access.personId || null} /> : <WagesReview />}
+        </div>}
         {reachable.includes("settings") && (
           <div style={show("settings")}><SettingsPage tabs={settingsTabs} ownRole={profile.role} ownUserId={profile.userId} /></div>
         )}

@@ -5,7 +5,7 @@ vi.mock("./supabaseClient.js", () => ({ supabase: {} }));
 
 import {
   buildMonthView, buildSnapshot, computeTotals, groupLines, filterLines, normaliseSettings, typeShort,
-  hasExpected, adjustedExpected, variancePctOfAdjusted, toWorkbookRows, WORKBOOK_HEADINGS, REVIEW_FIELDS, COMMENT_FIELDS,
+  hasExpected, adjustedExpected, variancePctOfAdjusted, toWorkbookRows, WORKBOOK_HEADINGS, REVIEW_FIELDS, COMMENT_FIELDS, selfWageView,
 } from "./wagesView.js";
 import { expectedFor, computeLine } from "./wagesCalc.js";
 
@@ -323,5 +323,63 @@ describe("toWorkbookRows", () => {
     const [row] = toWorkbookRows([line([{ effective_from: "2020-01-01", basis: "casual_xero" }], 100)], people);
     expect(row["Should be"]).toBe(100);
     expect(row.Variance).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------- self view (own scope) ---
+describe("selfWageView", () => {
+  const closedResult = {
+    monthKey: MONTH, status: "closed", closedAt: "2026-11-10T01:00:00Z", computedAt: "2026-11-10T00:59:00Z",
+    line: {
+      person_id: "p1", name: "Holly", state: "SA", status: "ok", clickup_h: 120.5, xero_hours: 150, expected_h: 152,
+      pg_comment: "PG note", kw_comment: "Kelly says", ls_comment: "x", phil_comment: "y", kw2_comment: "z",
+      phil_leave_applied: true, expected_override_reason: "backpay",
+    },
+    // A misbehaving server must still not get the Xero map / PG folders / ignored users onto the card.
+    settings: { hours_per_day: 7.6, xero_tolerance_h: 0.5, variance_threshold_h: 4, xero_name_map: { "Holly N": "p1" }, pg_folders: ["PG HQ"], ignored_users: ["Bot"] },
+    standardHours: 167.2, weekdays: 22, holidaysByState: { SA: [], WA: [], QLD: [] },
+  };
+
+  it("a closed month gives one read-only line without comments, sign-offs or override reasons", () => {
+    const v = selfWageView(closedResult, { photo: "data:x" });
+    expect(v.state).toBe("closed");
+    expect(v.line.xero_hours).toBe(150);
+    expect(v.line.clickup_h).toBe(120.5);
+    expect(v.line.photo).toBe("data:x");
+    for (const k of [...COMMENT_FIELDS, "phil_leave_applied", "expected_override_reason"]) expect(v.line).not.toHaveProperty(k);
+    expect(v.view).toMatchObject({ monthKey: MONTH, closed: true, fromSnapshot: true, perDay: 7.6, standardHours: 167.2, weekdays: 22 });
+  });
+
+  it("keeps only the safe settings (never the Xero name map, PG folders or ignored users)", () => {
+    const v = selfWageView(closedResult);
+    expect(Object.keys(v.view.settings).sort()).toEqual(["hours_per_day", "variance_threshold_h", "xero_tolerance_h"]);
+    expect(JSON.stringify(v)).not.toContain("Holly N");
+  });
+
+  it("does not mutate the RPC result", () => {
+    selfWageView(closedResult);
+    expect(closedResult.line.kw_comment).toBe("Kelly says");
+  });
+
+  it("a draft / unknown month is not reviewed and carries no numbers (never zeros)", () => {
+    for (const r of [{ monthKey: MONTH, status: "draft" }, { monthKey: MONTH, status: "none" }, null]) {
+      const v = selfWageView(r);
+      expect(v.state).toBe("not_reviewed");
+      expect(v).not.toHaveProperty("line");
+      expect(v).not.toHaveProperty("view");
+    }
+    // Even if a draft somehow came back with a line, it isn't shown.
+    expect(selfWageView({ ...closedResult, status: "draft" })).toEqual({ state: "not_reviewed", monthKey: MONTH });
+  });
+
+  it("a closed month without the person's line says so rather than showing zeros", () => {
+    expect(selfWageView({ ...closedResult, line: null })).toEqual({ state: "not_included", monthKey: MONTH });
+  });
+
+  it("falls back to locally derived month figures when the RPC omits them", () => {
+    const v = selfWageView({ monthKey: MONTH, status: "closed", line: { person_id: "p1" }, settings: {} });
+    expect(v.view.weekdays).toBe(22);
+    expect(v.view.perDay).toBe(normaliseSettings({}).hours_per_day);
+    expect(v.view.holidaysByState).toHaveProperty("SA");
   });
 });

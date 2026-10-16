@@ -464,3 +464,39 @@ export function toWorkbookRows(lines, people) {
     return Object.fromEntries(WORKBOOK_HEADINGS.map((h, i) => [h, blank(vals[i])]));
   });
 }
+
+// ---------------------------------------------------------------- self view (own scope) ---
+// A non-admin with Wages scope "own" sees one read-only card per CLOSED month, built from
+// pginvoice_my_wage_line(month) (20261017_scoped_modules.sql): their own snapshot line with
+// reviewer comments stripped, plus hours per day and the two tolerances. Pure adapter from
+// that RPC result to { state, ... }:
+//   "closed"       -> { line, view } ready for WageCard (readOnly);
+//   "not_included" -> the month is closed but has no line for this person;
+//   "not_reviewed" -> a draft or unknown month: no numbers at all, never zeros.
+// Strips the comment / sign-off / override-reason fields again (the server already does) and
+// keeps only the safe settings, so nothing reviewer-only can reach the card.
+const SELF_HIDDEN_FIELDS = [...COMMENT_FIELDS, "phil_leave_applied", "expected_override_reason"];
+const SAFE_SETTING_KEYS = ["hours_per_day", "xero_tolerance_h", "variance_threshold_h"];
+export function selfWageView(result, { photo = "" } = {}) {
+  const monthKey = result?.monthKey ?? null;
+  if (!result || result.status !== "closed") return { state: "not_reviewed", monthKey };
+  if (!result.line) return { state: "not_included", monthKey };
+  const line = { ...result.line, photo: photo || "" };
+  for (const k of SELF_HIDDEN_FIELDS) delete line[k];
+  const normalised = normaliseSettings(result.settings);
+  const settings = Object.fromEntries(SAFE_SETTING_KEYS.map((k) => [k, normalised[k]]));
+  return {
+    state: "closed",
+    monthKey,
+    closedAt: result.closedAt ?? null,
+    computedAt: result.computedAt ?? null,
+    line,
+    view: {
+      monthKey, closed: true, fromSnapshot: true, settings,
+      perDay: settings.hours_per_day,
+      weekdays: result.weekdays ?? wageWeekdaysInMonth(monthKey),
+      standardHours: result.standardHours ?? standardMonthHours(monthKey, settings.hours_per_day),
+      holidaysByState: result.holidaysByState || holidaysByState(monthKey),
+    },
+  };
+}

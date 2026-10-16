@@ -482,7 +482,9 @@ function CardMenu({ line, onOpen }) {
   );
 }
 
-export function WageCard({ line, view, monthText, onOpen }) {
+// `readOnly` (Wages self view, WagesSelf.jsx): no actions menu and no review footer
+// (sign-off dots, comment count, Details) -- the person sees their own numbers only.
+export function WageCard({ line, view, monthText, onOpen, readOnly = false }) {
   const n = commentCount(line);
   const pres = presenceOf(line);
   const lc = line.lifecycle || {};
@@ -505,19 +507,19 @@ export function WageCard({ line, view, monthText, onOpen }) {
             {lc.hoursChanged && <span className="wr-chip">Hours changed {fmtDay(lc.hoursChanged)}</span>}
           </div>
         </div>
-        <CardMenu line={line} onOpen={onOpen} />
+        {!readOnly && <CardMenu line={line} onOpen={onOpen} />}
       </header>
       <LeaveSection line={line} month={monthText} perDay={view.perDay} />
       <ReconSection line={line} settings={view.settings} />
       <BillableSection line={line} />
       <HoursSection line={line} view={view} />
-      <footer className="wr-card__foot">
+      {!readOnly && <footer className="wr-card__foot">
         <ReviewDots line={line} />
         <span className="wr-card__count"><MessageSquare size={12} aria-hidden="true" /> {n}<span className="wr-sr"> comments</span></span>
         <button type="button" className="wr-card__details" onClick={() => onOpen(line.person_id)}>
           Details <ChevronRight size={14} aria-hidden="true" />
         </button>
-      </footer>
+      </footer>}
     </article>
   );
 }
