@@ -22,18 +22,22 @@ export const LIVE_SYNC_LABEL = "Live sync from ClickUp";
 // full history (Client Invoicing's month picker, recomputeAccruals) omit it.
 const ENTRY_COLUMNS = "folder, task, task_id, minutes, billable, has_billable_col, user_name, is_internal, month_key, month_label, date_key";
 
-export async function fetchClickupFromSupabase(sinceMonthKey) {
+// `userNames` (optional): only these exact ClickUp user_name spellings (a user's own time --
+// Timesheets / Overview in "own" mode, see pginvoice_my_access().clickupUserNames). An empty
+// list means "nobody": returns null without querying. Omitted = every user.
+export async function fetchClickupFromSupabase(sinceMonthKey, { userNames } = {}) {
+  if (Array.isArray(userNames) && !userNames.length) return null;
   try {
-    return await fetchClickupPages(sinceMonthKey, `${ENTRY_COLUMNS}, space_id`);
+    return await fetchClickupPages(sinceMonthKey, `${ENTRY_COLUMNS}, space_id`, userNames);
   } catch (err) {
     // space_id is a newer column -- until its migration has run, read the table as before
     // rather than blanking every module that depends on this data.
     if (!/space_id/.test(String(err?.message || ""))) throw err;
-    return fetchClickupPages(sinceMonthKey, ENTRY_COLUMNS);
+    return fetchClickupPages(sinceMonthKey, ENTRY_COLUMNS, userNames);
   }
 }
 
-async function fetchClickupPages(sinceMonthKey, columns) {
+async function fetchClickupPages(sinceMonthKey, columns, userNames) {
   let all = [];
   let from = 0;
   while (true) {
@@ -47,6 +51,7 @@ async function fetchClickupPages(sinceMonthKey, columns) {
       .order("entry_start", { ascending: true })
       .order("entry_id", { ascending: true });
     if (sinceMonthKey) q = q.gte("month_key", sinceMonthKey);
+    if (Array.isArray(userNames)) q = q.in("user_name", userNames);
     const { data, error } = await q.range(from, from + PAGE_SIZE - 1);
     if (error) throw error;
     if (!data || !data.length) break;

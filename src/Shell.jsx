@@ -254,6 +254,8 @@ export default function Shell() {
   const show = (key) => ({ display: active === key ? "block" : "none" });
   // Per-module scope props: null = everything (admin tier, exactly as before).
   const invoicingScope = effectiveScope(access, "invoicing") === "assigned" ? { userNames: access.clickupUserNames || [] } : null;
+  // userNames null = pginvoice_my_access() predates clickupUserNames: the module says "not available yet".
+  const timesheetOwn = effectiveScope(access, "timesheet") === "own" ? { personId: access.personId || null, userNames: access.clickupUserNames ?? null } : null;
 
   const username = session.user?.email?.split("@")[0] || "Account";
 
@@ -363,7 +365,7 @@ export default function Shell() {
         )}
         {canSee(access, "capacity") && <div style={show("capacity")}><CapacityDashboard onNavigateTeam={() => setActive("team")} /></div>}
         {canSee(access, "team") && <div style={show("team")}><TeamDashboard /></div>}
-        {canSee(access, "timesheet") && <div style={show("timesheet")}><TimesheetSummary /></div>}
+        {canSee(access, "timesheet") && <div style={show("timesheet")}><TimesheetSummary key={timesheetOwn ? "own" : "all"} own={timesheetOwn} /></div>}
         {canSee(access, "bdm") && (
           <div style={show("bdm")}>
             <PlaceholderPage title="BDM." subtitle="Business development tracking isn't built yet." icon={Handshake} empty="BDM module coming soon." />
