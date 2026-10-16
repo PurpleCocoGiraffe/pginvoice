@@ -23,6 +23,12 @@ export const NAV_MODULES = [
   { key: "bdm", label: "BDM" },
 ];
 // Mobile bottom tab bar (plus "More"): short labels so five tabs fit a phone-width bar.
+// BOTTOM_NAV_MODULES is the preferred set; spare slots fill from the user's other visible
+// modules in NAV_MODULES order, using BOTTOM_NAV_SHORT_LABELS.
+export const BOTTOM_NAV_SIZE = 4;
+export const BOTTOM_NAV_SHORT_LABELS = {
+  clients: "Clients", timesheet: "Timesheet", accruals: "Accruals", performance: "Reporting", wages: "Wages", bdm: "BDM",
+};
 export const BOTTOM_NAV_MODULES = [
   { key: "overview", label: "Overview" },
   { key: "invoicing", label: "Invoicing" },
@@ -66,9 +72,18 @@ export function visibleNav(access) {
   return { modules, secondary };
 }
 
-// Mobile bottom bar: the preferred four, minus anything this user can't open.
+// Mobile bottom bar: up to four tabs -- the preferred ones this user can open, then their
+// other visible modules in sidebar order. Admin tier sees every module, so it always gets
+// exactly the preferred four (unchanged); a consultant on the default preset gets
+// Overview / Invoicing / Timesheet / Wages.
 export function bottomNavFor(access) {
-  return BOTTOM_NAV_MODULES.filter((m) => canSee(access, m.key));
+  const tabs = BOTTOM_NAV_MODULES.filter((m) => canSee(access, m.key));
+  for (const m of NAV_MODULES) {
+    if (tabs.length >= BOTTOM_NAV_SIZE) break;
+    if (tabs.some((t) => t.key === m.key) || !canSee(access, m.key)) continue;
+    tabs.push({ key: m.key, label: BOTTOM_NAV_SHORT_LABELS[m.key] || m.label });
+  }
+  return tabs.slice(0, BOTTOM_NAV_SIZE);
 }
 
 // Every page key this user may land on (main + secondary).
