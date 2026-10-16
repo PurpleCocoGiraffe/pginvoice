@@ -26,6 +26,8 @@
 --   5. pginvoice_my_wage_months() / pginvoice_my_wage_line(month): the caller's own line of
 --      a CLOSED month's snapshot, reviewer comments stripped. Wage tables stay admin-only.
 --   6. pginvoice_my_access() gains clickupUserNames (the caller's exact ClickUp spellings).
+--   7. pginvoice_name_matches: Client Invoicing's manual name-match overrides, shared (they
+--      were per-browser localStorage). Readable with Invoicing access, admin-tier writes.
 --
 -- Rule this all serves: Client Invoicing computes over the FULL inputs, then filters which
 -- cards to show (display-only scoping). Hiding inputs server-side changes fuzzy/prefix
@@ -310,6 +312,57 @@ language sql stable security definer set search_path = public, pg_temp as $fn$
   from pginvoice_profiles p
   where p.user_id = auth.uid();
 $fn$;
+
+-- ---------------------------------------------------------------------------
+-- 7. pginvoice_name_matches: Client Invoicing's manual "Match to accrued client…" overrides,
+-- shared by everyone (they used to live in each admin's browser localStorage under
+-- 'pg-name-map-v1', so a scoped user's pipeline never saw them). One row per ClickUp folder
+-- name -> accrued (ledger) client name. Clearing an override deletes the row; there is no
+-- "explicitly unmatched" value (the old map never had one -- '__none__' only meant "clear").
+-- Read: admin tier, plus anyone whose Invoicing scope isn't 'none' -- a scoped user's
+-- pipeline needs every row, or their cards would differ from the admin's. Write: admin tier.
+-- updated_at / updated_by are stamped by trigger, never trusted from the client.
+-- ---------------------------------------------------------------------------
+create table if not exists public.pginvoice_name_matches (
+  clickup_folder text primary key,
+  accrued_name text not null,
+  updated_at timestamptz not null default now(),
+  updated_by uuid default auth.uid(),
+  constraint pginvoice_name_matches_folder_nonblank check (btrim(clickup_folder) <> ''),
+  constraint pginvoice_name_matches_name_real check (btrim(accrued_name) <> '' and accrued_name <> '__none__')
+);
+alter table public.pginvoice_name_matches enable row level security;
+
+create or replace function public.pginvoice_name_matches_stamp()
+returns trigger
+language plpgsql set search_path = public, pg_temp as $fn$
+begin
+  new.updated_at := now();
+  new.updated_by := auth.uid();
+  return new;
+end;
+$fn$;
+drop trigger if exists pginvoice_name_matches_stamp on public.pginvoice_name_matches;
+create trigger pginvoice_name_matches_stamp before insert or update on public.pginvoice_name_matches
+  for each row execute function public.pginvoice_name_matches_stamp();
+
+drop policy if exists name_matches_read on public.pginvoice_name_matches;
+drop policy if exists name_matches_insert_admin on public.pginvoice_name_matches;
+drop policy if exists name_matches_update_admin on public.pginvoice_name_matches;
+drop policy if exists name_matches_delete_admin on public.pginvoice_name_matches;
+create policy name_matches_read on public.pginvoice_name_matches for select to authenticated
+  using (pg_is_admin_tier() or pg_module_scope('invoicing') <> 'none');
+create policy name_matches_insert_admin on public.pginvoice_name_matches for insert to authenticated
+  with check (pg_is_admin_tier());
+create policy name_matches_update_admin on public.pginvoice_name_matches for update to authenticated
+  using (pg_is_admin_tier()) with check (pg_is_admin_tier());
+create policy name_matches_delete_admin on public.pginvoice_name_matches for delete to authenticated
+  using (pg_is_admin_tier());
+
+revoke all on table public.pginvoice_name_matches from public, anon;
+grant select, insert, update, delete on table public.pginvoice_name_matches to authenticated;
+grant all on table public.pginvoice_name_matches to service_role;
+revoke all on function public.pginvoice_name_matches_stamp() from public, anon;
 
 -- ---------------------------------------------------------------------------
 -- Grants: signed-in users only.

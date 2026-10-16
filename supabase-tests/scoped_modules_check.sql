@@ -13,7 +13,9 @@
 --     exactly the tables;
 --   - pginvoice_my_wage_months() / _line(): closed months only, own person only, comments
 --     and the Xero name map stripped; refuses no linked person, wages off, and admins;
---   - pginvoice_my_access().clickupUserNames (via pg_my_clickup_user_names + its index).
+--   - pginvoice_my_access().clickupUserNames (via pg_my_clickup_user_names + its index);
+--   - pginvoice_name_matches: admin writes (stamped updated_by), Invoicing users read every
+--     row but can't write, Invoicing-off users and anon read nothing, '__none__' refused.
 -- Everything runs in one transaction that is rolled back.
 --
 -- Run from the repo root against an empty Postgres 15+ database, e.g.
@@ -244,6 +246,32 @@ begin
 exception when insufficient_privilege then
   raise notice 'ok: admin is refused by the own-wages RPCs (uses the full module)';
 end $$;
+do $$
+declare n int; who uuid;
+begin
+  insert into pginvoice_name_matches (clickup_folder, accrued_name, updated_by) values
+    ('Apex Energy Solutions', 'Apex Energy', '00000000-0000-0000-0000-0000000000c1'),
+    ('BAMSS', 'Brisbane Alarm Monitoring', null);
+  select updated_by into who from pginvoice_name_matches where clickup_folder = 'Apex Energy Solutions';
+  if who is distinct from '00000000-0000-0000-0000-0000000000a1'::uuid then raise exception 'name_matches: updated_by not stamped by trigger (%)', who; end if;
+  -- Upsert, the shape the browser writes.
+  insert into pginvoice_name_matches (clickup_folder, accrued_name) values ('BAMSS', 'BAMSS Childcare Security Services')
+    on conflict (clickup_folder) do update set accrued_name = excluded.accrued_name;
+  if (select accrued_name from pginvoice_name_matches where clickup_folder = 'BAMSS') <> 'BAMSS Childcare Security Services' then raise exception 'name_matches: admin upsert failed'; end if;
+  -- The legacy migration's "never override an existing row" insert.
+  insert into pginvoice_name_matches (clickup_folder, accrued_name) values ('BAMSS', 'Stale Local Copy') on conflict (clickup_folder) do nothing;
+  if (select accrued_name from pginvoice_name_matches where clickup_folder = 'BAMSS') <> 'BAMSS Childcare Security Services' then raise exception 'name_matches: do-nothing insert overwrote a row'; end if;
+  insert into pginvoice_name_matches (clickup_folder, accrued_name) values ('Temp', 'Temp Client');
+  delete from pginvoice_name_matches where clickup_folder = 'Temp';
+  get diagnostics n = row_count;
+  if n <> 1 then raise exception 'name_matches: admin delete refused'; end if;
+  begin
+    insert into pginvoice_name_matches (clickup_folder, accrued_name) values ('X', '__none__');
+    raise exception 'name_matches: __none__ accepted';
+  exception when check_violation then null;
+  end;
+  raise notice 'ok: name_matches: admin upserts / deletes, updated_by stamped, do-nothing insert never overwrites, __none__ refused';
+end $$;
 
 -- ---- consultant c1: Majestic Plumbing only, no roster person ------------------------------
 \echo '--- consultant c1 ---'
@@ -257,6 +285,25 @@ begin
   end if;
   if a->'clickupUserNames' <> '["Holly Fraser", "holly fraser "]'::jsonb then raise exception 'c1: clickupUserNames wrong: %', a->'clickupUserNames'; end if;
   raise notice 'ok: consultant preset = Overview/Invoicing assigned, Timesheets/Wages own, rest off; exact ClickUp spellings';
+end $$;
+do $$
+declare n int;
+begin
+  -- Every row, including overrides for clients that aren't Holly's (pipeline parity).
+  select count(*) into n from pginvoice_name_matches;
+  if n <> 2 then raise exception 'c1: should read every name match, got %', n; end if;
+  begin
+    insert into pginvoice_name_matches (clickup_folder, accrued_name) values ('Majestic Plumbing (WA)', 'Majestic Plumbing');
+    raise exception 'c1 inserted a name match';
+  exception when insufficient_privilege then null;
+  end;
+  update pginvoice_name_matches set accrued_name = 'Hijack' where clickup_folder = 'BAMSS';
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'c1 updated a name match'; end if;
+  delete from pginvoice_name_matches;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'c1 deleted name matches'; end if;
+  raise notice 'ok: name_matches: an Invoicing user reads every row and cannot insert, update or delete';
 end $$;
 do $$
 declare n int;
@@ -393,7 +440,8 @@ begin
   exception when insufficient_privilege then null;
   end;
   if pginvoice_my_access()->'modules'->>'overview' <> 'assigned' then raise exception 'c3: overview should still be on'; end if;
-  raise notice 'ok: directory refuses a caller with Invoicing off even with Overview on; wages refuses wages off';
+  if exists (select 1 from pginvoice_name_matches) then raise exception 'c3 (invoicing none) can read name matches'; end if;
+  raise notice 'ok: directory and name matches refused with Invoicing off even with Overview on; wages refuses wages off';
 end $$;
 
 reset role;
@@ -404,7 +452,8 @@ begin
   begin perform pginvoice_my_wage_months(); raise exception 'anon ran my_wage_months'; exception when insufficient_privilege then null; end;
   begin perform pginvoice_my_wage_line('2026-07'); raise exception 'anon ran my_wage_line'; exception when insufficient_privilege then null; end;
   begin perform pg_my_clickup_user_names(); raise exception 'anon ran pg_my_clickup_user_names'; exception when insufficient_privilege then null; end;
-  raise notice 'ok: anon cannot execute the new RPCs';
+  begin perform 1 from pginvoice_name_matches; raise exception 'anon read name matches'; exception when insufficient_privilege then null; end;
+  raise notice 'ok: anon cannot execute the new RPCs or read name matches';
 end $$;
 reset role;
 
