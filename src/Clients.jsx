@@ -1224,7 +1224,9 @@ function AddClientPanel({ clients, folderList, onCreated, onCancel, initial = nu
   );
 }
 
-export default function Clients() {
+// `canWrite`: admin tier. Only gates applying due client events on load; client edits
+// are already admin-only under RLS.
+export default function Clients({ canWrite = false }) {
   const [clients, setClients] = useState(null);
   const [clientEvents, setClientEvents] = useState([]); // full history across all clients, filtered per-row when the drawer opens
   const [loadError, setLoadError] = useState(null);
@@ -1310,7 +1312,8 @@ export default function Clients() {
 
   async function load() {
     try {
-      await applyDueClientEvents();
+      // Applying due events writes client rows -- admin tier only (RLS refuses anyone else).
+      if (canWrite) await applyDueClientEvents();
       const data = await fetchClients();
       setClients(data);
     } catch (e) {

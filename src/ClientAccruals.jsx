@@ -24,7 +24,10 @@ function monthRange(start, end) {
 
 const fmt = (n) => (typeof n === "number" ? (Math.round(n * 100) / 100).toLocaleString() : "—");
 
-export default function ClientAccruals() {
+// `canWrite`: admin tier only. pginvoice_accruals INSERT/UPDATE is admin-only under RLS
+// (20261017_scoped_modules.sql); anyone else granted this module gets a read-only ledger --
+// no auto-recompute on load, no Recompute button, no comment editing.
+export default function ClientAccruals({ canWrite = false }) {
   const [clients, setClients] = useState(null); // null = not loaded yet
   const [statusByClient, setStatusByClient] = useState(new Map());
   const [profileByClient, setProfileByClient] = useState(new Map());
@@ -71,7 +74,7 @@ export default function ClientAccruals() {
       setProfileByClient(new Map(profiles.map((p) => [p.client, p])));
       if (!data) { setClients([]); return; }
       setClients(data);
-      if (!autoRecomputedRef.current && !recomputeInFlightRef.current) {
+      if (canWrite && !autoRecomputedRef.current && !recomputeInFlightRef.current) {
         autoRecomputedRef.current = true;
         try {
           await guardedRecompute(data);
@@ -122,7 +125,7 @@ export default function ClientAccruals() {
   }, [clients, search, month, rangeStart, rangeEnd, rangeMode, signFilter, statusFilter, statusByClient]);
 
   async function runRecompute() {
-    if (!clients || recomputeInFlightRef.current) return;
+    if (!canWrite || !clients || recomputeInFlightRef.current) return;
     setRecomputeMsg(null);
     try {
       const result = await guardedRecompute(clients);
@@ -135,6 +138,7 @@ export default function ClientAccruals() {
   }
 
   async function saveComment(client, monthKey) {
+    if (!canWrite) return;
     setSaving(true);
     try {
       // This month's own agreed hours, never the stale client-level scalar (see CLAUDE.md) --
@@ -164,7 +168,7 @@ export default function ClientAccruals() {
         <div>
           <span className="pg-eyebrow">Purple Giraffe · Internal</span>
           <h1 className="pg-app-header__title">Client Accruals</h1>
-          <p className="pg-app-header__sub">Package clients only. Accrual is auto-computed from ClickUp hours each month — worked − agreed + prior — and isn't directly editable; only comments are.</p>
+          <p className="pg-app-header__sub">Package clients only. Accrual is auto-computed from ClickUp hours each month — worked − agreed + prior — and isn't directly editable; {canWrite ? "only comments are" : "this view is read-only"}.</p>
         </div>
       </div>
 
@@ -238,7 +242,7 @@ export default function ClientAccruals() {
 
         <div className="pg-field">
           <span className="pg-field__label" style={{ visibility: "hidden" }}>Recompute</span>
-          <button className="pg-btn-ghost" disabled={recomputing} onClick={runRecompute}><RefreshCw size={14} /> {recomputing ? "Recomputing…" : "Recompute from ClickUp"}</button>
+          {canWrite && <button className="pg-btn-ghost" disabled={recomputing} onClick={runRecompute}><RefreshCw size={14} /> {recomputing ? "Recomputing…" : "Recompute from ClickUp"}</button>}
         </div>
         <div className="pg-field" style={{ marginLeft: "auto" }}>
           <span className="pg-field__label" style={{ visibility: "hidden" }}>Export</span>
@@ -312,7 +316,9 @@ export default function ClientAccruals() {
                         )}
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cell.pct != null ? `${(cell.pct * 100).toFixed(1)}%` : "—"}</td>
                         <td style={{ minWidth: 200 }}>
-                          {editingCell === commentKey ? (
+                          {!canWrite ? (
+                            <span>{cell.comment || ""}</span>
+                          ) : editingCell === commentKey ? (
                             <div style={{ display: "flex", gap: 4 }}>
                               <input
                                 className="pg-input" autoFocus value={draftComment} onChange={(e) => setDraftComment(e.target.value)}

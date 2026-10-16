@@ -370,8 +370,8 @@ export default function Shell() {
           </div>
         )}
         {canSee(access, "performance") && <div style={show("performance")}><PerformanceScorecard /></div>}
-        {canSee(access, "accruals") && <div style={show("accruals")}><ClientAccruals /></div>}
-        {canSee(access, "clients") && <div style={show("clients")}><Clients /></div>}
+        {canSee(access, "accruals") && <div style={show("accruals")}><ClientAccruals canWrite={access.isAdminTier} /></div>}
+        {canSee(access, "clients") && <div style={show("clients")}><Clients canWrite={access.isAdminTier} /></div>}
         {canSee(access, "wages") && <div style={show("wages")}><WagesReview /></div>}
         {reachable.includes("settings") && (
           <div style={show("settings")}><SettingsPage tabs={settingsTabs} ownRole={profile.role} ownUserId={profile.userId} /></div>
