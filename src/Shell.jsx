@@ -256,6 +256,9 @@ export default function Shell() {
   // Per-module scope props: null = everything (admin tier, exactly as before).
   const invoicingScope = effectiveScope(access, "invoicing") === "assigned" ? { userNames: access.clickupUserNames || [] } : null;
   // userNames null = pginvoice_my_access() predates clickupUserNames: the module says "not available yet".
+  // Anything short of "all" counts only the user's clients and their own hours.
+  const overviewScope = effectiveScope(access, "overview") !== "all"
+    ? { clients: access.clients || [], personId: access.personId || null, userNames: access.clickupUserNames ?? null } : null;
   const timesheetOwn = effectiveScope(access, "timesheet") === "own" ? { personId: access.personId || null, userNames: access.clickupUserNames ?? null } : null;
 
   const username = session.user?.email?.split("@")[0] || "Account";
@@ -353,7 +356,7 @@ export default function Shell() {
             state alive across tab switches. Only modules this user can open are
             mounted at all — no point fetching data for a page they can't reach,
             on top of RLS already scoping what comes back. */}
-        {canSee(access, "overview") && <div style={show("overview")}><Overview /></div>}
+        {canSee(access, "overview") && <div style={show("overview")}><Overview key={overviewScope ? "scoped" : "all"} scope={overviewScope} /></div>}
         {canSee(access, "invoicing") && (
           <div style={show("invoicing")}>
             {/* Keyed by mode so a role change while the tab is open remounts it cleanly. */}

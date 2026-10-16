@@ -49,7 +49,16 @@ function SkeletonGrid() {
 // placeholder's own principle — an honest "not built yet" page rather than
 // fabricated KPIs — carried forward here per-card even though the page itself
 // is now built).
-export default function Overview() {
+//
+// `scope` (Overview scope "assigned", permissions.js; null = the whole business, exactly as
+// before): { clients, personId, userNames }. Client counts, accrual health and the trend
+// count only the user's clients (each client's real figures); hours and utilisation are the
+// linked person's own; team-wide cards (team range, over-utilized consultants) are hidden.
+// userNames null = pginvoice_my_access() predates clickupUserNames -> own hours "not available yet".
+export default function Overview({ scope = null }) {
+  // Shell rebuilds `scope` every render; key the effect/memos on its content instead.
+  const scopeKey = scope ? JSON.stringify([scope.clients || [], scope.personId || null, scope.userNames ?? null]) : "";
+  const stableScope = useMemo(() => scope, [scopeKey]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [clients, setClients] = useState([]);
@@ -71,11 +80,15 @@ export default function Overview() {
       // this page ever needs, so the ClickUp fetch can skip the other 9+ months of
       // history (47k+ rows total) sitting in the table.
       const earliestNeededMonth = last6MonthKeys()[5];
+      // Scoped: only the user's own ClickUp rows (exact spellings); unknown spellings -> none.
+      const clickupSource = !stableScope ? fetchClickupFromSupabase(earliestNeededMonth)
+        : stableScope.userNames ? fetchClickupFromSupabase(earliestNeededMonth, { userNames: stableScope.userNames })
+        : Promise.resolve(null);
       const sources = [
         ["clients", fetchClients()],
         ["accruals", fetchAccrualsFromSupabase()],
         ["team roster", loadKey(CAP_PEOPLE_KEY, SEED_PEOPLE)],
-        ["ClickUp sync", fetchClickupFromSupabase(earliestNeededMonth)],
+        ["ClickUp sync", clickupSource],
         ["leave records", loadKey(CAP_LEAVES_KEY, {})],
       ];
       const results = await Promise.allSettled(sources.map(([, p]) => p));
@@ -95,7 +108,7 @@ export default function Overview() {
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [stableScope]);
 
   // Six-month trailing window, newest last — the canonical "recent" window
   // every other module already uses (capacityData.js's last6MonthKeys).
@@ -109,16 +122,26 @@ export default function Overview() {
   // same filter or an archived client's stale numbers silently skew the business
   // totals (confirmed: this page was showing 68 "active" clients — 42 active + 26
   // archived — against the Clients module's correctly-scoped 42).
-  const activeClients = useMemo(() => clients.filter((c) => c.status === "active"), [clients]);
-  const activeAccrualClients = useMemo(() => filterToActiveClients(accrualClients, clients), [accrualClients, clients]);
-
-  const clientStats = useMemo(() => activeClientStats(clients), [clients]);
-  const overServiced = useMemo(
-    () => (activeAccrualClients ? overServicedFromAccruals(activeAccrualClients, latestMonth) : { overServiced: 0, withData: 0 }),
-    [activeAccrualClients, latestMonth]
+  // The pure functions' scope: the user's clients + their linked roster person.
+  const personName = stableScope ? (people.find((p) => p.id === stableScope.personId)?.name ?? null) : null;
+  const dataScope = useMemo(
+    () => (stableScope ? { clients: stableScope.clients || [], personName, userNames: stableScope.userNames || [] } : null),
+    [stableScope, personName]
   );
-  const health = useMemo(() => accrualHealth(activeAccrualClients), [activeAccrualClients]);
-  const teamMonthly = useMemo(() => teamMonthlyTotals(people, clickup, monthKeys), [people, clickup, monthKeys]);
+  const scopeClients = useMemo(() => (dataScope ? new Set(dataScope.clients) : null), [dataScope]);
+  const activeClients = useMemo(
+    () => clients.filter((c) => c.status === "active" && (!scopeClients || scopeClients.has(c.client))),
+    [clients, scopeClients]
+  );
+  const activeAccrualClients = useMemo(() => filterToActiveClients(accrualClients, clients, dataScope), [accrualClients, clients, dataScope]);
+
+  const clientStats = useMemo(() => activeClientStats(clients, dataScope), [clients, dataScope]);
+  const overServiced = useMemo(
+    () => (activeAccrualClients ? overServicedFromAccruals(activeAccrualClients, latestMonth, dataScope) : { overServiced: 0, withData: 0 }),
+    [activeAccrualClients, latestMonth, dataScope]
+  );
+  const health = useMemo(() => accrualHealth(activeAccrualClients, NEGATIVE_BALANCE_THRESHOLD_HRS, dataScope), [activeAccrualClients, dataScope]);
+  const teamMonthly = useMemo(() => teamMonthlyTotals(people, clickup, monthKeys, dataScope), [people, clickup, monthKeys, dataScope]);
   // leaveHrsByPerson is keyed by name (per computeMonthlyAvailability's caller
   // contract), but cap_leaves is keyed by personId_monthKey -- convert for the
   // one month utilization actually needs, same as Capacity Planning/Team already
@@ -129,12 +152,21 @@ export default function Overview() {
     for (const p of people) m[p.name] = Number(leaves[`${p.id}_${latestMonth}`] || 0);
     return m;
   }, [people, leaves, latestMonth]);
-  const utilization = useMemo(() => teamUtilization(people, teamMonthly, latestMonth, leaveHrsByName), [people, teamMonthly, latestMonth, leaveHrsByName]);
+  const utilization = useMemo(() => teamUtilization(people, teamMonthly, latestMonth, leaveHrsByName, dataScope), [people, teamMonthly, latestMonth, leaveHrsByName, dataScope]);
   const overUtilized = useMemo(() => overUtilizedConsultants(utilization.perConsultant), [utilization]);
-  const trend = useMemo(() => sixMonthTrend(activeAccrualClients, clickup?.rows, monthKeys), [activeAccrualClients, clickup, monthKeys]);
-  const typeMix = useMemo(() => clientTypeMix(activeClients), [activeClients]);
+  const trend = useMemo(() => sixMonthTrend(activeAccrualClients, clickup?.rows, monthKeys, dataScope), [activeAccrualClients, clickup, monthKeys, dataScope]);
+  const typeMix = useMemo(() => clientTypeMix(activeClients, dataScope), [activeClients, dataScope]);
 
-  const hasClients = clients.length > 0;
+  const hasClients = (dataScope ? clients.filter((c) => scopeClients.has(c.client)) : clients).length > 0;
+  const scoped = !!dataScope;
+  // Scoped "My utilization" card: why there's no figure, when there isn't one.
+  const ownUtil = utilization.perConsultant[0] || null;
+  const ownHoursNote = !scoped ? null
+    : stableScope.userNames == null ? "not available yet"
+    : !stableScope.personId ? "no team member linked to your login"
+    : !personName ? "your team member isn't on the roster"
+    : !ownUtil ? "no logged time or availability this month"
+    : null;
   const hasAccruals = !!activeAccrualClients && activeAccrualClients.length > 0;
   const hasTeamData = utilization.perConsultant.length > 0;
   const hasTrend = trend.months.length > 0;
@@ -166,7 +198,9 @@ export default function Overview() {
             <span className="pg-eyebrow">Purple Giraffe · Internal</span>
             <h1 className="pg-app-header__title">Overview.</h1>
             <p className="pg-app-header__sub">
-              A live cross-module snapshot of the whole business — clients, accruals, and team utilization, pulled straight from Client Invoicing, Client Accruals, and Capacity Planning's own data.
+              {scoped
+                ? "A live snapshot of your clients and your own hours — your clients' accruals and your utilization this month."
+                : "A live cross-module snapshot of the whole business — clients, accruals, and team utilization, pulled straight from Client Invoicing, Client Accruals, and Capacity Planning's own data."}
             </p>
           </div>
         </div>
@@ -182,7 +216,7 @@ export default function Overview() {
             <div className="ov-kpi-grid">
               <OverviewKpiCard
                 index={0}
-                primaryLabel="Active clients"
+                primaryLabel={scoped ? "My active clients" : "Active clients"}
                 primary={hasClients ? fmt0(clientStats.active) : "—"}
                 secondary={hasAccruals ? (overServiced.withData > 0 ? `${fmt0(overServiced.overServiced)} over-serviced` : "—") : null}
                 secondaryLabel={
@@ -201,13 +235,23 @@ export default function Overview() {
                 sparkline={hasTrend ? trend.totalAccruedHours : null}
                 sparklineColor="var(--status-warn)"
               />
-              <OverviewKpiCard
-                index={2}
-                primaryLabel="Team utilization"
-                primary={hasTeamData ? pct0(utilization.avgPct) : "—"}
-                secondary={hasTeamData ? `${pct0(utilization.minPct)}–${pct0(utilization.maxPct)}` : null}
-                secondaryLabel={hasTeamData ? "range across the team" : "no ClickUp data loaded yet"}
-              />
+              {scoped ? (
+                <OverviewKpiCard
+                  index={2}
+                  primaryLabel="My utilization"
+                  primary={ownUtil ? pct0(ownUtil.pct) : "—"}
+                  secondary={ownUtil ? `${fmt1(ownUtil.billable)} h` : null}
+                  secondaryLabel={ownUtil ? `billable of ${fmt1(ownUtil.available)} h available this month` : ownHoursNote}
+                />
+              ) : (
+                <OverviewKpiCard
+                  index={2}
+                  primaryLabel="Team utilization"
+                  primary={hasTeamData ? pct0(utilization.avgPct) : "—"}
+                  secondary={hasTeamData ? `${pct0(utilization.minPct)}–${pct0(utilization.maxPct)}` : null}
+                  secondaryLabel={hasTeamData ? "range across the team" : "no ClickUp data loaded yet"}
+                />
+              )}
               <OverviewKpiCard
                 index={3}
                 primaryLabel="Client type mix"
@@ -250,12 +294,14 @@ export default function Overview() {
             </div>
 
             <div className="ov-lists">
-              <OverviewList
-                index={6}
-                title={`Over-utilized consultants (≥${OVER_UTILIZATION_PCT}%)`}
-                items={overUtilizedItems}
-                emptyMessage={hasTeamData ? "No consultants currently over-utilized." : "No ClickUp/roster data yet to compute utilization."}
-              />
+              {!scoped && (
+                <OverviewList
+                  index={6}
+                  title={`Over-utilized consultants (≥${OVER_UTILIZATION_PCT}%)`}
+                  items={overUtilizedItems}
+                  emptyMessage={hasTeamData ? "No consultants currently over-utilized." : "No ClickUp/roster data yet to compute utilization."}
+                />
+              )}
               <OverviewList
                 index={7}
                 title={`Clients below -${NEGATIVE_BALANCE_THRESHOLD_HRS}h balance`}
