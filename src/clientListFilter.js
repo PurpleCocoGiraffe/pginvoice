@@ -129,3 +129,53 @@ export function searchMatchesInOtherTypes(list, opts) {
   const shown = new Set(filterClientList(list, opts).map((c) => c.name));
   return filterClientList(list, { ...opts, clientTypeFilter: "all" }).filter((c) => !shown.has(c.name));
 }
+
+// ---------------------------- scoped Client Invoicing ----------------------------
+// For a user whose Invoicing scope is "assigned" (permissions.js). `list` is the SAME full
+// card list an admin gets -- computed over every client's inputs, so every number on a card
+// is identical -- and this only decides which cards are shown ("compute over full inputs,
+// filter at display"). A card is kept when:
+//   - it belongs to one of the user's clients (`clients`: its Clients-module profile, ledger
+//     name or roll-up identity), or
+//   - the user logged minutes on it this month (`userNames`: exact ClickUp spellings,
+//     compared case-insensitively), or
+//   - it nests under a kept card (a sub-project / capGroup sibling follows its parent).
+// A parent is kept when something nested under it is kept on its own, since nested rows only
+// ever render inside their parent's tile. Nesting is the same rule filterClientList uses.
+const normUser = (s) => String(s ?? "").trim().toLowerCase();
+export function scopeClientList(list, { clients = [], userNames = [] } = {}, primaryNameByGroup = new Map()) {
+  const assigned = new Set(clients);
+  const mine = new Set(userNames.map(normUser).filter(Boolean));
+  const presentNames = new Set(list.map((c) => c.name));
+  const parentOf = (c) => {
+    if (c.costCentreParentAccName && presentNames.has(c.costCentreParentAccName)) return c.costCentreParentAccName;
+    const primaryName = c.capGroup ? primaryNameByGroup.get(c.capGroup) : null;
+    return primaryName && primaryName !== c.name && presentNames.has(primaryName) ? primaryName : null;
+  };
+  const isAssigned = (c) => [c.profileClient, c.accruedClient?.name, c.costCentreAccruedName, c.name].some((n) => n && assigned.has(n));
+  const hasOwnMinutes = (c) => [...(c.userMinutes || [])].some(([u, min]) => min > 0 && mine.has(normUser(u)));
+  const keptParents = new Set();
+  for (const c of list) {
+    if (isAssigned(c) || hasOwnMinutes(c)) keptParents.add(parentOf(c) ?? c.name);
+  }
+  return list.filter((c) => keptParents.has(c.name) || keptParents.has(parentOf(c)));
+}
+
+// The package figures of a card built from a client the user isn't assigned (pginvoice_
+// client_directory withheld its agreed hours / balances / fee, see clientDirectory.js).
+// Only reachable when fuzzy/prefix folder matching ties the user's own hours to such a
+// client. Worked hours stay (they're everyone's real ClickUp time); everything derived from
+// the withheld inputs is blanked rather than shown wrong, and the card says so (`withheld`).
+const WITHHELD_FIELDS = {
+  pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, kpiPct: null,
+  status: "no-pkg", priorMismatch: null, priorRebaseline: null, resetValue: null, remainingReset: null,
+  balanceForward: null, remainingShown: null, quotedAmount: null, quotedRemaining: null, lifetimeWorked: null,
+  fixedFee: null,
+};
+export function withholdRedactedFigures(list, redactedClients) {
+  if (!redactedClients?.size) return list;
+  const redacted = (n) => !!n && redactedClients.has(n);
+  return list.map((c) => (redacted(c.profileClient) || redacted(c.accruedClient?.name) || redacted(c.costCentreAccruedName)
+    ? { ...c, ...WITHHELD_FIELDS, withheld: true }
+    : c));
+}

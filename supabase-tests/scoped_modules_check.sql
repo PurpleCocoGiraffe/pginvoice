@@ -129,7 +129,8 @@ insert into public.pginvoice_clients (client, type, base_type, agreed_hours, bas
   ('Aus3C', 'package', 'package', 20, 20, null, 'active', 'Australian Cyber Collaboration Centre', '2025-01-01'),
   ('Majestic Plumbing', 'package', 'package', 24.5, 12, null, 'active', 'Majestic Plumbing (WA)', null),
   ('AWIWA', 'quoted', 'quoted', null, 57, 10000, 'active', 'AWIWA', null),
-  ('Warrina Homes', 'package', 'package', 0, 0, null, 'offboarded', 'Warrina Homes', null);
+  ('Warrina Homes', 'package', 'package', 0, 0, null, 'offboarded', 'Warrina Homes', null),
+  ('MP Web Project', 'quoted', 'quoted', 40, 40, 5000, 'active', 'Majestic Plumbing Quoted Web Project (WA)', null);
 insert into public.pginvoice_user_clients (user_id, client, source) values
   ('00000000-0000-0000-0000-0000000000c1', 'Majestic Plumbing', 'clickup'),
   ('00000000-0000-0000-0000-0000000000c2', 'Aus3C', 'clickup'),
@@ -278,17 +279,20 @@ begin
   select count(*) into n from pginvoice_cost_centres;
   if n <> 2 then raise exception 'c1: direct cost-centre read should be scoped to 2 rows, got %', n; end if;
   if jsonb_array_length(d->'costCentres') <> 3 then raise exception 'c1: directory must return every cost centre'; end if;
-  if jsonb_array_length(d->'clients') <> 4 or jsonb_array_length(d->'accruals') <> 6 or jsonb_array_length(d->'events') <> 3 then
+  if jsonb_array_length(d->'clients') <> 5 or jsonb_array_length(d->'accruals') <> 6 or jsonb_array_length(d->'events') <> 3 then
     raise exception 'c1: directory incomplete: %', d;
   end if;
-  if (select string_agg(x->>'client', ',' order by ord) from jsonb_array_elements(d->'clients') with ordinality t(x, ord)) <> 'AWIWA,Aus3C,Majestic Plumbing,Warrina Homes' then
-    raise exception 'c1: clients must come back ordered by name';
+  if (select string_agg(x->>'client', ',' order by ord) from jsonb_array_elements(d->'clients') with ordinality t(x, ord)) <> (select string_agg(v, ',' order by v) from unnest(array['AWIWA', 'Aus3C', 'Majestic Plumbing', 'MP Web Project', 'Warrina Homes']) v) then
+    raise exception 'c1: clients must come back ordered by name (database collation, as the admin path''s .order("client"))';
   end if;
   -- Assigned: real figures.
   select x into c from jsonb_array_elements(d->'clients') x where x->>'client' = 'Majestic Plumbing';
   if (c->>'assigned')::boolean is not true or (c->>'agreed_hours')::numeric <> 24.5 or (c->>'base_agreed_hours')::numeric <> 12 then raise exception 'c1: assigned client redacted: %', c; end if;
   if (select x->>'note' from jsonb_array_elements(d->'events') x where x->>'client' = 'Majestic Plumbing') <> 'Hours increased' then raise exception 'c1: own event note missing'; end if;
   if (select (x->>'reset_value')::numeric from jsonb_array_elements(d->'accruals') x where x->>'client' = 'Majestic Plumbing' and x->>'month_key' = '2026-08') <> -2 then raise exception 'c1: own reset missing'; end if;
+  -- A sub-project registered as its own client follows its assigned parent (cost-centre row).
+  select x into c from jsonb_array_elements(d->'clients') x where x->>'client' = 'MP Web Project';
+  if (c->>'assigned')::boolean is not true or (c->>'fixed_fee')::numeric <> 5000 or (c->>'agreed_hours')::numeric <> 40 then raise exception 'c1: sub-project of an assigned client should be unredacted: %', c; end if;
   -- Unassigned: names/folders/status/type kept; fee, note, agreed hours, balances withheld.
   select x into c from jsonb_array_elements(d->'clients') x where x->>'client' = 'AWIWA';
   if (c->>'assigned')::boolean or c->>'fixed_fee' is not null or c->>'clickup_folder' <> 'AWIWA' or c->>'type' <> 'quoted' then raise exception 'c1: AWIWA wrong: %', c; end if;

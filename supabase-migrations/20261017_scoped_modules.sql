@@ -75,7 +75,8 @@ create policy authenticated_write on public.pginvoice_accruals for insert to aut
 -- matching would silently differ from an admin's. This returns all of it, in the same order
 -- the admin path reads it (clients by name, events by date + id, accruals by client + month).
 --
--- For a client the caller can't access (pg_has_client_access) it withholds fees, event notes,
+-- For a client the caller can't access (pg_has_client_access, or a sub-project registered as
+-- its own client under one they can) it withholds fees, event notes,
 -- agreed hours and ledger balances: agreed hours come back as sign(hours) -- 1 / 0 / null --
 -- which keeps every structural decision identical (seed a zero-hour package row? is this a
 -- package? which group member is primary?) without the figure, and accrual_value /
@@ -97,9 +98,18 @@ begin
   if auth.uid() is null or (pg_module_scope('invoicing') = 'none' and pg_module_scope('overview') = 'none') then
     raise exception 'The client directory needs Client Invoicing or Overview access' using errcode = '42501';
   end if;
-  -- Same test as pg_has_client_access, evaluated once rather than per row.
+  -- The caller's clients (pg_has_client_access, evaluated once rather than per row), plus any
+  -- client whose own ClickUp folder is a cost-centre / sub-project folder of one of them --
+  -- a separately registered sub-project follows its parent, as its card does.
   select coalesce(array_agg(distinct uc.client), '{}') into v_mine
     from pginvoice_user_clients uc where uc.user_id = auth.uid();
+  select coalesce(array_agg(distinct x), '{}') into v_mine from (
+    select unnest(v_mine) as x
+    union
+    select c.client from pginvoice_clients c
+      join pginvoice_cost_centres cc on lower(trim(cc.folder)) = lower(trim(c.clickup_folder))
+     where cc.client = any (v_mine)
+  ) t;
 
   return jsonb_build_object(
     'clients', coalesce((

@@ -19,7 +19,8 @@ import { PG_DATA_EVENT, idbClear } from "./idbStore.js";
 import { ensureCacheOwner, releaseCacheOwner } from "./cacheOwner.js";
 import { PG_COST_CENTRES_KEY, THEME_KEY, COLLAPSE_KEY } from "./storageKeys.js";
 import { fetchOwnProfile, fetchOwnAccess, ROLE_LABELS } from "./usersSync.js";
-import { visibleNav, bottomNavFor, reachableKeys, canSee, settingsTabsFor, resolveAccess } from "./permissions.js";
+import { visibleNav, bottomNavFor, reachableKeys, canSee, settingsTabsFor, resolveAccess, effectiveScope, isMissingRpcError } from "./permissions.js";
+import { fetchClientDirectory } from "./clientDirectory.js";
 
 // Which nav items a user gets comes from permissions.js (driven by pginvoice_my_access());
 // this only adds the icons. Order/labels live there and are pinned by permissions.test.js.
@@ -200,15 +201,26 @@ export default function Shell() {
   // nameMatch.js's matching functions are a synchronous singleton fed by setDynamicCostCentres,
   // not something each caller fetches for itself. Requires a session (RLS needs an
   // authenticated user), so this only runs once logged in.
+  // A non-admin's own cost-centre read is RLS-scoped to their clients, which would change
+  // folder matching -- they get every row from pginvoice_client_directory() instead (the
+  // directory refuses users with neither Invoicing nor Overview; they keep the scoped read,
+  // as does everyone while the RPC isn't deployed).
+  const useDirectoryCostCentres = !!profile?.access && !profile.access.isAdminTier
+    && (canSee(profile.access, "invoicing") || canSee(profile.access, "overview"));
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
-    const load = () => fetchCostCentres().then((rows) => { if (!cancelled) setDynamicCostCentres(rows); }).catch(() => {});
+    const fromDirectory = () => fetchClientDirectory().then((d) => d?.costCentres || []).catch((e) => {
+      if (isMissingRpcError(e)) return fetchCostCentres();
+      throw e;
+    });
+    const load = () => (useDirectoryCostCentres ? fromDirectory() : fetchCostCentres())
+      .then((rows) => { if (!cancelled) setDynamicCostCentres(rows); }).catch(() => {});
     load();
     const onUpdate = (e) => { if (!e.detail || e.detail.key === PG_COST_CENTRES_KEY) load(); };
     window.addEventListener(PG_DATA_EVENT, onUpdate);
     return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
-  }, [session]);
+  }, [session, useDirectoryCostCentres]);
 
   if (session === null) return null; // brief check, avoids a login-screen flash
   if (!session) return <LoginGate onSuccess={setSession} />;
@@ -240,6 +252,8 @@ export default function Shell() {
   // Redirect guard: access can shrink while a tab is open (refetched on focus).
   if (!reachable.includes(active)) { setActive(reachable[0]); return null; }
   const show = (key) => ({ display: active === key ? "block" : "none" });
+  // Per-module scope props: null = everything (admin tier, exactly as before).
+  const invoicingScope = effectiveScope(access, "invoicing") === "assigned" ? { userNames: access.clickupUserNames || [] } : null;
 
   const username = session.user?.email?.split("@")[0] || "Account";
 
@@ -337,7 +351,16 @@ export default function Shell() {
             mounted at all — no point fetching data for a page they can't reach,
             on top of RLS already scoping what comes back. */}
         {canSee(access, "overview") && <div style={show("overview")}><Overview /></div>}
-        {canSee(access, "invoicing") && <div style={show("invoicing")}><PGReconciliation onNavigateClients={() => setActive("clients")} /></div>}
+        {canSee(access, "invoicing") && (
+          <div style={show("invoicing")}>
+            {/* Keyed by mode so a role change while the tab is open remounts it cleanly. */}
+            <PGReconciliation
+              key={invoicingScope ? "scoped" : "all"}
+              scope={invoicingScope}
+              onNavigateClients={canSee(access, "clients") ? () => setActive("clients") : undefined}
+            />
+          </div>
+        )}
         {canSee(access, "capacity") && <div style={show("capacity")}><CapacityDashboard onNavigateTeam={() => setActive("team")} /></div>}
         {canSee(access, "team") && <div style={show("team")}><TeamDashboard /></div>}
         {canSee(access, "timesheet") && <div style={show("timesheet")}><TimesheetSummary /></div>}

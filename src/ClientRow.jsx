@@ -120,7 +120,9 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
     : isQuoted && c.quotedRemaining != null
       ? (c.quotedRemaining < 0 ? "var(--status-over)" : "var(--status-ok)")
       : undefined;
-  const statusText = isWrapUp
+  const statusText = c.withheld
+    ? "Not assigned to you: this client's package, carry and balance aren't shared. Hours shown are the whole team's."
+    : isWrapUp
     ? (c.remaining > 0 ? `Offboarded: ${fmt(c.remaining)} h of unutilised hours still owed after this month's wrap-up work` : "Offboarded: owed hours fully used by wrap-up work")
     : feeOnly ? `Fixed fee ${fmtMoney(c.fixedFee.fee)}${c.fixedFee.effectiveRate != null ? `, ${fmtMoney(c.fixedFee.effectiveRate)}/h so far over ${fmt(c.lifetimeWorked ?? 0)} h` : ""}`
     : isPackage && c.status === "on_hold"
@@ -181,7 +183,11 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // showing their type here again would just repeat the Type column two cells over,
   // so they get a plain "not tracked" placeholder instead. Quoted gets its own lifetime-
   // budget pacing (spent-down against the one fixed quoted figure, not a monthly one).
-  const statusPill = isWrapUp
+  // A scoped user's card for a client not assigned to them: package figures withheld
+  // (clientListFilter.js withholdRedactedFigures) -- say so rather than "No package".
+  const statusPill = c.withheld
+    ? { label: "Not shared", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
+    : isWrapUp
     // Kept as short as the other pills (the fixed-width box clipped "Wrap-up · owes 13.2 h");
     // the hours still owed are the Remaining figure, spelled out in the tooltip.
     ? { label: c.remaining > 0 ? "Wrap-up" : "Wrap-up done", tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
