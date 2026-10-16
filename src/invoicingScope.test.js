@@ -69,6 +69,9 @@ const CLICKUP = {
     row("Chloe Smith", "Apex", 240),
     row("Chloe Smith", "Apex Energy Solutions", 480),
     row("Holly Fraser", "Brightside Marketing", 60),
+    // Folders only a manual name-match override ties to a client (NAME_MATCHES below).
+    row("Holly Fraser", "HF - Social Ads", 90),
+    row("Chloe Smith", "AES Retainer", 120),
     row("Holly Fraser", "Majestic Plumbing (WA)", 900, PRIOR),
     row("Chloe Smith", "Apex", 300, PRIOR),
     row("Chloe Smith", "Apex Energy Solutions", 600, PRIOR),
@@ -76,6 +79,10 @@ const CLICKUP = {
   ],
   hasBillable: true, hasUser: true, hasStartDate: true, warnings: [], fileName: "Live sync from ClickUp",
 };
+
+// pginvoice_name_matches: shared manual overrides (admin-set), read by admin and scoped users
+// alike -- including one for a client that isn't Holly's.
+const NAME_MATCHES = { "HF - Social Ads": "Apex", "AES Retainer": "Apex Energy Solutions" };
 
 // Holly: pginvoice_user_clients (ClickUp-derived + manual).
 const HOLLY_CLIENTS = ["Apex", "Majestic Plumbing"];
@@ -122,9 +129,9 @@ function directoryFor(mine) {
   };
 }
 
-const build = ({ pgClients, pgClientEvents, accrued }, costCentres, monthKey = MONTH, priorKey = PRIOR) => {
+const build = ({ pgClients, pgClientEvents, accrued }, costCentres, monthKey = MONTH, priorKey = PRIOR, nameMap = NAME_MATCHES) => {
   setDynamicCostCentres(costCentres);
-  const ctx = buildInvoicingContext({ clickup: CLICKUP, accrued, nameMap: {}, billableOnly: true, pgClients, pgClientEvents, capClients: CAP_CLIENTS });
+  const ctx = buildInvoicingContext({ clickup: CLICKUP, accrued, nameMap, billableOnly: true, pgClients, pgClientEvents, capClients: CAP_CLIENTS });
   return buildClientsForMonth(ctx, monthKey, priorKey, { currentMonthKey: MONTH });
 };
 
@@ -154,7 +161,7 @@ describe("scoped Client Invoicing: same numbers as admin", () => {
   });
 
   it("shows only Holly's cards: assigned clients, her own time, and sub-projects of those", () => {
-    expect(view.map((c) => c.name).sort()).toEqual(["Apex", "Brightside Marketing", "Majestic Plumbing", "Majestic Plumbing Quoted Web Project (WA)"]);
+    expect(view.map((c) => c.name).sort()).toEqual(["Apex", "Brightside Marketing", "HF - Social Ads", "Majestic Plumbing", "Majestic Plumbing Quoted Web Project (WA)"]);
     // Not Holly's, and she logged nothing there: hidden even though the pipeline computed them.
     expect(scopedFull.map((c) => c.name)).toEqual(expect.arrayContaining(["Apex Energy Solutions", "Toto and Co"]));
   });
@@ -205,7 +212,25 @@ describe("scoped Client Invoicing: same numbers as admin", () => {
     expect(sub.lifetimeWorked).toBe(6); // Kelly's 2 h this month + 4 h in Aug
     // filterClientList renders it inside the parent's tile, not as its own top-level card.
     const top = filterClientList(view, { clientTypeFilter: "all", consultantFilter: "", search: "", primaryNameByGroup: computePrimaryNameByGroup(scopedFull) });
-    expect(top.map((c) => c.name).sort()).toEqual(["Apex", "Brightside Marketing", "Majestic Plumbing"]);
+    expect(top.map((c) => c.name).sort()).toEqual(["Apex", "Brightside Marketing", "HF - Social Ads", "Majestic Plumbing"]);
+  });
+
+  it("a shared name-match override applies identically for the scoped user and the admin", () => {
+    const hf = view.find((c) => c.name === "HF - Social Ads");
+    const adminHf = admin.find((c) => c.name === "HF - Social Ads");
+    expect(hf.matchInfo).toEqual({ name: "Apex", confidence: 1, method: "manual" });
+    expect(hf.accruedClient?.name).toBe("Apex");
+    expect(hf.withheld).toBeUndefined();
+    expect(figures(hf)).toEqual(figures(adminHf));
+    // The override for a client that isn't Holly's still shapes the full computation the same
+    // way (its card stays hidden: not hers and she logged nothing there).
+    expect(scopedFull.find((c) => c.name === "AES Retainer").accruedClient?.name).toBe("Apex Energy Solutions");
+    expect(admin.find((c) => c.name === "AES Retainer").accruedClient?.name).toBe("Apex Energy Solutions");
+    expect(view.some((c) => c.name === "AES Retainer")).toBe(false);
+    // ...and it really is the override doing it: without the shared rows neither folder matches.
+    const noOverrides = build(dir, dir.costCentres, MONTH, PRIOR, {});
+    expect(noOverrides.find((c) => c.name === "HF - Social Ads").accruedClient).toBeNull();
+    expect(noOverrides.find((c) => c.name === "AES Retainer").accruedClient).toBeNull();
   });
 
   it("a card reached only through fuzzy matching to an unassigned client shows hours but withholds its figures", () => {

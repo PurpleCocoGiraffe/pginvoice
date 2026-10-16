@@ -195,7 +195,7 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                 ? "Queensland (previously) client, not on the accrued sheet, no reconciliation."
                 : onSetMatch ? "Hourly-rate client, no package on file. If this looks like a name mismatch, match it below." : "Hourly-rate client, no package on file."}
             </span>
-            {/* No onSetMatch = a scoped view: name-match overrides are admin only. */}
+            {/* No onSetMatch = a scoped view: editing the shared name matches is admin only. */}
             {onSetMatch && (
               <select defaultValue="__none__" onChange={(e) => onSetMatch(e.target.value)}>
                 <option value="__none__">Match to accrued client…</option>

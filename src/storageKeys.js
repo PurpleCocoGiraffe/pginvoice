@@ -23,8 +23,11 @@ export const THEME_KEY = "pg-theme";
 export const COLLAPSE_KEY = "pg-sidebar-collapsed";
 // Wages review module: filters + cards/table view, persisted per browser (localStorage).
 export const WAGES_PREFS_KEY = "pg-wages-prefs";
-// Client Invoicing: manual ClickUp-folder -> client name matches, and its filters/search/months.
+// Client Invoicing: LEGACY per-browser manual name matches -- now shared in
+// pginvoice_name_matches; App.jsx only reads this once to move it into the table (or uses it
+// while the table isn't deployed), then clears it. Still in USER_DATA_LOCAL_KEYS until then.
 export const NAMEMAP_KEY = "pg-name-map-v1";
+// Client Invoicing's filters/search/months.
 export const VIEWSTATE_KEY = "pg-view-state-v1";
 // Reporting (Performance Scorecard): free-text notes about people, kept only in this browser.
 export const PERF_NOTES_KEY = "perf_notes_v1";

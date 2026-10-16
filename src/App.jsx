@@ -33,6 +33,10 @@ import {
 } from "./invoicingPipeline.js";
 import { typeLabelShort } from "./clientTypeLabels.js";
 import { buildSummaryText } from "./clientSummary.js";
+import {
+  fetchNameMatches, upsertNameMatch, deleteNameMatch, insertMissingNameMatches, isMissingTableError,
+  parseLegacyNameMap, legacyMatchesToMigrate, applyNameMatch, withPendingMatches, CLEAR_MATCH,
+} from "./nameMatchesSync.js";
 import { runManualSync } from "./manualSync.js";
 // A <label> wrapping a <select> only focuses it on click in most browsers -- opening
 // the dropdown itself needs a second click directly on the control. Used as the
@@ -78,7 +82,7 @@ const TYPE_LABELS = {
 // user's inputs come from pginvoice_client_directory() + the live ClickUp sync (never a
 // manual upload or the shared IndexedDB cache), the reconciliation runs unchanged over them,
 // and only then are the cards filtered to their own clients (scopeClientList) -- "compute
-// over full inputs, filter at display". Writes, uploads, sync, name-match overrides, the
+// over full inputs, filter at display". Writes, uploads, sync, name-match edits, the
 // excluded-internal list and all-client exports are admin only.
 export default function PGReconciliation({ onNavigateClients, scope = null, directory = null }) {
   const scoped = !!scope;
@@ -116,14 +120,57 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
   const [accruedSource, setAccruedSource] = useState(null); // "supabase" | "manual"
   const accruedManualOverrideRef = useRef(false);
 
-  // Name-match overrides live in this browser's localStorage (admin only): a scoped view
-  // never applies any, so its matching is the shared pipeline's alone.
+  // Name-match overrides ("Match to accrued client…") are shared in pginvoice_name_matches
+  // (nameMatchesSync.js) and feed the pipeline as `nameMap` for admins and scoped users alike.
+  // Admin path loaded here (a scoped user's load joins the directory effect below, so their
+  // cards never render before the overrides that shape them). confirmedNameMap = what the
+  // table last confirmed, for rolling back a failed optimistic edit. nameMatchMode "legacy" =
+  // the table doesn't exist yet (frontend ahead of the migration): keep today's per-browser
+  // localStorage behaviour until it does.
+  const confirmedNameMap = useRef({});
+  const latestMatch = useRef(new Map()); // folder -> queued, unwritten value (accrued name or CLEAR_MATCH)
+  const [nameMatchMode, setNameMatchMode] = useState("table");
+  const [nameMatchErr, setNameMatchErr] = useState(null);
   useEffect(() => {
     if (scoped) return;
-    try {
-      const raw = window.localStorage.getItem(NAMEMAP_KEY);
-      if (raw) setNameMap(JSON.parse(raw));
-    } catch (e) {}
+    let cancelled = false;
+    (async () => {
+      let db;
+      try {
+        db = await fetchNameMatches();
+      } catch (e) {
+        if (cancelled) return;
+        if (isMissingTableError(e)) {
+          setNameMatchMode("legacy");
+          try { setNameMap(parseLegacyNameMap(window.localStorage.getItem(NAMEMAP_KEY))); } catch (e2) {}
+        } else {
+          console.error("Couldn't load name-match overrides:", e);
+          setNameMatchErr(`Couldn't load the shared name matches: ${e?.message || e}. Matching uses automatic rules only until a reload.`);
+        }
+        return;
+      }
+      if (cancelled) return;
+      confirmedNameMap.current = db;
+      setNameMap(withPendingMatches(db, latestMatch.current));
+      // One-time move of a legacy per-browser map into the table: only folders the table has
+      // no row for (never overriding a shared row); the local key is cleared once that worked.
+      let raw = null;
+      try { raw = window.localStorage.getItem(NAMEMAP_KEY); } catch (e) {}
+      if (raw == null) return;
+      const rows = legacyMatchesToMigrate(parseLegacyNameMap(raw), db);
+      try {
+        await insertMissingNameMatches(rows);
+        try { window.localStorage.removeItem(NAMEMAP_KEY); } catch (e) {}
+        if (!rows.length || cancelled) return;
+        const merged = await fetchNameMatches();
+        if (cancelled) return;
+        confirmedNameMap.current = merged;
+        setNameMap(withPendingMatches(merged, latestMatch.current));
+      } catch (e) {
+        console.error("Couldn't move this browser's name matches into the shared table:", e);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [scoped]);
 
   // Capacity Planning's client list (Supabase-backed), read-only here — used only to
@@ -212,15 +259,17 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     setAccrued(dir.accrued);
     setAccruedSource("supabase");
     fetchSyncMeta().then((m) => { if (!cancelled) setSyncMeta(m); }).catch(() => {});
-    fetchClickupFromSupabase().then((live) => {
+    // The shared name-match overrides are pipeline inputs too (same rows the admin uses).
+    Promise.all([fetchNameMatches(), fetchClickupFromSupabase()]).then(([matches, live]) => {
       if (cancelled) return;
+      setNameMap(matches);
       setClickup(live);
       setClickupSource("supabase");
       setScopedLoad({ status: "ready" });
     }, (e) => {
       if (cancelled) return;
-      console.error("Supabase ClickUp fetch failed:", e);
-      setScopedLoad({ status: "error", message: e?.message || String(e) });
+      console.error("Client Invoicing scoped load failed:", e);
+      setScopedLoad(isMissingTableError(e) ? { status: "unavailable" } : { status: "error", message: e?.message || String(e) });
     });
     return () => { cancelled = true; };
   }, [scoped, directory]);
@@ -408,19 +457,47 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     }
   }, [dataMonthKey]); // eslint-disable-line
 
-  const persistNameMap = useCallback((next) => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { try { window.localStorage.setItem(NAMEMAP_KEY, JSON.stringify(next)); } catch (e) {} }, 400);
+  // Admin edit (scoped users get no matcher). Optimistic: the map changes at once; the write
+  // is debounced per folder (400 ms, so flicking through the select writes only the final
+  // choice) and a failure rolls that folder back to what the table last confirmed.
+  const matchTimers = useRef(new Map());
+  const writeMatch = useCallback(async (folder) => {
+    matchTimers.current.delete(folder);
+    const value = latestMatch.current.get(folder);
+    latestMatch.current.delete(folder);
+    try {
+      if (value === CLEAR_MATCH) await deleteNameMatch(folder);
+      else await upsertNameMatch(folder, value);
+      confirmedNameMap.current = applyNameMatch(confirmedNameMap.current, folder, value);
+      setNameMatchErr(null);
+    } catch (e) {
+      console.error("Couldn't save the name match:", e);
+      // Roll back unless a newer edit for this folder is already queued.
+      if (!latestMatch.current.has(folder)) {
+        setNameMap((prev) => applyNameMatch(prev, folder, confirmedNameMap.current[folder] ?? CLEAR_MATCH));
+      }
+      setNameMatchErr(`Couldn't save the match for "${folder}": ${e?.message || e}. It has been undone.`);
+    }
   }, []);
+  // Leaving the page (sign-out / role change) writes anything still queued rather than drop it.
+  useEffect(() => () => {
+    for (const [folder, t] of matchTimers.current) { clearTimeout(t); writeMatch(folder); }
+  }, [writeMatch]);
 
   const setManualMatch = (clickupName, accruedName) => {
-    setNameMap((prev) => {
-      const next = { ...prev };
-      if (accruedName === "__none__") delete next[clickupName];
-      else next[clickupName] = accruedName;
-      persistNameMap(next);
-      return next;
-    });
+    const value = accruedName === CLEAR_MATCH ? CLEAR_MATCH : accruedName;
+    setNameMap((prev) => applyNameMatch(prev, clickupName, value));
+    if (nameMatchMode === "legacy") {
+      // Table not deployed yet: today's per-browser behaviour.
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => {
+        setNameMap((cur) => { try { window.localStorage.setItem(NAMEMAP_KEY, JSON.stringify(cur)); } catch (e) {} return cur; });
+      }, 400);
+      return;
+    }
+    latestMatch.current.set(clickupName, value);
+    clearTimeout(matchTimers.current.get(clickupName));
+    matchTimers.current.set(clickupName, setTimeout(() => writeMatch(clickupName), 400));
   };
 
   const handleClickup = (file) => {
@@ -1012,6 +1089,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
           </div>
         </div>
 
+        {nameMatchErr && <div className="pg-banner-warn">{nameMatchErr}</div>}
         {scoped && scopedLoad?.status === "loading" && <div className="pg-empty">Loading your clients…</div>}
         {scoped && scopedLoad?.status === "unavailable" && (
           <div className="pg-banner-warn">
