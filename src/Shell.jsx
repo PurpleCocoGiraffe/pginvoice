@@ -16,8 +16,9 @@ import ForcePasswordChange from "./ForcePasswordChange.jsx";
 import { supabase } from "./supabaseClient.js";
 import { fetchCostCentres } from "./clientsSync.js";
 import { setDynamicCostCentres } from "./nameMatch.js";
-import { PG_DATA_EVENT } from "./idbStore.js";
-import { PG_COST_CENTRES_KEY } from "./storageKeys.js";
+import { PG_DATA_EVENT, idbClear } from "./idbStore.js";
+import { ensureCacheOwner, releaseCacheOwner } from "./cacheOwner.js";
+import { PG_COST_CENTRES_KEY, THEME_KEY, COLLAPSE_KEY } from "./storageKeys.js";
 import { fetchOwnProfile, ROLE_LABELS, ADMIN_TIER_ROLES, CLIENT_SCOPED_ROLES } from "./usersSync.js";
 
 // Nav order/labels follow the approved Purple Giraffe Design OS mockup.
@@ -60,8 +61,6 @@ const SECONDARY_MODULES = [
 // to integration and all other features. Admins have access to all other
 // features" — Integrations is Super Admin-only, Users is both admin tiers).
 const USERS_MODULE = { key: "users", label: "Users", icon: Users };
-
-const THEME_KEY = "pg-theme";
 
 // Real Supabase Auth — checked server-side. Every pginvoice_* table's RLS
 // policy requires the `authenticated` role, so signing in here is what
@@ -115,14 +114,17 @@ function LoginGate({ onSuccess }) {
   );
 }
 
-const COLLAPSE_KEY = "pg-sidebar-collapsed";
-
 export default function Shell() {
   // null = still checking for an existing session (avoids a login-screen flash
   // for someone who's already signed in); false/session once known.
   const [session, setSession] = useState(null);
   // null = still loading; false = loaded but no pginvoice_profiles row (no access).
   const [profile, setProfile] = useState(null);
+  // User id whose cached data (IndexedDB + user-data localStorage) has been verified as
+  // theirs -- modules don't mount until this matches the session, see cacheOwner.js.
+  const [cacheReadyFor, setCacheReadyFor] = useState(null);
+  // Set when that wipe failed: fail closed rather than mount over someone else's data.
+  const [cacheError, setCacheError] = useState(null);
   const [active, setActive] = useState("overview");
   const [theme, setTheme] = useState(() => {
     try { return window.localStorage.getItem(THEME_KEY) || "light"; } catch (e) { return "light"; }
@@ -158,6 +160,34 @@ export default function Shell() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // Wipe the previous user's cached data before any module mounts (they read it on mount).
+  // Every user change (including sign-out) starts unverified, so the same user signing
+  // back in after an explicit sign-out waits for the re-clear too.
+  const userId = session?.user?.id ?? null;
+  useEffect(() => {
+    setCacheReadyFor(null);
+    setCacheError(null);
+    setProfile(null); // don't render the new user's modules with the previous user's role/nav
+    if (!userId) return;
+    let cancelled = false;
+    ensureCacheOwner(userId, { storage: window.localStorage, clearIdb: idbClear })
+      .then(() => { if (!cancelled) setCacheReadyFor(userId); })
+      .catch((e) => { console.error("Couldn't clear the previous user's cached data", e); if (!cancelled) setCacheError(e); });
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  // Explicit sign-out also wipes the cache, so nothing is left at rest for whoever uses
+  // this browser next. Sign out first so the modules unmount and can't write it back.
+  const logOut = async () => {
+    let error = null;
+    try { ({ error } = await supabase.auth.signOut()); } catch (e) { error = e; }
+    // Offline with an expired token, the global sign-out returns an error and keeps the
+    // stored session -- drop it locally instead (no network call), which emits SIGNED_OUT.
+    if (error) { try { await supabase.auth.signOut({ scope: "local" }); } catch (e) { /* ignore */ } }
+    releaseCacheOwner({ storage: window.localStorage, clearIdb: idbClear })
+      .catch((e) => console.warn("Couldn't clear cached data on sign-out", e));
+  };
+
   // Own role + (if client-scoped) assigned clients — decides which nav items
   // render. The actual data access restriction happens at the RLS layer
   // regardless of what's shown here; this just keeps the UI honest about it.
@@ -191,13 +221,25 @@ export default function Shell() {
 
   if (session === null) return null; // brief check, avoids a login-screen flash
   if (!session) return <LoginGate onSuccess={setSession} />;
+  if (cacheError) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
+        <div>
+          <p>Couldn't clear data saved in this browser by a previous account. Reload to try again.</p>
+          <button className="pg-btn" onClick={() => window.location.reload()} style={{ marginTop: 12, marginRight: 8 }}>Reload</button>
+          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
+        </div>
+      </div>
+    );
+  }
+  if (!userId || cacheReadyFor !== userId) return null; // brief: previous user's cache being cleared
   if (profile === null) return null; // brief check, avoids a nav flash of the wrong scope
   if (!profile) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 16, textAlign: "center" }}>
         <div>
           <p>Your account isn't set up with access yet. Ask a Super Admin to add you in Users.</p>
-          <button className="pg-btn" onClick={() => supabase.auth.signOut()} style={{ marginTop: 12 }}>Sign out</button>
+          <button className="pg-btn" onClick={logOut} style={{ marginTop: 12 }}>Sign out</button>
         </div>
       </div>
     );
@@ -221,7 +263,6 @@ export default function Shell() {
   if (!isAdminTier && ADMIN_ONLY_MODULE_KEYS.has(active)) { setActive("overview"); return null; }
 
   const username = session.user?.email?.split("@")[0] || "Account";
-  const logOut = () => { supabase.auth.signOut(); };
 
   return (
     <div className="pg-shell">

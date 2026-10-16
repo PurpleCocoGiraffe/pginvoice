@@ -57,3 +57,18 @@ export async function idbDel(key) {
     });
   } catch (e) { /* ignore */ }
 }
+
+// Empties the whole store (cache isolation on user change / sign-out, see cacheOwner.js).
+// Unlike the helpers above this rejects on failure, so the caller knows the previous
+// user's data may still be there. No IndexedDB at all means nothing is cached: resolves.
+export async function idbClear() {
+  if (typeof indexedDB === "undefined") return;
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
