@@ -193,3 +193,19 @@ export async function resyncClickupMonth(monthKey) {
   if (error) throw new Error(await functionErrorMessage(error));
   return data;
 }
+
+// ---- Self view (Wages scope "own"): SECURITY DEFINER RPCs, see 20261017_scoped_modules.sql.
+// Both throw the raw PostgREST error (callers use permissions.js isMissingRpcError to show
+// "not available yet" while the migration isn't applied).
+// [{ monthKey, closedAt }], newest first: closed months that include the caller's line.
+export async function fetchMyWageMonths() {
+  const { data, error } = await supabase.rpc("pginvoice_my_wage_months");
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+// { monthKey, status: 'closed' | 'draft' | 'none', line?, settings?, ... } -- see selfWageView.
+export async function fetchMyWageLine(monthKey) {
+  const { data, error } = await supabase.rpc("pginvoice_my_wage_line", { p_month: monthKey });
+  if (error) throw error;
+  return data;
+}

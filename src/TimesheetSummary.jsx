@@ -8,6 +8,8 @@ import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { SearchBox } from "./SearchBox.jsx";
 import { buildXeroTimesheetText, copyText } from "./timesheetCopy.js";
 import { CLICKUP_DB_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
+import { fetchClickupFromSupabase } from "./clickupSync.js";
+import { filterOwnRows } from "./ownTime.js";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // The browser's "Save as PDF" dialog suggests <title> as the default filename —
@@ -159,8 +161,14 @@ function printTimesheetPdf(consultantName, monthKeyStr, weeksArr, personDaily, m
 /* ============================================================
    MAIN
 ============================================================ */
-function TimesheetInner() {
+// `own` (Timesheets scope "own", see permissions.js): { personId, userNames } -- only the
+// signed-in user's time, fetched straight from the live sync filtered to their exact ClickUp
+// names (never the Invoicing IndexedDB cache, which holds everyone's), with the consultant
+// picker locked to their linked roster person. null = everyone (admin tier, as before).
+// userNames null = pginvoice_my_access() predates clickupUserNames (migration not applied).
+function TimesheetInner({ own = null }) {
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [clickup, setClickup] = useState(null);
   const [people, setPeople] = useState(SEED_PEOPLE);
 
@@ -171,7 +179,35 @@ function TimesheetInner() {
   // Feedback for the Copy-for-Xero button: null, { ok: true, days } or { ok: false, msg }.
   const [copyState, setCopyState] = useState(null);
 
+  // `own` is memoized by Shell (permissions.js moduleScopeProps): a stable dependency.
   useEffect(() => {
+    if (!own) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const people = await loadKey(CAP_PEOPLE_KEY, SEED_PEOPLE);
+        if (!cancelled) setPeople(people);
+      } catch (e) {
+        console.error("Timesheet Summary: couldn't load people data:", e);
+      }
+      if (own.personId && own.userNames) {
+        try {
+          const live = await fetchClickupFromSupabase(undefined, { userNames: own.userNames });
+          if (cancelled) return;
+          // Belt and braces: the query already filtered by user_name.
+          setClickup(live ? { ...live, rows: filterOwnRows(live.rows, own.userNames) } : null);
+        } catch (e) {
+          if (cancelled) return;
+          setLoadError(e?.message || String(e));
+        }
+      }
+      if (!cancelled) setLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, [own]);
+
+  useEffect(() => {
+    if (own) return;
     let cancelled = false;
     const load = async () => {
       const cu = await idbGet(CLICKUP_DB_KEY);
@@ -190,7 +226,10 @@ function TimesheetInner() {
     const onUpdate = (e) => { if (!e.detail || [CLICKUP_DB_KEY, CAP_PEOPLE_KEY].includes(e.detail.key)) load(); };
     window.addEventListener(PG_DATA_EVENT, onUpdate);
     return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
-  }, []);
+  }, [!!own]); // eslint-disable-line
+
+  // Own mode: the linked roster person (cap_people id = profiles.person_id).
+  const ownPerson = own?.personId ? people.find((p) => p.id === own.personId) || null : null;
 
   const availableMonths = useMemo(() => {
     if (!clickup?.rows?.length) return [];
@@ -203,6 +242,11 @@ function TimesheetInner() {
   const userMatch = useMemo(() => {
     const map = new Map();
     if (!clickup?.rows?.length) return map;
+    // Own mode: every row is already the user's own (exact names) -- no fuzzy roster match.
+    if (own) {
+      for (const r of clickup.rows) if (r.user) map.set(r.user, ownPerson?.name || r.user);
+      return map;
+    }
     const usernames = new Set();
     for (const r of clickup.rows) if (r.user) usernames.add(r.user);
     usernames.forEach((u) => {
@@ -213,7 +257,7 @@ function TimesheetInner() {
       map.set(u, p ? p.name : null);
     });
     return map;
-  }, [clickup, people]);
+  }, [clickup, people, own, ownPerson]);
 
   // key -> Map(dateKey -> minutes). Total time logged, not filtered to billable/
   // client-only — this is a timesheet, not a billing report.
@@ -232,10 +276,12 @@ function TimesheetInner() {
 
   const rosterNamesSet = useMemo(() => new Set(people.map((p) => p.name)), [people]);
   const unmatchedNames = useMemo(() => [...dailyMinutes.keys()].filter((k) => !rosterNamesSet.has(k)).sort(), [dailyMinutes, rosterNamesSet]);
-  const allConsultants = useMemo(() => [
-    ...people.map((p) => ({ name: p.name, role: p.role })),
-    ...unmatchedNames.map((n) => ({ name: n, role: "Unmatched" })),
-  ], [people, unmatchedNames]);
+  const allConsultants = useMemo(() => (own
+    ? (ownPerson ? [{ name: ownPerson.name, role: ownPerson.role }] : [])
+    : [
+      ...people.map((p) => ({ name: p.name, role: p.role })),
+      ...unmatchedNames.map((n) => ({ name: n, role: "Unmatched" })),
+    ]), [people, unmatchedNames, own, ownPerson]);
 
   // default to the first available consultant, but leave a still-valid manual pick alone
   useEffect(() => {
@@ -293,26 +339,57 @@ function TimesheetInner() {
 
   const hasData = availableMonths.length > 0;
 
-  if (!loaded) return <div className="pg-cap-container"><div className="pg-empty">Loading…</div></div>;
+  // Own mode can't show anything honest without a linked person / the user's ClickUp names:
+  // just the header and the reason, no empty picker/table.
+  const ownBlocker = !own ? null
+    : !own.userNames ? "Your own timesheet isn't available yet: it needs a database update that hasn't been applied. Ask an Admin."
+    : !own.personId ? "No roster person is linked to your account yet, so there's no timesheet to show. Ask an Admin to link you in Settings → Users & permissions."
+    : loaded && !ownPerson ? "Your linked roster person wasn't found on the Consultants roster. Ask an Admin to check your account in Settings → Users & permissions."
+    : null;
+  if (!loaded && !ownBlocker) return <div className="pg-cap-container"><div className="pg-empty">Loading…</div></div>;
 
-  return (
-    <div className="pg-cap-container">
+  const header = (
       <div className="pg-app-header">
         <div>
           <span className="pg-eyebrow">Purple Giraffe · Internal</span>
-          <h1 className="pg-app-header__title">Timesheet summary: daily hours by consultant.</h1>
-          <p className="pg-app-header__sub">Total time logged in ClickUp per day, for whichever consultant and month you pick. Not filtered to billable hours, this mirrors the raw timesheet, not the invoicing view.</p>
+          <h1 className="pg-app-header__title">{own ? "Your timesheet: daily hours." : "Timesheet summary: daily hours by consultant."}</h1>
+          <p className="pg-app-header__sub">{own
+            ? "Total time you logged in ClickUp per day. Not filtered to billable hours, this mirrors the raw timesheet, not the invoicing view."
+            : "Total time logged in ClickUp per day, for whichever consultant and month you pick. Not filtered to billable hours, this mirrors the raw timesheet, not the invoicing view."}</p>
         </div>
       </div>
+  );
+  if (ownBlocker) {
+    return (
+      <div className="pg-cap-container">
+        {header}
+        <div className="pg-banner-warn">{ownBlocker}</div>
+      </div>
+    );
+  }
 
-      {!hasData && (
+  return (
+    <div className="pg-cap-container">
+      {header}
+      {loadError && <div className="pg-banner-warn">Couldn't load your ClickUp time: {loadError}. Reload to try again.</div>}
+      {own && !loadError && !hasData && (
+        <div className="pg-banner-warn">No ClickUp time logged under your ClickUp name{(own.userNames || []).length > 1 ? "s" : ""} yet.</div>
+      )}
+      {!own && !hasData && (
         <div className="pg-banner-warn">
           No ClickUp data loaded yet, upload a CSV in Client Invoicing to see daily hours here.
         </div>
       )}
 
       <div className="pg-panel" style={{ alignItems: "center" }}>
-        <SearchBox label="Consultant" value={qConsultant} onChange={setQConsultant} options={allConsultants.map((c) => c.name)} onSelect={(name) => setSelectedConsultant(name)} />
+        {own ? (
+          <div className="pg-field">
+            <span className="pg-field__label">Consultant</span>
+            <span style={{ fontFamily: "var(--font-display)", fontSize: 16 }}>{ownPerson?.name || "—"}</span>
+          </div>
+        ) : (
+          <SearchBox label="Consultant" value={qConsultant} onChange={setQConsultant} options={allConsultants.map((c) => c.name)} onSelect={(name) => setSelectedConsultant(name)} />
+        )}
         <label className="pg-field">
           <span className="pg-field__label">Month</span>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -383,10 +460,10 @@ function TimesheetInner() {
   );
 }
 
-export default function TimesheetSummary() {
+export default function TimesheetSummary({ own = null }) {
   return (
     <ErrorBoundary>
-      <TimesheetInner />
+      <TimesheetInner own={own} />
     </ErrorBoundary>
   );
 }

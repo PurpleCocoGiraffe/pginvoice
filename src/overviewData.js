@@ -6,6 +6,26 @@
 import { findPersonMatch } from "./nameMatch.js";
 import { computeMonthlyAvailability, last6MonthKeys } from "./capacityData.js";
 import { carryOutOf } from "./format.js";
+import { ownNameSet, isOwnName } from "./ownTime.js";
+
+/* ============================================================
+   SCOPE (Overview "assigned" mode)
+============================================================ */
+
+// Every function below takes an optional trailing `scope`. null/undefined = the whole
+// business (admin tier, and Overview "all") -- exactly the behaviour before scopes existed.
+// For a user whose Overview scope is "assigned" (permissions.js):
+//   { clients: [client names],            -- client counts, accrual health and trend
+//     personName: string | null,          -- the linked roster person (own hours/utilisation)
+//     userNames: [exact ClickUp spellings] } -- whose logged time counts as theirs
+// Each client figure is still the client's own real number (the same accrual cell an admin
+// sees); the scope only decides WHICH clients are counted. Team figures collapse to the one
+// linked person.
+function clientInScope(scope) {
+  if (!scope) return () => true;
+  const names = new Set(scope.clients || []);
+  return (name) => names.has(name);
+}
 
 /* ============================================================
    TEAM — per-consultant, per-month billable/non-billable/PG-time totals
@@ -20,14 +40,19 @@ import { carryOutOf } from "./format.js";
 // real ClickUp username gets its own key (raw name) rather than being silently
 // folded into nothing, same "never hide real logged hours" rule the rest of the
 // app follows.
-export function teamMonthlyTotals(people, clickupData, monthKeys) {
+// Scoped: only rows logged under one of `scope.userNames` count, all keyed to
+// `scope.personName` (exact spellings, not fuzzy findPersonMatch -- the same rule
+// Timesheets' own mode uses); with no linked person nothing counts.
+export function teamMonthlyTotals(people, clickupData, monthKeys, scope) {
   const map = new Map();
   if (!clickupData?.rows?.length) return map;
   const monthSet = new Set(monthKeys);
   const userMatch = new Map();
   const usernames = new Set();
   for (const r of clickupData.rows) if (r.user) usernames.add(r.user);
+  const mine = scope ? ownNameSet(scope.userNames) : null;
   usernames.forEach((u) => {
+    if (mine) { userMatch.set(u, scope.personName && isOwnName(mine, u) ? scope.personName : null); return; }
     // The "Purple Giraffe" ClickUp login is a shared account DMA (an external
     // contractor) logs time under — attribute it to DMA rather than dropping it.
     if (u.trim().toLowerCase() === "purple giraffe") { userMatch.set(u, "DMA (external)"); return; }
@@ -36,6 +61,7 @@ export function teamMonthlyTotals(people, clickupData, monthKeys) {
   });
   for (const r of clickupData.rows) {
     if (!r.monthKey || !r.user || !monthSet.has(r.monthKey)) continue;
+    if (mine && !userMatch.get(r.user)) continue;
     const key = userMatch.get(r.user) || r.user;
     if (!map.has(key)) map.set(key, new Map());
     const byMonth = map.get(key);
@@ -66,8 +92,9 @@ export function teamMonthlyTotals(people, clickupData, monthKeys) {
 // active === 0 -> overServicedPct: null (not 0) — "no active clients" is a
 // different fact than "0% of clients are over-serviced", and collapsing them
 // would make an empty book look like a healthy one.
-export function activeClientStats(clients) {
-  const list = clients || [];
+export function activeClientStats(clients, scope) {
+  const inScope = clientInScope(scope);
+  const list = (clients || []).filter((c) => inScope(c.client));
   const active = list.filter((c) => c.status === "active").length;
   // Real per-month over-serviced flagging lives in accrualHealth/the accrual data
   // (this function only has the client roster, no monthly actuals) — callers that
@@ -81,10 +108,11 @@ export function activeClientStats(clients) {
 // fetchClients()' status for exactly this reason, and defaults its own filter to
 // "active"). Every accrual-derived Overview metric needs the same scoping, or an
 // offboarded client's stale balance silently skews the whole business's numbers.
-export function filterToActiveClients(accrualClients, clients) {
+export function filterToActiveClients(accrualClients, clients, scope) {
   if (!accrualClients) return accrualClients;
+  const inScope = clientInScope(scope);
   const activeNames = new Set((clients || []).filter((c) => c.status === "active").map((c) => c.client));
-  return accrualClients.filter((c) => activeNames.has(c.client));
+  return accrualClients.filter((c) => activeNames.has(c.client) && inScope(c.client));
 }
 
 // Client Invoicing's own `status === "over"` definition (App.jsx ~line 497) is
@@ -95,8 +123,9 @@ export function filterToActiveClients(accrualClients, clients) {
 // `pct > 0.10` here is the same threshold, just expressed as a fraction instead
 // of a percentage — generalized across the whole client base (every client with
 // a current-month figure) rather than scoped to one month's Client Invoicing view.
-export function overServicedFromAccruals(accrualClients, monthKey) {
-  const list = accrualClients || [];
+export function overServicedFromAccruals(accrualClients, monthKey, scope) {
+  const inScope = clientInScope(scope);
+  const list = (accrualClients || []).filter((c) => inScope(c.client));
   let overServiced = 0;
   let withData = 0;
   for (const c of list) {
@@ -127,8 +156,9 @@ export const NEGATIVE_BALANCE_THRESHOLD_HRS = 20;
 // since a +40h client and a -40h client cancel out to ~0 net while one of them
 // is very much in a bad spot. negativeCount/negativeList are computed
 // independently of netHours for exactly that reason.
-export function accrualHealth(accrualClients, negativeThresholdHrs = NEGATIVE_BALANCE_THRESHOLD_HRS) {
-  const list = accrualClients || [];
+export function accrualHealth(accrualClients, negativeThresholdHrs = NEGATIVE_BALANCE_THRESHOLD_HRS, scope) {
+  const inScope = clientInScope(scope);
+  const list = (accrualClients || []).filter((c) => inScope(c.client));
   let netHours = 0;
   const negativeList = [];
   for (const c of list) {
@@ -160,9 +190,11 @@ export const OVER_UTILIZATION_PCT = 100;
 // (typically the latest month with data). People with no availability that
 // month (e.g. resigned) or no logged hours are simply omitted — a fabricated
 // 0% would misreport someone who isn't staff that month as badly under-utilized.
-export function teamUtilization(people, teamMonthly, monthKey, leaveHrsByPerson = {}) {
+// Scoped: only the linked person (`scope.personName`) is measured.
+export function teamUtilization(people, teamMonthly, monthKey, leaveHrsByPerson = {}, scope) {
   const perConsultant = [];
   for (const p of people || []) {
+    if (scope && p.name !== scope.personName) continue;
     const avail = computeMonthlyAvailability(p, monthKey, leaveHrsByPerson[p.name] || 0);
     if (!avail || !avail.totalMonthlyHours) continue;
     const byMonth = teamMonthly.get(p.name);
@@ -196,9 +228,10 @@ export function overUtilizedConsultants(perConsultant) {
 // computeDynamicAverages/last6MonthKeys' own callers already use in
 // capacityData.js, so a short data history reads as "not enough data yet"
 // rather than a fake dip to zero.
-export function sixMonthTrend(accrualClients, clickupRows, monthKeysOverride) {
+export function sixMonthTrend(accrualClients, clickupRows, monthKeysOverride, scope) {
   const monthKeys = monthKeysOverride || last6MonthKeys().slice().reverse(); // oldest -> newest
-  const accruals = accrualClients || [];
+  const inScope = clientInScope(scope);
+  const accruals = (accrualClients || []).filter((c) => inScope(c.client));
   const rows = clickupRows || [];
 
   const months = [];
@@ -239,9 +272,11 @@ export function sixMonthTrend(accrualClients, clickupRows, monthKeysOverride) {
 // string is still counted (under its own raw key) rather than thrown away or
 // throwing — a bad/legacy value in the data shouldn't make this card blow up
 // or silently under-count the client base.
-export function clientTypeMix(clients) {
+export function clientTypeMix(clients, scope) {
+  const inScope = clientInScope(scope);
   const counts = {};
   for (const c of clients || []) {
+    if (!inScope(c.client)) continue;
     const key = c.type || "unknown";
     counts[key] = (counts[key] || 0) + 1;
   }

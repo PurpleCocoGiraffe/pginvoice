@@ -182,11 +182,11 @@ async function resolveAccessChange(admin: any, opts: {
     }
   }
 
-  // Mirrors pg_module_scope() (SQL) and resolveModuleScope (src/permissions.js) for a non-admin.
-  const preset = (Object.hasOwn(config.presets, role) && config.presets[role]) || {};
-  const scopeFor = (k: string) => (Object.hasOwn(overrides, k) ? overrides[k] : Object.hasOwn(preset, k) ? preset[k] : "none");
-  // 'own' means "this person's own rows", so it needs a linked roster person.
-  const needsPerson = Object.keys(config.moduleScopes).some((k) => scopeFor(k) === "own");
+  // 'own' means "this person's own rows", so explicitly granting it needs a linked roster
+  // person. Only overrides count: since 20261017_scoped_modules the consultant/coordinator
+  // presets are Timesheets/Wages 'own', and an unlinked user on those defaults is fine --
+  // the modules say "no roster person linked" and the own-wages RPC refuses them.
+  const needsPerson = Object.values(overrides).some((s) => s === "own");
   if (needsPerson && !personId) return { error: "Link a roster person before granting \"own\" access to a module." };
 
   if (personId && personId !== currentPersonId) {

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   activeClientStats, accrualHealth, NEGATIVE_BALANCE_THRESHOLD_HRS,
   teamUtilization, sixMonthTrend, clientTypeMix, teamMonthlyTotals,
-  overUtilizedConsultants, OVER_UTILIZATION_PCT, filterToActiveClients,
+  overUtilizedConsultants, OVER_UTILIZATION_PCT, filterToActiveClients, overServicedFromAccruals,
 } from "./overviewData.js";
 
 describe("activeClientStats", () => {
@@ -162,5 +162,73 @@ describe("accrual reset (macro-sheet re-baseline) -- Overview uses the carry-out
     expect(health.netHours).toBe(-28);
     expect(health.negativeList.map((n) => n.client)).toEqual(["Reset"]);
     expect(sixMonthTrend(clients, [], ["2026-08"]).totalAccruedHours).toEqual([-28]);
+  });
+});
+
+describe("Overview assigned scope", () => {
+  const clients = [
+    { client: "Acme", status: "active", type: "package" },
+    { client: "Brightside", status: "active", type: "hourly" },
+    { client: "Cobalt", status: "active", type: "package" },
+    { client: "Gone Co", status: "archived", type: "package" },
+  ];
+  const accruals = [
+    { client: "Acme", months: { "2026-05": { pct: 0.2, accrualValue: -25, resetValue: null } } },
+    { client: "Brightside", months: { "2026-05": { pct: 0.05, accrualValue: 4, resetValue: null } } },
+    { client: "Cobalt", months: { "2026-05": { pct: -0.5, accrualValue: -40, resetValue: null } } },
+    { client: "Gone Co", months: { "2026-05": { pct: 0.9, accrualValue: -90, resetValue: null } } },
+  ];
+  const scope = { clients: ["Acme", "Gone Co"], personName: "Holly", userNames: ["Holly Nguyen"] };
+
+  it("null scope is the whole business, unchanged", () => {
+    expect(activeClientStats(clients, null).active).toBe(3);
+    expect(filterToActiveClients(accruals, clients, null).map((c) => c.client)).toEqual(["Acme", "Brightside", "Cobalt"]);
+    expect(clientTypeMix(clients, null)).toEqual(clientTypeMix(clients));
+  });
+
+  it("counts only the user's clients (and still only active ones)", () => {
+    expect(activeClientStats(clients, scope).active).toBe(1);
+    expect(clientTypeMix(clients.filter((c) => c.status === "active"), scope)).toEqual({ package: 1 });
+    expect(filterToActiveClients(accruals, clients, scope).map((c) => c.client)).toEqual(["Acme"]);
+  });
+
+  it("accrual health, over-servicing and trend use only in-scope clients, with each client's real figure", () => {
+    const health = accrualHealth(accruals, NEGATIVE_BALANCE_THRESHOLD_HRS, scope);
+    expect(health.netHours).toBe(-25 + -90);
+    expect(health.negativeList.map((c) => c.client)).toEqual(["Gone Co", "Acme"]);
+    expect(overServicedFromAccruals(accruals, "2026-05", scope)).toEqual({ overServiced: 2, withData: 2 });
+    expect(sixMonthTrend(accruals, [], ["2026-05"], scope).totalAccruedHours).toEqual([-115]);
+    // The admin view of the same data is untouched.
+    expect(accrualHealth(accruals).netHours).toBe(-25 + 4 - 40 - 90);
+  });
+
+  it("team totals count only the user's own ClickUp names, keyed to the linked person", () => {
+    const clickup = {
+      hasBillable: true,
+      rows: [
+        { user: "holly nguyen ", monthKey: "2026-05", minutes: 120, billable: true, isInternal: false },
+        { user: "Holly", monthKey: "2026-05", minutes: 600, billable: true, isInternal: false }, // fuzzy lookalike: not hers
+        { user: "Lucy W", monthKey: "2026-05", minutes: 60, billable: true, isInternal: false },
+      ],
+    };
+    const people = [{ name: "Holly" }, { name: "Lucy" }];
+    const map = teamMonthlyTotals(people, clickup, ["2026-05"], scope);
+    expect([...map.keys()]).toEqual(["Holly"]);
+    expect(map.get("Holly").get("2026-05").clientBillable).toBe(2);
+    expect(teamMonthlyTotals(people, clickup, ["2026-05"], { ...scope, personName: null }).size).toBe(0);
+  });
+
+  it("utilisation measures only the linked person", () => {
+    const people = [
+      { name: "Holly", contracted: 38, rate: 0.7, state: "SA" },
+      { name: "Lucy", contracted: 38, rate: 0.7, state: "SA" },
+    ];
+    const tm = new Map([
+      ["Holly", new Map([["2026-05", { total: 80, clientBillable: 80, pgBillable: 0, unbillable: 0 }]])],
+      ["Lucy", new Map([["2026-05", { total: 200, clientBillable: 200, pgBillable: 0, unbillable: 0 }]])],
+    ]);
+    const mine = teamUtilization(people, tm, "2026-05", {}, scope);
+    expect(mine.perConsultant.map((c) => c.name)).toEqual(["Holly"]);
+    expect(teamUtilization(people, tm, "2026-05").perConsultant.length).toBe(2);
   });
 });

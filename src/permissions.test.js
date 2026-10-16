@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   effectiveScope, visibleNav, bottomNavFor, settingsTabsFor, reachableKeys, resolveModuleScope,
-  accessFromRole, isMissingRpcError, accessSummary, resolveAccess, overrideChanges, hasAccessConfig,
+  accessFromRole, isMissingRpcError, accessSummary, resolveAccess, overrideChanges, hasAccessConfig, moduleScopeProps,
 } from "./permissions.js";
 
 // What Shell.jsx rendered before per-user permissions (main @ 106b899), copied verbatim
@@ -61,7 +61,7 @@ describe("resolveModuleScope -- preset + override, mirrors pg_module_scope()", (
   });
 });
 
-describe("nav is unchanged for existing users (pins Lynda/Kelly and today's consultants)", () => {
+describe("nav: admin tier unchanged; phase-1 consultants keep their sidebar", () => {
   for (const role of ["super_admin", "admin"]) {
     it(`${role}: sidebar and mobile bottom bar identical to before`, () => {
       for (const access of [rpcAccess(role), accessFromRole(role)]) {
@@ -82,11 +82,14 @@ describe("nav is unchanged for existing users (pins Lynda/Kelly and today's cons
   });
 
   for (const role of ["consultant", "coordinator"]) {
-    it(`${role} with no overrides: sidebar, bottom bar and secondary identical to before`, () => {
+    // Phase 2 (approved change): the bottom bar now fills its spare slots from the user's
+    // other visible modules, so a phase-1 consultant gets Overview / Clients / Accruals /
+    // Reporting instead of Overview alone. Sidebar and secondary are unchanged.
+    it(`${role} with phase-1 access: sidebar and secondary identical to before; bottom bar filled`, () => {
       for (const access of [rpcAccess(role), accessFromRole(role, ["Aus3C"])]) {
         const before = oldNav(role);
         expect(pairs(visibleNav(access).modules)).toEqual(before.modules);
-        expect(pairs(bottomNavFor(access))).toEqual(before.bottom);
+        expect(pairs(bottomNavFor(access))).toEqual([["overview", "Overview"], ["clients", "Clients"], ["accruals", "Accruals"], ["performance", "Reporting"]]);
         expect(pairs(visibleNav(access).secondary)).toEqual(before.secondary);
         expect(settingsTabsFor(access)).toEqual([]);
       }
@@ -94,16 +97,37 @@ describe("nav is unchanged for existing users (pins Lynda/Kelly and today's cons
   }
 });
 
+describe("phase 2 consultant / coordinator preset (20261017_scoped_modules.sql)", () => {
+  const PRESET = {
+    overview: "assigned", invoicing: "assigned", timesheet: "own", wages: "own",
+    clients: "none", accruals: "none", performance: "none",
+  };
+  for (const role of ["consultant", "coordinator"]) {
+    it(`${role}: Overview / Client Invoicing / Timesheets / Wages review, and all four on the bottom bar`, () => {
+      const a = rpcAccess(role, PRESET);
+      expect(pairs(visibleNav(a).modules)).toEqual([
+        ["overview", "Overview"], ["invoicing", "Client Invoicing"], ["timesheet", "Timesheets"], ["wages", "Wages review"],
+      ]);
+      expect(pairs(bottomNavFor(a))).toEqual([["overview", "Overview"], ["invoicing", "Invoicing"], ["timesheet", "Timesheet"], ["wages", "Wages"]]);
+      expect(visibleNav(a).secondary).toEqual([]);
+    });
+  }
+  it("the bottom bar never exceeds four tabs and keeps the preferred ones first", () => {
+    const a = rpcAccess("consultant", { ...PRESET, clients: "assigned", accruals: "assigned" });
+    expect(bottomNavFor(a).map((m) => m.key)).toEqual(["overview", "invoicing", "clients", "timesheet"]);
+  });
+});
+
 describe("overrides change only the overridden modules", () => {
   it("a consultant with Clients and Reporting turned off", () => {
     const a = rpcAccess("consultant", { overview: "assigned", clients: "none", accruals: "assigned", performance: "none" });
     expect(visibleNav(a).modules.map((m) => m.key)).toEqual(["overview", "accruals"]);
-    expect(bottomNavFor(a).map((m) => m.key)).toEqual(["overview"]);
+    expect(bottomNavFor(a).map((m) => m.key)).toEqual(["overview", "accruals"]);
     expect(reachableKeys(a)).toEqual(["overview", "accruals"]);
   });
-  it("Overview off: nothing on the bottom bar, overview unreachable", () => {
+  it("Overview off: the bottom bar shows what's left, overview unreachable", () => {
     const a = rpcAccess("consultant", { overview: "none", clients: "assigned", accruals: "none", performance: "none" });
-    expect(bottomNavFor(a)).toEqual([]);
+    expect(pairs(bottomNavFor(a))).toEqual([["clients", "Clients"]]);
     expect(reachableKeys(a)).toEqual(["clients"]);
   });
   it("admin reachable keys include settings and help", () => {
@@ -190,5 +214,24 @@ describe("accessSummary", () => {
   it("admins are full access; nothing granted says so", () => {
     expect(accessSummary({ role: "admin", overrides: {}, presets, moduleScopes })).toBe("Full access");
     expect(accessSummary({ role: "coordinator", overrides: {}, presets, moduleScopes })).toBe("No modules");
+  });
+});
+
+describe("moduleScopeProps", () => {
+  it("admin tier: every module null (everything, as before)", () => {
+    expect(moduleScopeProps(rpcAccess("admin"))).toEqual({ overview: null, invoicing: null, timesheet: null, wages: null });
+    expect(moduleScopeProps(null)).toEqual({ overview: null, invoicing: null, timesheet: null, wages: null });
+  });
+  it("consultant preset: one shape for every scoped module; userNames null when the RPC predates them", () => {
+    const a = { ...rpcAccess("consultant", { overview: "assigned", invoicing: "assigned", timesheet: "own", wages: "own" }),
+      personId: "p1", clients: ["Apex"], clickupUserNames: ["Holly Fraser"] };
+    const shape = { personId: "p1", userNames: ["Holly Fraser"], clients: ["Apex"] };
+    expect(moduleScopeProps(a)).toEqual({ overview: shape, invoicing: shape, timesheet: shape, wages: shape });
+    const { clickupUserNames: _drop, ...old } = a;
+    expect(moduleScopeProps(old).timesheet.userNames).toBeNull();
+  });
+  it("a non-admin granted all / none gets null", () => {
+    const a = rpcAccess("consultant", { overview: "all", invoicing: "none" });
+    expect(moduleScopeProps(a)).toEqual({ overview: null, invoicing: null, timesheet: null, wages: null });
   });
 });

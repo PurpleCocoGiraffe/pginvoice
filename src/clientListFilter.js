@@ -1,4 +1,5 @@
 import { isPackageLikeType } from "./format.js";
+import { ownNameSet, isOwnName } from "./ownTime.js";
 
 // Groups a client list by capGroup and, for any group with 2+ members, picks one "primary"
 // so the others can nest under it instead of showing as separate top-level cards. Pure so
@@ -128,4 +129,77 @@ export function searchMatchesInOtherTypes(list, opts) {
   if (!opts.search?.trim() || opts.clientTypeFilter === "all") return [];
   const shown = new Set(filterClientList(list, opts).map((c) => c.name));
   return filterClientList(list, { ...opts, clientTypeFilter: "all" }).filter((c) => !shown.has(c.name));
+}
+
+// ---------------------------- scoped Client Invoicing ----------------------------
+// For a user whose Invoicing scope is "assigned" (permissions.js). `list` is the SAME full
+// card list an admin gets -- computed over every client's inputs, so every number on a card
+// is identical -- and this only decides which cards are shown ("compute over full inputs,
+// filter at display"). A card is kept when:
+//   - it belongs to one of the user's clients (`clients`: its Clients-module profile, ledger
+//     name or roll-up identity), or
+//   - the user logged minutes on it this month (`userNames`: exact ClickUp spellings,
+//     compared case-insensitively, see ownTime.js), or
+//   - it nests under a kept card (a sub-project / capGroup sibling follows its parent).
+// A parent is kept when something nested under it is kept on its own, since nested rows only
+// ever render inside their parent's tile. Nesting is the same rule filterClientList uses.
+export function scopeClientList(list, { clients = [], userNames = [] } = {}, primaryNameByGroup = new Map()) {
+  const assigned = new Set(clients);
+  const mine = ownNameSet(userNames);
+  const presentNames = new Set(list.map((c) => c.name));
+  const parentOf = (c) => {
+    if (c.costCentreParentAccName && presentNames.has(c.costCentreParentAccName)) return c.costCentreParentAccName;
+    const primaryName = c.capGroup ? primaryNameByGroup.get(c.capGroup) : null;
+    return primaryName && primaryName !== c.name && presentNames.has(primaryName) ? primaryName : null;
+  };
+  const isAssigned = (c) => [c.profileClient, c.accruedClient?.name, c.costCentreAccruedName, c.name].some((n) => n && assigned.has(n));
+  const hasOwnMinutes = (c) => [...(c.userMinutes || [])].some(([u, min]) => min > 0 && isOwnName(mine, u));
+  const keptParents = new Set();
+  for (const c of list) {
+    if (isAssigned(c) || hasOwnMinutes(c)) keptParents.add(parentOf(c) ?? c.name);
+  }
+  return list.filter((c) => keptParents.has(c.name) || keptParents.has(parentOf(c)));
+}
+
+// The package figures of a card built from a client the user isn't assigned (pginvoice_
+// client_directory withheld its agreed hours / balances / fee, see clientDirectory.js).
+// Only reachable when fuzzy/prefix folder matching ties the user's own hours to such a
+// client. Worked hours stay (they're everyone's real ClickUp time); everything derived from
+// the withheld inputs is blanked rather than shown wrong, and the card says so (`withheld`).
+// Keys must exist on buildClientsForMonth's cards (invoicingPipeline.js) -- pinned by
+// invoicingScope.test.js, so a renamed card field can't silently stop being withheld.
+export const WITHHELD_FIELDS = {
+  pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, kpiPct: null,
+  status: "no-pkg", priorMismatch: null, priorRebaseline: null, resetValue: null, remainingReset: null,
+  balanceForward: null, remainingShown: null, quotedAmount: null, quotedRemaining: null, lifetimeWorked: null,
+  fixedFee: null,
+};
+// What Copy summary / the PDF say on a withheld card instead of "No package on file".
+export const WITHHELD_NOTE = "Package figures not shared (not one of your clients).";
+export function withholdRedactedFigures(list, redactedClients) {
+  if (!redactedClients?.size) return list;
+  const redacted = (n) => !!n && redactedClients.has(n);
+  return list.map((c) => (redacted(c.profileClient) || redacted(c.accruedClient?.name) || redacted(c.costCentreAccruedName)
+    ? { ...c, ...WITHHELD_FIELDS, withheld: true }
+    : c));
+}
+
+// The three lists Client Invoicing renders from one month's full card list -- the single
+// composition App.jsx and invoicingScope.test.js both call:
+//   shown:   every card, figures withheld where built from an unassigned client (nested
+//            rows/sibling lookups read from this);
+//   inScope: the cards in view (scopeClientList over `shown`), or, given `keepNames` (the
+//            current month's in-scope names), exactly those names -- used for the previous
+//            month so "vs last month" compares the same set of cards, not whoever happened
+//            to have the user's minutes last month;
+//   primary: computePrimaryNameByGroup over the FULL list (grouping never depends on scope).
+// `scopedDir` null (admin tier) -> all three are the full list, exactly as before.
+export function scopedCardLists(list, scopedDir, userNames = [], { keepNames = null } = {}) {
+  const primary = computePrimaryNameByGroup(list);
+  if (!scopedDir) return { shown: list, inScope: list, primary };
+  const shown = withholdRedactedFigures(list, scopedDir.redactedClients);
+  const inScope = keepNames
+    ? shown.filter((c) => keepNames.has(c.name))
+    : scopeClientList(shown, { clients: [...(scopedDir.assignedClients || [])], userNames }, primary);
+  return { shown, inScope, primary };
 }

@@ -11,7 +11,7 @@ import { useDismissable, useEscape, useFocusTrap } from "./useDismissable.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { CAP_PEOPLE_KEY, CAP_LEAVES_KEY, LEAVE_ENTRIES_KEY, WAGES_PREFS_KEY } from "./storageKeys.js";
 import { timeAgo } from "./format.js";
-import { adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor } from "./dateMath.js";
+import { adelaideMonthKey, monthOffsetFor, wagesReviewMonthKey } from "./dateMath.js";
 import {
   buildMonthView, buildSnapshot, groupLines, filterLines, computeTotals, hasExpected,
   toWorkbookRows, WORKBOOK_HEADINGS, WAGE_STATES,
@@ -32,12 +32,8 @@ const shiftMonth = (mk, d) => {
   const t = y * 12 + (m - 1) + d;
   return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
 };
-// Kelly reconciles last month in the first half of the month; after the 15th the
-// current month is the more likely one being looked at.
-function defaultMonth() {
-  const cur = adelaideMonthKey();
-  return adelaideDayOfMonth() <= 15 ? shiftMonth(cur, -1) : cur;
-}
+// The month being reviewed: see wagesReviewMonthKey (dateMath.js).
+const defaultMonth = () => wagesReviewMonthKey();
 
 const DEFAULT_PREFS = { q: "", state: "all", type: "all", status: "all", view: "cards" };
 function loadPrefs() {

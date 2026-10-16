@@ -193,14 +193,17 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             <span className="pg-alertbar__text">
               {isQld
                 ? "Queensland (previously) client, not on the accrued sheet, no reconciliation."
-                : "Hourly-rate client, no package on file. If this looks like a name mismatch, match it below."}
+                : onSetMatch ? "Hourly-rate client, no package on file. If this looks like a name mismatch, match it below." : "Hourly-rate client, no package on file."}
             </span>
-            <select defaultValue="__none__" onChange={(e) => onSetMatch(e.target.value)}>
-              <option value="__none__">Match to accrued client…</option>
-              {accruedNames.map((n) => (
-                <option key={n} value={n} disabled={usedAccruedNames.has(n)}>{n} {usedAccruedNames.has(n) ? "(taken)" : ""}</option>
-              ))}
-            </select>
+            {/* No onSetMatch = a scoped view: editing the shared name matches is admin only. */}
+            {onSetMatch && (
+              <select defaultValue="__none__" onChange={(e) => onSetMatch(e.target.value)}>
+                <option value="__none__">Match to accrued client…</option>
+                {accruedNames.map((n) => (
+                  <option key={n} value={n} disabled={usedAccruedNames.has(n)}>{n} {usedAccruedNames.has(n) ? "(taken)" : ""}</option>
+                ))}
+              </select>
+            )}
           </div>
         )}
         {c.seeded && (
@@ -208,10 +211,15 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             <span>No billable ClickUp hours matched to this client this month -- shown because its package still runs. If its hours sit under a differently named folder, match that folder to this client.</span>
           </div>
         )}
-        {isPackage && c.matchInfo?.method === "manual" && (
+        {isPackage && c.matchInfo?.method === "manual" && onSetMatch && (
           <div className="pg-manual-note">
             <span>Manual match set.</span>
             <button onClick={() => onSetMatch("__none__")}>clear</button>
+          </div>
+        )}
+        {c.withheld && (
+          <div className="pg-manual-note">
+            <span>You logged time on this client, but it isn't assigned to you, so its package, carry and balance aren't shared. Ask an Admin to assign it.</span>
           </div>
         )}
 

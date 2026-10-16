@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { LayoutDashboard, FileText, BarChart3, TrendingUp, CalendarDays, Clock, Users, Building2, Sun, Moon, LogOut, ChevronLeft, ChevronRight, Settings, HelpCircle, Menu, X, MoreHorizontal, Handshake, Wallet } from "lucide-react";
 import Overview from "./Overview.jsx";
 import PlaceholderPage from "./PlaceholderPage.jsx";
@@ -11,6 +11,7 @@ import Clients from "./Clients.jsx";
 import TeamDashboard from "./TeamDashboard.jsx";
 import SettingsPage from "./Settings.jsx";
 import WagesReview from "./WagesReview.jsx";
+import WagesSelf from "./WagesSelf.jsx";
 import ForcePasswordChange from "./ForcePasswordChange.jsx";
 import { supabase } from "./supabaseClient.js";
 import { fetchCostCentres } from "./clientsSync.js";
@@ -19,7 +20,8 @@ import { PG_DATA_EVENT, idbClear } from "./idbStore.js";
 import { ensureCacheOwner, releaseCacheOwner } from "./cacheOwner.js";
 import { PG_COST_CENTRES_KEY, THEME_KEY, COLLAPSE_KEY } from "./storageKeys.js";
 import { fetchOwnProfile, fetchOwnAccess, ROLE_LABELS } from "./usersSync.js";
-import { visibleNav, bottomNavFor, reachableKeys, canSee, settingsTabsFor, resolveAccess } from "./permissions.js";
+import { visibleNav, bottomNavFor, reachableKeys, canSee, settingsTabsFor, resolveAccess, isMissingRpcError, moduleScopeProps } from "./permissions.js";
+import { fetchClientDirectory, directoryToInputs } from "./clientDirectory.js";
 
 // Which nav items a user gets comes from permissions.js (driven by pginvoice_my_access());
 // this only adds the icons. Order/labels live there and are pinned by permissions.test.js.
@@ -194,21 +196,69 @@ export default function Shell() {
     return () => { cancelled = true; window.removeEventListener("focus", reload); };
   }, [session]);
 
-  // The user-editable cost-centre/sub-project links (pginvoice_cost_centres, managed from
-  // the Clients module) -- fetched once here at the top, rather than by each page that
-  // needs it, since every page is mounted simultaneously (just hidden via CSS below) and
-  // nameMatch.js's matching functions are a synchronous singleton fed by setDynamicCostCentres,
-  // not something each caller fetches for itself. Requires a session (RLS needs an
-  // authenticated user), so this only runs once logged in.
+  // The cost-centre rules singleton (nameMatch.js setDynamicCostCentres) and the client
+  // directory have ONE owner: this effect. Every module mounts at once and nameMatch's
+  // matching is synchronous, so pages never fetch or set the rules themselves -- they read
+  // `costCentres.version` (bumped after each apply) and call `costCentres.refresh()` after
+  // their own edits (Clients.jsx). Waits for access, since the source depends on it:
+  //   - admin tier, or no Invoicing: the table (fetchCostCentres; RLS-scoped for a
+  //     non-admin, which only matters to the modules they can open);
+  //   - a non-admin with Invoicing: pginvoice_client_directory(), fetched ONCE here, its cost
+  //     centres applied before `directory` is handed to Client Invoicing (App.jsx), whose
+  //     task-prefix split runs when it fetches entries. Their own RLS read would cover only
+  //     their clients and change folder matching for everyone's hours.
+  // A missing RPC (migration not applied) falls back to the table read and marks the
+  // directory "unavailable"; a failed refresh after a good load keeps the last good one.
+  const access0 = profile?.access ?? null;
+  const accessKey = access0 ? JSON.stringify(access0) : "";
+  // Keyed on content: access is refetched (as a new object) on every window focus.
+  const scopes = useMemo(() => moduleScopeProps(access0), [accessKey]);
+  const useDirectory = !!access0 && !access0.isAdminTier && canSee(access0, "invoicing");
+  const [directory, setDirectory] = useState(null); // { status: loading|ready|unavailable|error, inputs?, message? }
+  const [costCentreState, setCostCentreState] = useState({ version: 0, error: null });
+  const loadRulesRef = useRef(null);
   useEffect(() => {
-    if (!session) return;
+    if (!session || !access0) return;
     let cancelled = false;
-    const load = () => fetchCostCentres().then((rows) => { if (!cancelled) setDynamicCostCentres(rows); }).catch(() => {});
-    load();
-    const onUpdate = (e) => { if (!e.detail || e.detail.key === PG_COST_CENTRES_KEY) load(); };
+    let dirReady = false;
+    const applied = (rows) => {
+      if (cancelled) return;
+      setDynamicCostCentres(rows);
+      setCostCentreState((s) => ({ version: s.version + 1, error: null }));
+    };
+    const load = async () => {
+      if (!useDirectory) {
+        try { applied(await fetchCostCentres()); } catch (e) {
+          console.error("Couldn't load cost centres:", e);
+          if (!cancelled) setCostCentreState((s) => ({ ...s, error: e?.message || String(e) }));
+          throw e;
+        }
+        return;
+      }
+      try {
+        const inputs = directoryToInputs(await fetchClientDirectory());
+        if (cancelled) return;
+        applied(inputs.costCentres);
+        dirReady = true;
+        setDirectory({ status: "ready", inputs });
+      } catch (e) {
+        if (cancelled || dirReady) return;
+        const missing = isMissingRpcError(e);
+        if (!missing) console.error("Client directory fetch failed:", e);
+        setDirectory(missing ? { status: "unavailable" } : { status: "error", message: e?.message || String(e) });
+        try { applied(await fetchCostCentres()); } catch (e2) { /* the module already shows the error */ }
+      }
+    };
+    if (useDirectory) setDirectory({ status: "loading" });
+    loadRulesRef.current = load;
+    load().catch(() => {});
+    const onUpdate = (e) => { if (!e.detail || e.detail.key === PG_COST_CENTRES_KEY) load().catch(() => {}); };
     window.addEventListener(PG_DATA_EVENT, onUpdate);
-    return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
-  }, [session]);
+    return () => { cancelled = true; loadRulesRef.current = null; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
+  // accessKey: re-run when the user's access really changes (e.g. newly assigned clients).
+  }, [session, accessKey, useDirectory]);
+  const refreshCostCentres = useCallback(() => loadRulesRef.current?.() ?? Promise.resolve(), []);
+  const costCentres = useMemo(() => ({ ...costCentreState, refresh: refreshCostCentres }), [costCentreState, refreshCostCentres]);
 
   if (session === null) return null; // brief check, avoids a login-screen flash
   if (!session) return <LoginGate onSuccess={setSession} />;
@@ -240,6 +290,10 @@ export default function Shell() {
   // Redirect guard: access can shrink while a tab is open (refetched on focus).
   if (!reachable.includes(active)) { setActive(reachable[0]); return null; }
   const show = (key) => ({ display: active === key ? "block" : "none" });
+  // Per-module scope props (`scopes`, moduleScopeProps): null = everything (admin tier,
+  // exactly as before). Scoped modules are keyed by mode so a role change while the tab is
+  // open remounts them cleanly instead of carrying the other mode's state over.
+  const modeKey = (scope) => (scope ? "scoped" : "all");
 
   const username = session.user?.email?.split("@")[0] || "Account";
 
@@ -336,20 +390,31 @@ export default function Shell() {
             state alive across tab switches. Only modules this user can open are
             mounted at all — no point fetching data for a page they can't reach,
             on top of RLS already scoping what comes back. */}
-        {canSee(access, "overview") && <div style={show("overview")}><Overview /></div>}
-        {canSee(access, "invoicing") && <div style={show("invoicing")}><PGReconciliation onNavigateClients={() => setActive("clients")} /></div>}
+        {canSee(access, "overview") && <div style={show("overview")}><Overview key={modeKey(scopes.overview)} scope={scopes.overview} /></div>}
+        {canSee(access, "invoicing") && (
+          <div style={show("invoicing")}>
+            <PGReconciliation
+              key={modeKey(scopes.invoicing)}
+              scope={scopes.invoicing}
+              directory={scopes.invoicing ? directory : null}
+              onNavigateClients={canSee(access, "clients") ? () => setActive("clients") : undefined}
+            />
+          </div>
+        )}
         {canSee(access, "capacity") && <div style={show("capacity")}><CapacityDashboard onNavigateTeam={() => setActive("team")} /></div>}
         {canSee(access, "team") && <div style={show("team")}><TeamDashboard /></div>}
-        {canSee(access, "timesheet") && <div style={show("timesheet")}><TimesheetSummary /></div>}
+        {canSee(access, "timesheet") && <div style={show("timesheet")}><TimesheetSummary key={modeKey(scopes.timesheet)} own={scopes.timesheet} /></div>}
         {canSee(access, "bdm") && (
           <div style={show("bdm")}>
             <PlaceholderPage title="BDM." subtitle="Business development tracking isn't built yet." icon={Handshake} empty="BDM module coming soon." />
           </div>
         )}
         {canSee(access, "performance") && <div style={show("performance")}><PerformanceScorecard /></div>}
-        {canSee(access, "accruals") && <div style={show("accruals")}><ClientAccruals /></div>}
-        {canSee(access, "clients") && <div style={show("clients")}><Clients /></div>}
-        {canSee(access, "wages") && <div style={show("wages")}><WagesReview /></div>}
+        {canSee(access, "accruals") && <div style={show("accruals")}><ClientAccruals canWrite={access.isAdminTier} /></div>}
+        {canSee(access, "clients") && <div style={show("clients")}><Clients canWrite={access.isAdminTier} costCentres={costCentres} /></div>}
+        {canSee(access, "wages") && <div style={show("wages")}>
+          {scopes.wages ? <WagesSelf personId={scopes.wages.personId} /> : <WagesReview />}
+        </div>}
         {reachable.includes("settings") && (
           <div style={show("settings")}><SettingsPage tabs={settingsTabs} ownRole={profile.role} ownUserId={profile.userId} /></div>
         )}

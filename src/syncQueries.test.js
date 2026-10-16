@@ -67,6 +67,17 @@ describe("paginated reads order by a unique key (tied rows skipped/duplicated ac
     for (const q of pages) expect(ordersOf(q)).toEqual(["entry_start", "entry_id"]);
   });
 
+  it("fetchClickupFromSupabase with userNames filters by exact user_name; an empty list never queries", async () => {
+    tables.pginvoice_clickup_entries = [{ folder: "F", minutes: 1, month_key: "2026-09", user_name: "Holly Fraser" }];
+    await fetchClickupFromSupabase("2026-04", { userNames: ["Holly Fraser", "holly fraser "] });
+    const q = queries.find((x) => x.table === "pginvoice_clickup_entries");
+    expect(q.calls).toContainEqual(["in", "user_name", ["Holly Fraser", "holly fraser "]]);
+    expect(q.calls).toContainEqual(["gte", "month_key", "2026-04"]);
+    queries.length = 0;
+    expect(await fetchClickupFromSupabase(undefined, { userNames: [] })).toBeNull();
+    expect(queries).toHaveLength(0);
+  });
+
   it("fetchAccrualsFromSupabase orders by client then month_key", async () => {
     tables.pginvoice_accruals = [{ client: "A", month_key: "2026-09", accrual_value: 1 }];
     await fetchAccrualsFromSupabase();

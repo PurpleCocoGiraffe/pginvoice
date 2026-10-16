@@ -3,7 +3,7 @@ import {
   agreedAt, computeMonthlyAvailability, resignationStatus,
   demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys, reconcileCapClients, ownersFor,
 } from "./capacityData.js";
-import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor } from "./dateMath.js";
+import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor, wagesReviewMonthKey } from "./dateMath.js";
 
 describe("agreedAt", () => {
   it("returns the base agreed hours when there is no history", () => {
@@ -233,6 +233,13 @@ describe("Adelaide month helpers", () => {
     expect(monthOffsetFor("2026-08", lateAug)).toBe(1);
     expect(monthOffsetFor("2025-12", lateAug)).toBe(9);
     expect(monthOffsetFor("2026-10", lateAug)).toBe(-1);
+  });
+
+  it("wagesReviewMonthKey: last month until the 15th (Adelaide), then this month, across years", () => {
+    expect(wagesReviewMonthKey(lateAug)).toBe("2026-08"); // 1 Sep in Adelaide
+    expect(wagesReviewMonthKey(new Date(Date.UTC(2026, 8, 15, 2)))).toBe("2026-08");
+    expect(wagesReviewMonthKey(new Date(Date.UTC(2026, 8, 16, 2)))).toBe("2026-09");
+    expect(wagesReviewMonthKey(new Date(Date.UTC(2027, 0, 3, 2)))).toBe("2026-12");
   });
 });
 

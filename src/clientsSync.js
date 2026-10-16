@@ -91,7 +91,8 @@ export async function fetchClients() {
   return (data || []).map(rowToClient);
 }
 
-function rowToClient(r) {
+// Also used by clientDirectory.js, so directory rows get exactly this shape.
+export function rowToClient(r) {
   return {
     client: r.client,
     type: r.type,
