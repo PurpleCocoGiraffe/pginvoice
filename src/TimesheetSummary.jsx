@@ -9,6 +9,7 @@ import { SearchBox } from "./SearchBox.jsx";
 import { buildXeroTimesheetText, copyText } from "./timesheetCopy.js";
 import { CLICKUP_DB_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
 import { fetchClickupFromSupabase } from "./clickupSync.js";
+import { loadMyRoster } from "./capacityStore.js";
 import { filterOwnRows } from "./ownTime.js";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -185,7 +186,8 @@ function TimesheetInner({ own = null }) {
     let cancelled = false;
     (async () => {
       try {
-        const people = await loadKey(CAP_PEOPLE_KEY, SEED_PEOPLE);
+        // Capacity data is admin-only: own mode gets just the linked person's record.
+        const { people } = await loadMyRoster();
         if (!cancelled) setPeople(people);
       } catch (e) {
         console.error("Timesheet Summary: couldn't load people data:", e);

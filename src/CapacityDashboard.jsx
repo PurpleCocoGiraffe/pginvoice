@@ -285,11 +285,6 @@ function CapacityDashboardInner({ onNavigateTeam }) {
   // a newer total entered there.
   useEffect(() => { if (loaded) guardedSave(CAP_OVERRIDES_KEY, overrides); }, [overrides, loaded, guardedSave]);
 
-  const resetSample = useCallback(() => {
-    // Leave (cap_leaves) is deliberately left alone: it's payroll input owned by Consultants.
-    if (!window.confirm("Reset to sample data? This replaces every current person, client, support allocation, note and override with the seed data — this cannot be undone. Leave hours are not affected.")) return;
-    setPeople(SEED_PEOPLE); setClients(SEED_CLIENTS); setSupport(SEED_SUPPORT); setNotes([]); setOverrides({});
-  }, []);
   const addNote = () => {
     if (!noteDraft.trim()) return;
     setNotes((ns) => [{ id: uid("n"), text: noteDraft.trim(), ts: Date.now() }, ...ns]);
@@ -713,7 +708,6 @@ function CapacityDashboardInner({ onNavigateTeam }) {
           {monthKind === "past" ? "past record" : monthKind === "now" ? "latest actuals" : "forecast"}
         </span>
         <button className="pg-btn-ghost pg-cap-addclient-btn" onClick={() => setShowAddClient((s) => !s)}><Plus size={11} /> <span>Add client</span></button>
-        <button className="pg-btn-ghost pg-cap-desktop-only" style={{ marginLeft: "auto" }} onClick={resetSample}>Reset sample data</button>
       </div>
 
       {showAddClient && (
