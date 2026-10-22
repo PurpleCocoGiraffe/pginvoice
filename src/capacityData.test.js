@@ -3,7 +3,7 @@ import {
   agreedAt, computeMonthlyAvailability, resignationStatus,
   demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys, reconcileCapClients, ownersFor,
 } from "./capacityData.js";
-import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor, wagesReviewMonthKey } from "./dateMath.js";
+import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor, wagesReviewMonthKey, adelaideDateKey } from "./dateMath.js";
 
 describe("agreedAt", () => {
   it("returns the base agreed hours when there is no history", () => {
@@ -301,5 +301,21 @@ describe("reconcileCapClients -- Capacity Planning follows the Clients + Consult
     expect(ownersFor(people, "2026-10")).toEqual(["Kasey", "Holly", "Purple Giraffe"]);
     expect(ownersFor(people, "2026-09")).toContain("Lucy");
     expect(ownersFor(people, "2026-10", new Set(["Alex"]))).toContain("Alex");
+  });
+});
+
+describe("adelaideDateKey -- date-only keys are Adelaide's date, not UTC's", () => {
+  it("before 10:30am ACDT on the 1st it's already the 1st (UTC still says the 31st)", () => {
+    const at = new Date("2026-10-31T22:00:00Z"); // 1 Nov 2026, 08:30 ACDT
+    expect(at.toISOString().slice(0, 10)).toBe("2026-10-31");
+    expect(adelaideDateKey(at)).toBe("2026-11-01");
+  });
+  it("standard time (ACST, +9:30) and late evening", () => {
+    expect(adelaideDateKey(new Date("2026-06-30T15:00:00Z"))).toBe("2026-07-01"); // 00:30 ACST
+    expect(adelaideDateKey(new Date("2026-06-30T14:00:00Z"))).toBe("2026-06-30"); // 23:30 ACST
+  });
+  it("matches adelaideMonthKey for the same instant", () => {
+    const at = new Date("2026-03-31T14:00:00Z");
+    expect(adelaideDateKey(at).slice(0, 7)).toBe(adelaideMonthKey(at));
   });
 });
