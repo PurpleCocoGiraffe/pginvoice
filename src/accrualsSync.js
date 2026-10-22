@@ -186,9 +186,12 @@ export async function upsertAccrualCell(client, monthKey, patch, extra = {}) {
     client,
     month_key: monthKey,
     account_manager: extra.manager ?? null,
-    agreed_hpm: extra.agreedHpm ?? null,
     ...patch,
   };
+  // agreed_hpm only when the caller actually knows it: an upsert writes every column it
+  // lists, and a comment save that sent `null` here wiped a live package month's agreed
+  // hours -- Client Invoicing then read the month as "No package".
+  if (extra.agreedHpm !== undefined) row.agreed_hpm = extra.agreedHpm;
   const { error } = await supabase.from("pginvoice_accruals").upsert(row, { onConflict: "client,month_key" });
   if (error) throw error;
   notifyAccrualsChanged();
@@ -331,7 +334,7 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
         if (worked > 0) {
           const workedHours = Math.round(worked * 100) / 100;
           const accrualValue = Math.round((prior + worked) * 100) / 100;
-          const cell = { accrualValue, accrualNote: WRAP_UP_NOTE, pct: null, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
+          const cell = { accrualValue, accrualNote: WRAP_UP_NOTE, agreedHpm: null, pct: null, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
           const changed = !existing || existing.accrualValue !== accrualValue || existing.workedHours !== workedHours || existing.accrualNote !== WRAP_UP_NOTE || existing.agreedHpm != null;
           c.months[mk] = cell;
           if (changed) {
@@ -357,7 +360,7 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
         const hasValues = existing && (existing.accrualValue !== null || existing.workedHours !== null);
         const wrapUpWork = !existing && (seg.type === "package" || seg.type === "strategy") && workedMinutesFor(mk) > 0;
         if (hasValues || wrapUpWork) {
-          const cell = { accrualValue: null, accrualNote: endedNote, pct: null, comment: existing?.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
+          const cell = { accrualValue: null, accrualNote: endedNote, agreedHpm: null, pct: null, comment: existing?.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
           c.months[mk] = cell;
           rows.push({
             client: c.client, account_manager: c.manager || null, agreed_hpm: null,
@@ -381,15 +384,17 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
     // package to carry a real prior balance from) that made a client with no package look
     // like a package client in Client Accruals until the following recompute cycle.
     if (monthStatus === "on_hold" && (seg.type === "package" || seg.type === "strategy") && !existing?.isOverride) {
-      const cell = { accrualValue: prior, accrualNote: "On hold — accrual paused", pct: null, comment: existing?.comment ?? null, workedHours: existing?.workedHours ?? null, isOverride: false,
+      const agreedHpm = seg.agreedHours != null ? String(seg.agreedHours) : null;
+      const cell = { accrualValue: prior, accrualNote: "On hold — accrual paused", agreedHpm, pct: null, comment: existing?.comment ?? null, workedHours: existing?.workedHours ?? null, isOverride: false,
         // Worked hours aren't recomputed while on hold, so a flag is neither raised nor
         // cleared here -- carried over as-is.
         hoursFlagged: !!existing?.hoursFlagged, flaggedFromHours: existing?.flaggedFromHours ?? null, resetValue, resetNote };
-      const changed = !existing || existing.accrualValue !== cell.accrualValue || existing.accrualNote !== cell.accrualNote;
+      const changed = !existing || existing.accrualValue !== cell.accrualValue || existing.accrualNote !== cell.accrualNote
+        || parseAgreedHours(existing.agreedHpm) !== parseAgreedHours(agreedHpm);
       c.months[mk] = cell;
       if (changed) {
         rows.push({
-          client: c.client, account_manager: c.manager || null, agreed_hpm: seg.agreedHours != null ? String(seg.agreedHours) : null,
+          client: c.client, account_manager: c.manager || null, agreed_hpm: agreedHpm,
           month_key: mk, accrual_value: cell.accrualValue, accrual_note: cell.accrualNote, pct_over_under: null,
           worked_hours: cell.workedHours, is_override: false, hours_flagged: cell.hoursFlagged, flagged_from_hours: cell.flaggedFromHours,
         });
@@ -408,7 +413,7 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
       // doesn't keep showing an accrual for a period the client wasn't actually on a package.
       // A human-entered override is presumed intentional regardless of type and is left alone.
       if (existing && !existing.isOverride && (existing.accrualValue !== null || existing.workedHours !== null)) {
-        const cell = { accrualValue: null, accrualNote: "Not on a package this month", pct: null, comment: existing.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
+        const cell = { accrualValue: null, accrualNote: "Not on a package this month", agreedHpm: null, pct: null, comment: existing.comment ?? null, workedHours: null, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
         c.months[mk] = cell;
         rows.push({
           // Not the client-level c.agreedHpm here -- that's a stale snapshot from whenever a
@@ -455,9 +460,11 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
         hoursFlagged = true;
         flaggedFromHours = existing.workedHours;
       }
-      const cell = { accrualValue, accrualNote: null, pct, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged, flaggedFromHours, resetValue, resetNote };
+      const cell = { accrualValue, accrualNote: null, agreedHpm: String(agreedNum), pct, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged, flaggedFromHours, resetValue, resetNote };
       const changed = !existing || existing.accrualValue !== accrualValue || existing.workedHours !== workedHours
-        || !!existing.hoursFlagged !== hoursFlagged || (existing.flaggedFromHours ?? null) !== flaggedFromHours;
+        || !!existing.hoursFlagged !== hoursFlagged || (existing.flaggedFromHours ?? null) !== flaggedFromHours
+        // Also heals a row whose agreed_hpm went missing/stale (a comment save used to null it).
+        || parseAgreedHours(existing.agreedHpm) !== agreedNum;
       c.months[mk] = cell;
       if (changed) {
         rows.push({

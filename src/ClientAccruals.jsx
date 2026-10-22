@@ -141,9 +141,10 @@ export default function ClientAccruals({ canWrite = false }) {
     if (!canWrite) return;
     setSaving(true);
     try {
-      // This month's own agreed hours, never the stale client-level scalar (see CLAUDE.md) --
-      // the upsert writes agreed_hpm back onto the row.
-      await upsertAccrualCell(client.client, monthKey, { comment: draftComment || null }, { manager: client.manager, agreedHpm: client.months[monthKey]?.agreedHpm ?? null });
+      // This month's own agreed hours, never the stale client-level scalar (see CLAUDE.md).
+      // No `?? null`: a cell that doesn't carry agreedHpm leaves the stored column alone --
+      // sending null wiped live package months (they then read as "No package").
+      await upsertAccrualCell(client.client, monthKey, { comment: draftComment || null }, { manager: client.manager, agreedHpm: client.months[monthKey]?.agreedHpm });
       setClients((prev) => prev.map((c) => (c.client !== client.client ? c : { ...c, months: { ...c.months, [monthKey]: { ...(c.months[monthKey] || {}), comment: draftComment || null } } })));
       setEditingCell(null);
     } catch (e) {
