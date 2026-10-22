@@ -1,4 +1,4 @@
--- Local check for supabase-migrations/20261022_entries_own_clients.sql.
+-- Local check for supabase-migrations/20261022_entries_own_clients.sql + 20261023_entries_policy.sql.
 --
 -- SCRATCH DATABASE ONLY -- never run this against the live project. On the shared stub schema
 -- (_permissions_setup.sql) it applies the migration twice, fills pginvoice_folder_clients as
@@ -17,6 +17,8 @@ begin;
 
 \ir ../supabase-migrations/20261022_entries_own_clients.sql
 \ir ../supabase-migrations/20261022_entries_own_clients.sql
+\ir ../supabase-migrations/20261023_entries_policy.sql
+\ir ../supabase-migrations/20261023_entries_policy.sql
 
 update public.pginvoice_profiles set person_id = 'p3' where user_id = '00000000-0000-0000-0000-0000000000c2';
 insert into public.pginvoice_clickup_entries (entry_id, user_name, folder, minutes, month_key) values

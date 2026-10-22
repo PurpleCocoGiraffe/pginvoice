@@ -4,10 +4,11 @@
 -- Before: every signed-in user could read AND write every key (cap_people with rates and
 -- notes, cap_leaves, cap_clients, cap_overrides, clickup_known_user_ids...).
 --
--- DEPLOY ORDER: (1) this migration, (2) the frontend. A non-admin on the OLD frontend gets
--- an empty roster from RLS (Overview "My utilization" / Timesheets person / Wages photo
--- blank, scoped Invoicing types guessed without Capacity rows) until the new frontend
--- ships -- no errors, no writes. Admins are unaffected either way.
+-- DEPLOY ORDER: (1) the frontend (it falls back to the old table reads while this isn't
+-- applied), (2) this migration. Applied before the new frontend, a non-admin would get an
+-- empty roster from RLS (Overview "My utilization" / Timesheets person / Wages photo blank,
+-- scoped Invoicing types guessed without Capacity rows) -- no errors, no writes. Admins are
+-- unaffected either way.
 --
 -- What non-admins still get, through SECURITY DEFINER functions instead of the table:
 --   * pginvoice_my_roster(): their OWN cap_people record (no rate, no note) and their own

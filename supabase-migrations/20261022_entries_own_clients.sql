@@ -1,14 +1,16 @@
--- Time entries: a non-admin reads only their own entries and their clients' folders --
--- owner decision 2026-10-22 (option A: link folders first, then lock down).
+-- Time entries, part 1 of 2: the folder map, the helpers and the months RPC. Restricts
+-- nothing on its own -- the policy that does is 20261023_entries_policy.sql.
+-- Owner decision 2026-10-22 (option A: link folders first, then lock down).
 -- NOT yet applied to fzvlnzlecchsubkpsmew. Requires 20261017_scoped_modules.sql.
 --
 -- Before: every signed-in user could read every row of pginvoice_clickup_entries (every
 -- client's and every colleague's tasks, hours and free-text descriptions).
 --
--- DEPLOY ORDER: (1) the frontend (it fills pginvoice_folder_clients from an admin's Client
--- Invoicing load and reads pginvoice_clickup_months() when present), (2) an admin opens
--- Client Invoicing once (fills the folder map), (3) this migration. Applying it before the
--- map is filled leaves a consultant's Client Invoicing showing only their own time.
+-- DEPLOY ORDER: (1) this file and the frontend, in either order (each tolerates the other
+-- missing); (2) an admin opens Client Invoicing once -- the frontend fills
+-- pginvoice_folder_clients from it; check the table has rows; (3) 20261023_entries_policy.sql.
+-- Turning the policy on before the map is filled would leave a consultant's Client Invoicing
+-- showing only their own time.
 --
 -- Parity: a consultant's assigned-client cards must equal the admin's. Checked on the live
 -- data (2026-10-22, 55,855 entries, 58 clients, 404 client-months since Dec 2025): with
@@ -75,17 +77,7 @@ grant execute on function public.pg_my_clickup_name_keys() to authenticated, ser
 create index if not exists pginvoice_clickup_entries_folder_norm_idx
   on public.pginvoice_clickup_entries (lower(trim(folder)));
 
--- 3. The entries policy.
-drop policy if exists authenticated_read on public.pginvoice_clickup_entries;
-drop policy if exists entries_read_own_or_clients on public.pginvoice_clickup_entries;
-create policy entries_read_own_or_clients on public.pginvoice_clickup_entries
-  for select to authenticated using (
-    (select pg_is_admin_tier())
-    or lower(trim(user_name)) = any ((select pg_my_clickup_name_keys())::text[])
-    or lower(trim(folder)) = any ((select pg_my_entry_folder_keys())::text[])
-  );
-
--- 4. Which months the sync holds data for -- month keys only, nothing else. Client
+-- 3. Which months the sync holds data for -- month keys only, nothing else. Client
 --    Invoicing needs it to treat a month as covered even when none of the caller's rows
 --    fall in it (see the parity note above; reconcile.js billableMinutesByFolder).
 create or replace function public.pginvoice_clickup_months()
