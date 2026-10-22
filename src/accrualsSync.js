@@ -538,7 +538,11 @@ export function endPeriodsFor(profile, events) {
       // package from 2026-08-01 via a type event (no "reactivation"), and the open-ended
       // offboarding period wrongly cleared its live Aug/Sep package rows. A type event
       // with no open period is ordinary and never implies an end on its own.
-      if (open) close(e.effective_date.slice(0, 7));
+      // Closed at the first month whose 1st is on/after the event -- the same month
+      // typeForMonth starts applying the new type from. Closing at the event's own month
+      // left a gap: a type event on 2026-08-15 un-ended August while August's type was
+      // still the old package, so August was charged a package the client wasn't on.
+      if (open) close(firstMonthOnOrAfter(e.effective_date));
       continue;
     }
     if (e.kind === "offboarding") {

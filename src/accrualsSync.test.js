@@ -388,6 +388,19 @@ describe("replayClientAccruals -- offboarded/archived clients stop accruing", ()
     expect(c.months["2026-09"].accrualValue).toBe(-18.5);
   });
 
+  it("a mid-month re-engaging type event ends the gap at the next 1st, like typeForMonth", () => {
+    // Offboarded 2026-06-01, back as a new type from 2026-08-15: typeForMonth only applies the
+    // new type from September, so August must stay ended -- it used to be un-ended and charged
+    // the OLD package (agreed 10, accrual -10) for a month the client wasn't on it.
+    const events = [ev(1, "offboarding", "2026-06-01"), ev(2, "type", "2026-08-15")];
+    expect(endPeriodsFor(profile("active"), events)).toEqual([{ from: "2026-06", until: "2026-09", after: null, note: "Client offboarded" }]);
+    const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-06": {}, "2026-08": stale(-10) } };
+    run(c, { events, status: "active", worked: { "2026-09": 4 } });
+    expect(c.months["2026-08"].accrualNote).toBe("Client offboarded");
+    expect(c.months["2026-08"].accrualValue).toBeNull();
+    expect(c.months["2026-09"].accrualValue).toBe(-6); // first live month, from a zero prior
+  });
+
   it("an active client with a stale open-ended offboarding event is never cleared", () => {
     const events = [ev(1, "offboarding", "2026-06-01")];
     const c = { client: "A", manager: null, agreedHpm: "10", months: { "2026-08": stale(-10), "2026-09": stale(-20) } };
