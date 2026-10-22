@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { authorize, secretsMatch, parseMonthOffset, MAX_MONTH_OFFSET } from "../supabase-functions/_shared/authz.ts";
+import { authorize, parseMonthOffset, MAX_MONTH_OFFSET } from "../supabase-functions/_shared/authz.ts";
 
 // clickup-key and clickup-sync used to do no caller check: the app's public anon key is a
 // valid JWT, so platform verify_jwt alone let anyone replace the ClickUp token or run syncs.
@@ -32,21 +32,6 @@ describe("authorize", () => {
     expect(authorize(user("consultant"), SYNC_POLICY)).toMatchObject({ ok: false, status: 403 });
     expect(authorize(user("coordinator"), SYNC_POLICY)).toMatchObject({ ok: false, status: 403 });
     expect(authorize(user(null), SYNC_POLICY)).toMatchObject({ ok: false, status: 403 });
-  });
-});
-
-describe("secretsMatch", () => {
-  it("matches only an identical, non-empty secret", () => {
-    expect(secretsMatch("abc123", "abc123")).toBe(true);
-    expect(secretsMatch("abc124", "abc123")).toBe(false);
-    expect(secretsMatch("abc12", "abc123")).toBe(false);
-    expect(secretsMatch("abc1234", "abc123")).toBe(false);
-  });
-  it("an unset secret never matches, even an empty header", () => {
-    expect(secretsMatch("", "")).toBe(false);
-    expect(secretsMatch(null, undefined)).toBe(false);
-    expect(secretsMatch("anything", undefined)).toBe(false);
-    expect(secretsMatch(undefined, "abc")).toBe(false);
   });
 });
 

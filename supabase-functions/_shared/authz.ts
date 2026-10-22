@@ -15,7 +15,7 @@ export type Caller = {
   authenticated: boolean;
   // That user's pginvoice_profiles role, or null if they have no profile.
   role: string | null;
-  // The request carried the x-cron-secret header matching the CRON_SECRET secret.
+  // The request carried the x-cron-secret header matching Vault's pginvoice_cron_secret.
   cronSecretOk: boolean;
 };
 
@@ -30,18 +30,6 @@ export function authorize(caller: Caller, policy: Policy): Decision {
     return { ok: false, status: 403, error: "You don't have permission to do this." };
   }
   return { ok: true, via: "user" };
-}
-
-// Constant-time string comparison for the cron secret, so response timing doesn't
-// leak how many leading characters of a guess were right. An unset/empty secret
-// never matches anything.
-export function secretsMatch(given: string | null | undefined, expected: string | null | undefined): boolean {
-  if (!given || !expected) return false;
-  const a = new TextEncoder().encode(given);
-  const b = new TextEncoder().encode(expected);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  return diff === 0;
 }
 
 // monthOffset from a request body: an integer 0..MAX_MONTH_OFFSET, anything else

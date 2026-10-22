@@ -225,8 +225,8 @@ Deno.serve(async (req: Request) => {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-  // Only the pg_cron jobs (x-cron-secret header, matching the CRON_SECRET function
-  // secret; the cron commands read it from Vault) or a signed-in admin-tier user
+  // Only the pg_cron jobs (x-cron-secret header, checked against Vault's
+  // pginvoice_cron_secret by pginvoice_cron_secret_ok()) or a signed-in admin-tier user
   // ("Sync now" in Client Invoicing / Settings, "Re-sync" in Wages review -- all
   // admin-only) may run a sync. The anon key alone no longer can.
   const decision = authorize(await resolveCaller(req, supabase), { allowCron: true, roles: ["super_admin", "admin"] });
