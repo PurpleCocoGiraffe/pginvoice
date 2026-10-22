@@ -1,7 +1,7 @@
 -- Time entries, part 1 of 2: the folder map, the helpers and the months RPC. Restricts
 -- nothing on its own -- the policy that does is 20261023_entries_policy.sql.
 -- Owner decision 2026-10-22 (option A: link folders first, then lock down).
--- NOT yet applied to fzvlnzlecchsubkpsmew. Requires 20261017_scoped_modules.sql.
+-- APPLIED to fzvlnzlecchsubkpsmew on 2026-10-22. Requires 20261017_scoped_modules.sql.
 --
 -- Before: every signed-in user could read every row of pginvoice_clickup_entries (every
 -- client's and every colleague's tasks, hours and free-text descriptions).
@@ -31,12 +31,18 @@ create table if not exists public.pginvoice_folder_clients (
 );
 alter table public.pginvoice_folder_clients enable row level security;
 grant select, insert, update, delete on public.pginvoice_folder_clients to authenticated;
-drop policy if exists folder_clients_read on public.pginvoice_folder_clients;
-drop policy if exists folder_clients_admin_write on public.pginvoice_folder_clients;
-create policy folder_clients_read on public.pginvoice_folder_clients
-  for select to authenticated using (pg_is_admin_tier() or pg_has_client_access(client));
-create policy folder_clients_admin_write on public.pginvoice_folder_clients
-  for all to authenticated using (pg_is_admin_tier()) with check (pg_is_admin_tier());
+-- Created only if missing (re-runnable without any drop).
+do $$
+begin
+  if not exists (select 1 from pg_policies where tablename = 'pginvoice_folder_clients' and policyname = 'folder_clients_read') then
+    create policy folder_clients_read on public.pginvoice_folder_clients
+      for select to authenticated using (pg_is_admin_tier() or pg_has_client_access(client));
+  end if;
+  if not exists (select 1 from pg_policies where tablename = 'pginvoice_folder_clients' and policyname = 'folder_clients_admin_write') then
+    create policy folder_clients_admin_write on public.pginvoice_folder_clients
+      for all to authenticated using (pg_is_admin_tier()) with check (pg_is_admin_tier());
+  end if;
+end $$;
 
 -- 2. The caller's readable folder keys and own-name keys, each computed once per statement
 --    (the policy wraps them in a sub-select). "My clients" is the same set the client

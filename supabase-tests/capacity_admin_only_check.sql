@@ -41,14 +41,15 @@ update public.pginvoice_profiles set person_id = 'p3' where user_id = '00000000-
 
 do $$
 begin
-  if (select count(*) from pg_policies where tablename = 'pginvoice_app_state') <> 1 then
-    raise exception 'app_state should have exactly the admin-tier policy, got %', (select string_agg(policyname, ',') from pg_policies where tablename = 'pginvoice_app_state');
+  if exists (select 1 from pg_policies where tablename = 'pginvoice_app_state'
+               and coalesce(qual, '') not like '%pg_is_admin_tier%' and coalesce(with_check, '') not like '%pg_is_admin_tier%') then
+    raise exception 'every app_state policy must be admin-tier: %', (select string_agg(policyname || ':' || coalesce(qual, '') || '/' || coalesce(with_check, ''), ' | ') from pg_policies where tablename = 'pginvoice_app_state');
   end if;
   if not exists (select 1 from pg_proc where proname = 'pginvoice_my_roster' and prosecdef and 'search_path=public, pg_temp' = any (proconfig)) then
     raise exception 'pginvoice_my_roster must be SECURITY DEFINER with search_path pinned';
   end if;
   if has_function_privilege('anon', 'public.pginvoice_my_roster()', 'execute') then raise exception 'anon can execute pginvoice_my_roster'; end if;
-  raise notice 'ok: migration applied twice, one admin-tier policy, roster RPC locked down';
+  raise notice 'ok: migration applied twice, every app_state policy admin-tier, roster RPC locked down';
 end $$;
 
 set local role authenticated;

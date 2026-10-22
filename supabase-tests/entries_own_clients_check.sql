@@ -28,8 +28,8 @@ insert into public.pginvoice_clickup_entries (entry_id, user_name, folder, minut
 
 do $$
 begin
-  if exists (select 1 from pg_policies where tablename = 'pginvoice_clickup_entries' and policyname = 'authenticated_read') then
-    raise exception 'the open authenticated_read policy is still there';
+  if exists (select 1 from pg_policies where tablename = 'pginvoice_clickup_entries' and qual = 'true') then
+    raise exception 'an open (true) entries policy is still there';
   end if;
   if (select count(*) from pg_proc where proname in ('pg_my_entry_folder_keys', 'pg_my_clickup_name_keys', 'pginvoice_clickup_months')
         and prosecdef and 'search_path=public, pg_temp' = any (proconfig)) <> 3 then
