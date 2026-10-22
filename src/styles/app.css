@@ -1232,7 +1232,10 @@ button { font: inherit; }
    any module (or hovering any card in it) feels consistent across the app. */
 @keyframes pg-card-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 .pg-panel, .pg-cap-card, .pg-cap-stat, .pg-kpi-card, .pg-row, .pg-client, .pg-filecard {
-  animation: pg-card-rise 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* `backwards`, not `both`: holding the final transform after the animation left every card
+     its own stacking context, so a dropdown inside one card (Timesheets' consultant search)
+     was painted underneath the next card whatever its z-index. */
+  animation: pg-card-rise 380ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
   animation-delay: calc(var(--i, 0) * 60ms);
 }
 .pg-cap-card:hover, .pg-cap-stat:hover, .pg-kpi-card:hover {

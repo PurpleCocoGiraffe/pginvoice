@@ -1,5 +1,5 @@
 -- Capacity data (pginvoice_app_state) is admin tier only -- owner decision 2026-10-22.
--- NOT yet applied to fzvlnzlecchsubkpsmew.
+-- APPLIED to fzvlnzlecchsubkpsmew on 2026-10-22.
 --
 -- Before: every signed-in user could read AND write every key (cap_people with rates and
 -- notes, cap_leaves, cap_clients, cap_overrides, clickup_known_user_ids...).
@@ -17,13 +17,12 @@
 -- The Edge Functions use the service role and are unaffected (clickup-sync's known user ids,
 -- manage-users' roster-person check).
 
--- 1. Table policies: admin tier only, for every command.
-drop policy if exists authenticated_read on public.pginvoice_app_state;
-drop policy if exists authenticated_update on public.pginvoice_app_state;
-drop policy if exists authenticated_write on public.pginvoice_app_state;
-drop policy if exists app_state_admin_all on public.pginvoice_app_state;
-create policy app_state_admin_all on public.pginvoice_app_state
-  for all to authenticated using (pg_is_admin_tier()) with check (pg_is_admin_tier());
+-- 1. Table policies: admin tier only. The three live policies are edited in place (ALTER,
+--    no drop): read / update / insert become admin-tier; there is no delete policy, so
+--    deletes stay refused for everyone but the service role.
+alter policy authenticated_read on public.pginvoice_app_state using ((select pg_is_admin_tier()));
+alter policy authenticated_update on public.pginvoice_app_state using ((select pg_is_admin_tier())) with check ((select pg_is_admin_tier()));
+alter policy authenticated_write on public.pginvoice_app_state with check ((select pg_is_admin_tier()));
 
 -- 2. The caller's own roster record and leave totals.
 create or replace function public.pginvoice_my_roster()
