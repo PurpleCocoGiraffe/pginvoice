@@ -27,6 +27,8 @@
 // CLICKUP_API_TOKEN must be set as an Edge Function secret (Project Settings
 // -> Edge Functions -> Secrets); it is never sent to the client.
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { authorize, parseMonthOffset } from "../_shared/authz.ts";
+import { resolveCaller } from "../_shared/caller.ts";
 
 const CLICKUP_BASE = "https://api.clickup.com/api/v2";
 const TIMEZONE = "Australia/Adelaide"; // matches the CSV export's "Start Text" localisation
@@ -223,6 +225,13 @@ Deno.serve(async (req: Request) => {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
+  // Only the pg_cron jobs (x-cron-secret header, checked against Vault's
+  // pginvoice_cron_secret by pginvoice_cron_secret_ok()) or a signed-in admin-tier user
+  // ("Sync now" in Client Invoicing / Settings, "Re-sync" in Wages review -- all
+  // admin-only) may run a sync. The anon key alone no longer can.
+  const decision = authorize(await resolveCaller(req, supabase), { allowCron: true, roles: ["super_admin", "admin"] });
+  if (!decision.ok) return new Response(JSON.stringify({ ok: false, error: decision.error }), { status: decision.status, headers: JSON_HEADERS });
+
   // A key saved from Settings (pginvoice_secrets, written by the clickup-key
   // function) takes priority over the CLICKUP_API_TOKEN Edge Function secret --
   // that's the whole point of letting it be set from the UI: it's how someone
@@ -240,9 +249,7 @@ Deno.serve(async (req: Request) => {
   let monthOffset = 0;
   try {
     const body = await req.json().catch(() => ({}));
-    if (typeof body?.monthOffset === "number" && Number.isFinite(body.monthOffset) && body.monthOffset >= 0) {
-      monthOffset = Math.floor(body.monthOffset);
-    }
+    monthOffset = parseMonthOffset(body?.monthOffset);
   } catch (_) { /* malformed/absent body -> default to current month */ }
 
   try {
@@ -279,7 +286,6 @@ Deno.serve(async (req: Request) => {
     });
     const data = await clickupFetch(`/team/${teamId}/time_entries?${qs.toString()}`, token);
     const entries = data.data || [];
-    const rawSample = entries[0] ?? null;
 
     const monthRows: any[] = [];
     for (const entry of entries) {
@@ -449,7 +455,7 @@ Deno.serve(async (req: Request) => {
       rows_synced: monthRows.length,
     }).eq("id", 1);
 
-    return new Response(JSON.stringify({ ok: true, rows_synced: monthRows.length, team_id: teamId, month: monthLabel, raw_sample: rawSample }), { headers: JSON_HEADERS });
+    return new Response(JSON.stringify({ ok: true, rows_synced: monthRows.length, team_id: teamId, month: monthLabel }), { headers: JSON_HEADERS });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await supabase.from("pginvoice_sync_meta").update({

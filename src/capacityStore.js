@@ -5,6 +5,8 @@
 // each caller already worked with under localStorage.
 import { supabase } from "./supabaseClient.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
+import { isMissingRpcError } from "./permissions.js";
+import { CAP_PEOPLE_KEY, CAP_LEAVES_KEY } from "./storageKeys.js";
 
 // Callers must NOT treat a thrown error the same as "no row yet" -- a real
 // query failure (network blip, RLS denial, expired session) used to be
@@ -37,4 +39,24 @@ export async function saveState(key, value) {
   // on a confirmed successful write -- firing it after a failed save would
   // tell other modules something changed when it didn't.
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(PG_DATA_EVENT, { detail: { key } }));
+}
+
+// A non-admin's own roster record and leave totals. pginvoice_app_state is admin tier only
+// (20261022_capacity_admin_only.sql), so Overview "assigned", Timesheets / Wages "own" and
+// scoped Client Invoicing read pginvoice_my_roster() instead: just the linked person's
+// cap_people record (no rate, no note) and their own cap_leaves keys. Until that migration
+// is deployed the RPC is missing -- then this falls back to the old table reads, so the
+// frontend can ship first without breaking anything. Real errors throw, like loadState.
+export async function loadMyRoster() {
+  const { data, error } = await supabase.rpc("pginvoice_my_roster");
+  if (error) {
+    if (!isMissingRpcError(error)) throw error;
+    const [people, leaves] = await Promise.all([loadState(CAP_PEOPLE_KEY, []), loadState(CAP_LEAVES_KEY, {})]);
+    return { personId: null, people: Array.isArray(people) ? people : [], leaves: leaves && typeof leaves === "object" ? leaves : {} };
+  }
+  return {
+    personId: data?.personId ?? null,
+    people: Array.isArray(data?.people) ? data.people : [],
+    leaves: data?.leaves && typeof data.leaves === "object" && !Array.isArray(data.leaves) ? data.leaves : {},
+  };
 }

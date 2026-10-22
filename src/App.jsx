@@ -12,6 +12,9 @@ import { TYPE_LABELS_SHORT } from "./nameMatch.js";
 import { fetchClickupFromSupabase, fetchSyncMeta, triggerManualSync, LIVE_SYNC_LABEL } from "./clickupSync.js";
 import { fetchAccruedForReconciliation, ACCRUALS_LIVE_SYNC_LABEL } from "./accrualsSync.js";
 import { SEED_CLIENTS as CAP_SEED_CLIENTS, SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
+import { loadMyRoster } from "./capacityStore.js";
+import { folderClientPairsAllMonths } from "./folderAccess.js";
+import { syncFolderClients, fetchClickupMonths } from "./folderAccessSync.js";
 import { fetchClients as fetchPgClients, fetchClientEvents, applyDueClientEvents } from "./clientsSync.js";
 import { ClientAvatar } from "./avatar.jsx";
 import { useDismissable } from "./useDismissable.js";
@@ -181,13 +184,15 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
   // broadcasts on every edit, so a basis change there is reflected here live.
   const [capClients, setCapClients] = useState(CAP_SEED_CLIENTS);
   useEffect(() => {
+    // Scoped: Capacity data is admin-only -- these rows come with the client directory (below).
+    if (scoped) return;
     let cancelled = false;
     const load = () => loadCapKey(CAP_CLIENTS_KEY, CAP_SEED_CLIENTS).then((v) => { if (!cancelled) setCapClients(v || CAP_SEED_CLIENTS); });
     load();
     const onUpdate = (e) => { if (!e.detail || e.detail.key === CAP_CLIENTS_KEY) load(); };
     window.addEventListener(PG_DATA_EVENT, onUpdate);
     return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
-  }, []);
+  }, [scoped]);
 
   // The Consultants module's roster (Supabase-backed), read-only here — used only to look
   // up a consultant's photo by their ClickUp username, so an avatar uploaded once in
@@ -195,12 +200,17 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
   const [capPeople, setCapPeople] = useState(SEED_PEOPLE);
   useEffect(() => {
     let cancelled = false;
+    // Scoped: only the user's own record (pginvoice_my_roster) -- other avatars show initials.
+    if (scoped) {
+      loadMyRoster().then(({ people }) => { if (!cancelled) setCapPeople(people); }, (e) => console.error("Couldn't load your roster record:", e));
+      return () => { cancelled = true; };
+    }
     const load = () => loadCapKey(CAP_PEOPLE_KEY, SEED_PEOPLE).then((v) => { if (!cancelled) setCapPeople(v || SEED_PEOPLE); });
     load();
     const onUpdate = (e) => { if (!e.detail || e.detail.key === CAP_PEOPLE_KEY) load(); };
     window.addEventListener(PG_DATA_EVENT, onUpdate);
     return () => { cancelled = true; window.removeEventListener(PG_DATA_EVENT, onUpdate); };
-  }, []);
+  }, [scoped]);
   // Group-level Capacity Planning lookups (dominant type, offboarded groups, group names,
   // exact folder -> row) -- see buildCapIndexes in invoicingPipeline.js.
   const capIndexes = useMemo(() => buildCapIndexes(capClients), [capClients]);
@@ -258,12 +268,18 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     setPgClientEvents(dir.pgClientEvents);
     setAccrued(dir.accrued);
     setAccruedSource("supabase");
+    // Capacity rows ride along with the directory (20261022_capacity_admin_only.sql). An older
+    // directory without them: the table is still readable then, so read it as before.
+    if (dir.capClients) setCapClients(dir.capClients);
+    else loadCapKey(CAP_CLIENTS_KEY, CAP_SEED_CLIENTS).then((v) => { if (!cancelled) setCapClients(v || CAP_SEED_CLIENTS); }, (e) => console.error("Couldn't load Capacity clients:", e));
     fetchSyncMeta().then((m) => { if (!cancelled) setSyncMeta(m); }).catch(() => {});
     // The shared name-match overrides are pipeline inputs too (same rows the admin uses).
-    Promise.all([fetchNameMatches(), fetchClickupFromSupabase()]).then(([matches, live]) => {
+    // The months the sync covers ride along: this user's rows are only their own and their
+    // clients' folders, so "a month with rows" isn't the same as "a month with data".
+    Promise.all([fetchNameMatches(), fetchClickupFromSupabase(), fetchClickupMonths()]).then(([matches, live, coveredMonths]) => {
       if (cancelled) return;
       setNameMap(matches);
-      setClickup(live);
+      setClickup(live && coveredMonths ? { ...live, coveredMonths } : live);
       setClickupSource("supabase");
       setScopedLoad({ status: "ready" });
     }, (e) => {
@@ -561,6 +577,27 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     { accruedNames, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth, capIndexes, pgIndexes },
   ), [clickup, accrued, nameMap, billableOnly, pgClients, pgClientEvents, capClients, accruedNames, folderCanon, allRawFolders, computeMonthWorked, workedByFolderMonth, capIndexes, pgIndexes]);
   const buildClientsForMonth = useCallback((monthKey, priorKey) => buildClientsForMonthPure(invoicingCtx, monthKey, priorKey), [invoicingCtx]);
+
+  // Keeps pginvoice_folder_clients -- which folders' time each client's people may read --
+  // in step with how this pipeline attributes folders (folderAccess.js), from an admin's
+  // live load only (never a CSV upload). Walks every month once per data load, a moment
+  // after it settles; the billable toggle doesn't change the pairs, so it reads the latest
+  // context from a ref instead of re-running. Best-effort: a failure only logs.
+  const invoicingCtxRef = useRef(invoicingCtx);
+  invoicingCtxRef.current = invoicingCtx;
+  const folderMapSig = useRef("");
+  useEffect(() => {
+    if (scoped || clickupSource !== "supabase" || !clickup || !pgClients.length) return undefined;
+    const t = setTimeout(() => {
+      let pairs;
+      try { pairs = folderClientPairsAllMonths(invoicingCtxRef.current); } catch (e) { console.error("Couldn't build the folder access map:", e); return; }
+      const sig = pairs.map((p) => `${p.folderKey}|${p.client}`).sort().join("\n");
+      if (sig === folderMapSig.current) return;
+      folderMapSig.current = sig;
+      syncFolderClients(pairs).catch((e) => { folderMapSig.current = ""; console.error("Couldn't update the folder access map:", e); });
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [scoped, clickupSource, clickup, pgClients, pgClientEvents, accrued, nameMap, capClients]);
 
   // allClients: every card, exactly as an admin computes it. shownClients: the same, with
   // the figures withheld on any card built from a client a scoped user isn't assigned (see

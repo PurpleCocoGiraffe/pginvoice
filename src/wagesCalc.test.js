@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   monthDays, wageWeekdaysInMonth, standardMonthHours, classifyClickup, attributeToPeople,
   expectedFor, computeLine, parseXeroPaste, resolveXeroBatch, isClientOnboardingFolder, parseXeroTime, matchXeroNames, normName,
-  typeLabelFor, parseHoursInput,
+  typeLabelFor, parseHoursInput, pendingXeroPlan,
 } from "./wagesCalc.js";
 
 const PG_CLIENTS = "54751434";
@@ -651,5 +651,32 @@ describe("parseHoursInput", () => {
 
   it("rejects negatives, garbage, exponents and absurd values", () => {
     for (const t of ["-1", "abc", "1e3", "12h", "10000"]) expect(parseHoursInput(t).ok).toBe(false);
+  });
+});
+
+describe("pendingXeroPlan -- retrying a partly failed Xero paste", () => {
+  // Jane pasted 38 on top of a saved 40 with "Add together" chosen; Bob's save failed.
+  const rows = [{ target: "jane", hours: 38, name: "Jane" }, { target: "bob", hours: 30, name: "Bob" }];
+  const before = { jane: 40, bob: null };
+  const plan = resolveXeroBatch(rows, before, { jane: "sum" }).apply;
+  const afterPartial = { jane: 78, bob: null };
+
+  it("the first Apply plans Jane at 78 and Bob at 30", () => {
+    expect(plan.map((a) => [a.person_id, a.hours])).toEqual([["jane", 78], ["bob", 30]]);
+  });
+
+  it("re-resolving the batch against the new saved hours would double-add Jane (the old bug)", () => {
+    const again = resolveXeroBatch(rows, afterPartial, { jane: "sum" }).apply;
+    expect(again.find((a) => a.person_id === "jane").hours).toBe(116);
+  });
+
+  it("the frozen plan only retries Bob, with the same absolute hours", () => {
+    expect(pendingXeroPlan(plan, afterPartial).map((a) => [a.person_id, a.hours])).toEqual([["bob", 30]]);
+  });
+
+  it("nothing is pending once every planned value is saved; a reload failure just re-sends absolutes", () => {
+    expect(pendingXeroPlan(plan, { jane: 78, bob: 30 })).toEqual([]);
+    expect(pendingXeroPlan(plan, before).map((a) => a.hours)).toEqual([78, 30]);
+    expect(pendingXeroPlan(null, {})).toEqual([]);
   });
 });

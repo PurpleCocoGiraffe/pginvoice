@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { AlertTriangle, Info, Lock } from "lucide-react";
-import { loadState } from "./capacityStore.js";
-import { CAP_PEOPLE_KEY } from "./storageKeys.js";
+import { loadMyRoster } from "./capacityStore.js";
 import { wagesReviewMonthKey } from "./dateMath.js";
 import { isMissingRpcError } from "./permissions.js";
 import { fetchMyWageMonths, fetchMyWageLine } from "./wagesSync.js";
@@ -42,8 +41,8 @@ export default function WagesSelf({ personId }) {
       (error) => { if (!live) return; setMonths(isMissingRpcError(error) ? { unavailable: true } : { error }); },
     );
     // The roster photo is display-only; a failed read just shows initials.
-    loadState(CAP_PEOPLE_KEY, null).then(
-      (people) => { if (live) setPhoto((Array.isArray(people) ? people : []).find((p) => p.id === personId)?.photo || ""); },
+    loadMyRoster().then(
+      ({ people }) => { if (live) setPhoto(people.find((p) => p.id === personId)?.photo || ""); },
       () => {},
     );
     return () => { live = false; };

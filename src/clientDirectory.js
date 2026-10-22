@@ -27,7 +27,7 @@ const LEDGER_DEFAULTS = {
   is_override: false, hours_flagged: false, flagged_from_hours: null, reset_note: null,
 };
 
-// Pure: the RPC's JSON -> { pgClients, pgClientEvents, costCentres, accrued, assignedClients, redactedClients }.
+// Pure: the RPC's JSON -> { pgClients, pgClientEvents, costCentres, accrued, capClients, assignedClients, redactedClients }.
 // `accrued` is null when the ledger is empty (same as fetchAccruedForReconciliation).
 export function directoryToInputs(dir) {
   const clients = dir?.clients || [];
@@ -39,6 +39,9 @@ export function directoryToInputs(dir) {
     accrued: accrualRows.length
       ? { ...buildReconciliationClients(rowsToClients(accrualRows)), warnings: [], fileName: ACCRUALS_LIVE_SYNC_LABEL }
       : null,
+    // Capacity Planning rows (agreed hours as per-group ranks for non-admins), or null from a
+    // directory that predates them (20261022_capacity_admin_only.sql).
+    capClients: Array.isArray(dir?.capClients) ? dir.capClients : null,
     assignedClients: new Set(clients.filter((c) => c.assigned).map((c) => c.client)),
     redactedClients: new Set(clients.filter((c) => !c.assigned).map((c) => c.client)),
   };

@@ -7,6 +7,7 @@ import { supabase } from "./supabaseClient.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { PG_CLIENTS_KEY, PG_COST_CENTRES_KEY } from "./storageKeys.js";
 import { CLIENT_TYPE_LABELS } from "./nameMatch.js";
+import { adelaideDateKey } from "./dateMath.js";
 
 // Every module (Clients, Capacity Planning) that reads pginvoice_clients stays mounted for
 // the whole session rather than remounting on tab switch, so a change made in one won't be
@@ -468,7 +469,7 @@ export function recomputeClientCurrentState(baseRow, events, dueIds = null) {
 // run re-applies the same events -- recomputeClientCurrentState is a pure function of the
 // row + full event list, so that's the same patch again (idempotent).
 export async function applyDueClientEvents() {
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = adelaideDateKey();
   const { data: due, error } = await supabase
     .from("pginvoice_client_events")
     .select("*")

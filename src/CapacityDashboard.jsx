@@ -15,6 +15,7 @@ import {
 } from "./capacityData.js";
 import { useDismissable } from "./useDismissable.js";
 import { syncCapacityLeads } from "./usersSync.js";
+import { adelaideDateKey } from "./dateMath.js";
 import {
   CLICKUP_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, CAP_SUPPORT_KEY,
   CAP_NOTES_KEY, CAP_LEAVES_KEY, CAP_OVERRIDES_KEY, PG_CLIENTS_KEY,
@@ -284,11 +285,6 @@ function CapacityDashboardInner({ onNavigateTeam }) {
   // a newer total entered there.
   useEffect(() => { if (loaded) guardedSave(CAP_OVERRIDES_KEY, overrides); }, [overrides, loaded, guardedSave]);
 
-  const resetSample = useCallback(() => {
-    // Leave (cap_leaves) is deliberately left alone: it's payroll input owned by Consultants.
-    if (!window.confirm("Reset to sample data? This replaces every current person, client, support allocation, note and override with the seed data — this cannot be undone. Leave hours are not affected.")) return;
-    setPeople(SEED_PEOPLE); setClients(SEED_CLIENTS); setSupport(SEED_SUPPORT); setNotes([]); setOverrides({});
-  }, []);
   const addNote = () => {
     if (!noteDraft.trim()) return;
     setNotes((ns) => [{ id: uid("n"), text: noteDraft.trim(), ts: Date.now() }, ...ns]);
@@ -340,7 +336,7 @@ function CapacityDashboardInner({ onNavigateTeam }) {
   // only (not split across a combined client's sub-projects) — see demandForGroup below.
   const dynamicAverages = useMemo(() => computeDynamicAverages(clickupData, clients), [clickupData, clients]);
   const setOverride = (clientId, m, value) => setOverrides((prev) => ({ ...prev, [`${clientId}_${m}`]: value === "" ? null : Number(value) }));
-  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const todayStr = () => adelaideDateKey();
 
   // A pginvoice_clients consultant is stored as "Holly L", "Alice FS", etc.; SEED_PEOPLE/OWNERS
   // use just the first name -- this is the only bit of translation needed to treat the two
@@ -712,7 +708,6 @@ function CapacityDashboardInner({ onNavigateTeam }) {
           {monthKind === "past" ? "past record" : monthKind === "now" ? "latest actuals" : "forecast"}
         </span>
         <button className="pg-btn-ghost pg-cap-addclient-btn" onClick={() => setShowAddClient((s) => !s)}><Plus size={11} /> <span>Add client</span></button>
-        <button className="pg-btn-ghost pg-cap-desktop-only" style={{ marginLeft: "auto" }} onClick={resetSample}>Reset sample data</button>
       </div>
 
       {showAddClient && (

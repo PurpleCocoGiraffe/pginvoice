@@ -38,6 +38,16 @@ export function adelaideMonthKey(now = new Date()) {
   return `${get("year")}-${get("month")}`;
 }
 
+// A calendar date in TIMEZONE, as "YYYY-MM-DD" (default: today). Use this for any
+// date-only key ("effective today", "is this event due") -- never toISOString(), which is
+// the UTC date: before 9:30/10:30am in Adelaide that's still yesterday, so an event dated
+// today wasn't applied yet and a default effective date on the 1st landed in last month.
+export function adelaideDateKey(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-AU", { timeZone: TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 // Today's day of the month (1-31) in TIMEZONE.
 export function adelaideDayOfMonth(now = new Date()) {
   return Number(new Intl.DateTimeFormat("en-AU", { timeZone: TIMEZONE, day: "numeric" }).format(now));

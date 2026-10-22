@@ -97,7 +97,7 @@ export const allRawFoldersOf = (clickup) => (clickup ? [...new Set(clickup.rows.
 // billable regardless of the "Billable only" toggle: that toggle is display-only, and the
 // accrual math must not move with it. Returns null when the export doesn't cover that
 // month at all (nothing to check).
-export const monthWorkedFn = (clickup) => (monthKey) => (clickup ? billableMinutesByFolder(clickup.rows, monthKey, clickup.hasBillable) : null);
+export const monthWorkedFn = (clickup) => (monthKey) => (clickup ? billableMinutesByFolder(clickup.rows, monthKey, clickup.hasBillable, clickup.coveredMonths) : null);
 
 // Billable minutes per folder (folderKey) per month, across every synced month -- a Quoted
 // client's remaining balance is the quoted amount minus everything billed against THAT

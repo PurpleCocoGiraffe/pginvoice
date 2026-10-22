@@ -3,6 +3,7 @@ import { fetchClients } from "./clientsSync.js";
 import { fetchAccrualsFromSupabase } from "./accrualsSync.js";
 import { fetchClickupFromSupabase } from "./clickupSync.js";
 import { loadKey, SEED_PEOPLE, last6MonthKeys } from "./capacityData.js";
+import { loadMyRoster } from "./capacityStore.js";
 import { CAP_PEOPLE_KEY, CAP_LEAVES_KEY } from "./storageKeys.js";
 import { CLIENT_TYPE_LABELS } from "./nameMatch.js";
 import { LineChart } from "./LineChart.jsx";
@@ -86,12 +87,15 @@ export default function Overview({ scope = null }) {
       const clickupSource = !scope ? fetchClickupFromSupabase(earliestNeededMonth)
         : scope.userNames ? fetchClickupFromSupabase(earliestNeededMonth, { userNames: scope.userNames })
         : Promise.resolve(null);
+      // Scoped: Capacity data is admin-only, so the user's own roster record and leave come
+      // from pginvoice_my_roster() (capacityStore.loadMyRoster) -- one call for both.
+      const myRoster = scope ? loadMyRoster() : null;
       const sources = [
         ["clients", fetchClients()],
         ["accruals", fetchAccrualsFromSupabase()],
-        ["team roster", loadKey(CAP_PEOPLE_KEY, SEED_PEOPLE)],
+        ["team roster", myRoster ? myRoster.then((r) => r.people) : loadKey(CAP_PEOPLE_KEY, SEED_PEOPLE)],
         ["ClickUp sync", clickupSource],
-        ["leave records", loadKey(CAP_LEAVES_KEY, {})],
+        ["leave records", myRoster ? myRoster.then((r) => r.leaves) : loadKey(CAP_LEAVES_KEY, {})],
       ];
       const results = await Promise.allSettled(sources.map(([, p]) => p));
       if (cancelled) return;

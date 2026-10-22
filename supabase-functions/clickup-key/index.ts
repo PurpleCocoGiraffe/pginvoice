@@ -9,6 +9,8 @@
 // never sent back to the client after being saved; only a masked preview and
 // the connected workspace name are returned.
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { authorize } from "../_shared/authz.ts";
+import { resolveCaller } from "../_shared/caller.ts";
 
 const CLICKUP_BASE = "https://api.clickup.com/api/v2";
 const SECRET_KEY = "clickup_api_token";
@@ -33,8 +35,8 @@ function maskToken(token: string) {
 async function validateToken(token: string) {
   const res = await fetch(`${CLICKUP_BASE}/team`, { headers: { Authorization: token } });
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`ClickUp rejected this key (${res.status}): ${body.slice(0, 300) || "no further details"}`);
+    // Status only: ClickUp's raw error body isn't echoed back to the browser.
+    throw new Error(`ClickUp rejected this key (HTTP ${res.status}). Check it was copied in full and belongs to the Purple Giraffe workspace.`);
   }
   const data = await res.json();
   const teams = data.teams || [];
@@ -48,6 +50,12 @@ Deno.serve(async (req: Request) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+  // Super Admin only -- both actions. Replacing this token redirects every scheduled
+  // sync, and even `status` reveals the masked token and workspace names. Settings is
+  // the only caller and is itself Super Admin only, but that nav filter is cosmetic.
+  const decision = authorize(await resolveCaller(req, supabase), { allowCron: false, roles: ["super_admin"] });
+  if (!decision.ok) return new Response(JSON.stringify({ ok: false, error: decision.error }), { status: decision.status, headers: JSON_HEADERS });
 
   let body: any = {};
   try { body = await req.json(); } catch (_) { /* default to status check below */ }

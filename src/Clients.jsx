@@ -15,6 +15,7 @@ import { CLICKUP_DB_KEY, PG_CLIENTS_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js
 import { SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
 import { ClientAvatar, PersonAvatar, resizePhotoFile } from "./avatar.jsx";
 import { useDismissable, useEscape } from "./useDismissable.js";
+import { adelaideDateKey } from "./dateMath.js";
 
 // Popover for a client's logo -- upload an image directly, or type in the
 // client's website and let a favicon service supply the logo automatically.
@@ -123,7 +124,7 @@ function hoursLabelFor(t) {
   if (t === "quoted") return "Quoted hours (total)";
   return "Hours per month";
 }
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => adelaideDateKey();
 
 
 function arrangementLabel(c) {
@@ -167,7 +168,7 @@ function timeAgo(iso) {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.round(hrs / 24);
   if (days < 30) return `${days}d ago`;
-  return d.toISOString().slice(0, 10);
+  return adelaideDateKey(d);
 }
 
 function Stat({ value, label }) {

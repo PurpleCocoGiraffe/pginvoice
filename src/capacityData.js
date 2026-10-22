@@ -160,27 +160,16 @@ export function agreedAt(client, monthKey) {
 }
 
 /* ============================================================
-   SEED DATA (unchanged from the real Resourcing sheet + ClickUp actuals)
-   Exported — Performance, Team, and Timesheet Summary reuse this exact
-   roster/client master instead of keeping their own copy, so the modules
-   can never quietly drift apart.
+   SEED DATA -- intentionally empty.
+   These used to hold the real roster (billable-rate targets, HR notes), client list
+   (offboarding reasons) and support allocations, and they shipped inside the public JS
+   bundle that every visitor downloads before signing in. The live data has long lived
+   in pginvoice_app_state (admin tier only since 20261022_capacity_admin_only.sql), so
+   they're now just empty starting values: every module renders nothing until its load
+   succeeds, and every save-effect is gated on that successful load (capacityStore.js).
+   The names stay exported so the existing imports and `v || SEED_*` fallbacks still work.
 ============================================================ */
-export const SEED_PEOPLE = [
-  { id: "p1", name: "Holly", role: "Consultant", state: "SA", contracted: 38, rate: 0.70, note: "Standard" },
-  { id: "p2", name: "Shreya", role: "Consultant", state: "SA", contracted: 38, rate: 0.60, note: "Probation" },
-  { id: "p3", name: "Chloe", role: "Consultant", state: "SA", contracted: 30, rate: 0.70, note: "Standard" },
-  { id: "p4", name: "Alice", role: "Consultant", state: "SA", contracted: 22.5, rate: 0.70, note: "Standard" },
-  { id: "p5", name: "Amanda", role: "Consultant", state: "WA", contracted: 38, rate: 0.20, note: "Support-heavy role, worth reviewing" },
-  { id: "p6", name: "Lucy", role: "Consultant", state: "QLD", contracted: 38, rate: 0.50, note: "Probation + BDM discount" },
-  { id: "p7", name: "Vinavie", role: "Consultant", state: "SA", contracted: 38, rate: 0.70, note: "Standard" },
-  { id: "p8", name: "Alex", role: "Coordinator", state: "SA", contracted: 38, rate: 0.70, note: "Supports others + Purple Giraffe internal work" },
-  { id: "p9", name: "Ariani", role: "Coordinator", state: "SA", contracted: 38, rate: 0.70, note: "Standard" },
-  { id: "p10", name: "Chelsea", role: "Coordinator", state: "SA", contracted: 38, rate: 0.60, note: "Probation" },
-  { id: "p11", name: "Vino", role: "Coordinator", state: "SA", contracted: 38, rate: 0.60, note: "Probation" },
-  { id: "p12", name: "Julia", role: "Coordinator", state: "QLD", contracted: 38, rate: 0.60, note: "Probation" },
-  { id: "p13", name: "Tanya", role: "Coordinator", state: "SA", contracted: 15, rate: 0.70, note: "Part-time, currently unallocated" },
-  { id: "p17", name: "Sarah", role: "Consultant", state: "SA", contracted: 38, rate: 0.70, note: "Owns several active package clients in the Clients module (Amorim Cork, Magain Real Estate, etc.) -- added as an owner here to keep the two systems in sync; please confirm role/state/rate." },
-];
+export const SEED_PEOPLE = [];
 
 export function C(id, client, group, lead, basis, agreed, actuals, extra) {
   const e = extra || {};
@@ -190,114 +179,9 @@ export function C(id, client, group, lead, basis, agreed, actuals, extra) {
     history: e.history || null,
   };
 }
-export const SEED_CLIENTS = [
-  C("c1", "Amorim Cork", "Amorim Cork", "Chloe", "Package", 16, { "2026-01": 4.5, "2026-02": 5.3, "2026-03": 5.0, "2026-04": 9.5, "2026-05": 0.5, "2026-06": 0.8 }, { status: "active", history: [{ from: "2024-11", agreed: 0.0 }, { from: "2025-07", agreed: 16.0 }] }),
-  C("c2", "Apex Energy", "Apex Energy", "Chloe", "Package", 16, { "2026-01": 11.7, "2026-02": 7.8, "2026-03": 22.8, "2026-04": 15.8, "2026-05": 18.3, "2026-06": 36.7 }, { status: "active", history: [{ from: "2025-06", agreed: 24.0 }, { from: "2026-01", agreed: 16.0 }] }),
-  C("c3", "Apex Communications", "Apex Communications", "Chloe", "Package", 30.5, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 0, "2026-05": 28.6, "2026-06": 19.5 }, { status: "active" }),
-  C("c4", "ARAS (Aged Rights Advocacy Services)", "Aged Rights Advocacy Services", "Chloe", "Hourly", null, { "2026-01": 0, "2026-02": 0, "2026-03": 3.1, "2026-04": 5.6, "2026-05": 3.7, "2026-06": 2.7 }, { status: "inactive", offboardedFrom: "2026-07", offboardNote: "ClickUp activity stopped after 1 Jul 2026, lining up with an earlier Lost Client Register note about funding expiring (source: PG Four Lists workbook, \"recommend treating as offboarded pending confirmation\"); confirmed same client as the Supabase Clients module's ARAS record, also offboarded there 1 Jul 2026." }),
-  C("c5", "Equippers", "Equippers", "Chloe", "Quoted", null, { "2026-01": 0, "2026-02": 11.2, "2026-03": 5.0, "2026-04": 3.3, "2026-05": 10.0, "2026-06": 0.4 }, { status: "inactive", offboardedFrom: "2026-06", offboardNote: "Not recorded — recurring invoicing and ClickUp activity simply stop (source: Inactive Clients list, ~1 Jun 2026)" }),
-  C("c6", "Spectrum Consultants", "Spectrum Consultants", "Chloe", "Package", 24, { "2026-01": 21.8, "2026-02": 36.9, "2026-03": 35.9, "2026-04": 22.7, "2026-05": 22.8, "2026-06": 21.1 }, { status: "active", history: [{ from: "2026-01", agreed: 24.0 }] }),
-  C("c7", "Treasure Boxes", "Treasure Boxes", "Chloe", "Package", 10, { "2026-01": 21.8, "2026-02": 20.2, "2026-03": 3.4, "2026-04": 0, "2026-05": 0, "2026-06": 11.5 }, { status: "active", history: [{ from: "2025-07", agreed: 10.0 }] }),
-  C("c8", "Warrina Homes: Package", "Warrina Homes", "Chloe", "Package", 24, { "2026-01": 28.5, "2026-02": 27.8, "2026-03": 7.2, "2026-04": 46.8, "2026-05": 50.0, "2026-06": 44.1 }, { status: "active" }),
-  C("c9", "Warrina Homes: Employee Handbook", "Warrina Homes", "Chloe", "Project", null, null, { status: "active" }),
+export const SEED_CLIENTS = [];
 
-  C("c11", "Clare Valley Wine & Grape", "Clare Valley Wine & Grape", "Vinavie", "Package", 8, { "2026-01": 17.9, "2026-02": 5.2, "2026-03": 9.0, "2026-04": 7.8, "2026-05": 2.3, "2026-06": 0.8 }, { status: "active", history: [{ from: "2026-01", agreed: 8.0 }] }),
-  C("c12", "Coonawarra", "Coonawarra", "Vinavie", "Package", 16, { "2026-01": 0, "2026-02": 0, "2026-03": 25.5, "2026-04": 17.7, "2026-05": 21.8, "2026-06": 13.6 }, { status: "active" }),
-  C("c13", "Riverland Wine: Package", "Riverland Wine", "Vinavie", "Package", 8, { "2026-01": 9.8, "2026-02": 14.8, "2026-03": 14.2, "2026-04": 11.9, "2026-05": 23.1, "2026-06": 3.2 }, { status: "active", history: [{ from: "2026-04", agreed: 8.0 }] }),
-  C("c14", "Riverland Wine: Melbourne Showcase", "Riverland Wine", "Vinavie", "Quoted", 25, null, { status: "inactive", offboardedFrom: "2026-08", offboardNote: "One-time project, completed. Also added to the Clients module as an archived project." }),
-  C("c15", "Sevenhill", "Sevenhill", "Vinavie", "Project", 6, null, { status: "inactive", offboardedFrom: "2026-06", offboardNote: "Reduced to 'Media Release only' then dropped (source: Inactive Clients list, ~Feb-Jun 2026)" }),
-  C("c16", "Vegetation Solutions: MVS", "Vegetation Solutions: MVS", "Vinavie", "Hourly", null, { "2026-01": 3.8, "2026-02": 3.6, "2026-03": 3.5, "2026-04": 1.3, "2026-05": 1.2, "2026-06": 0.4 }, { status: "active" }),
-  C("c17", "Vegetation Solutions: Firewood", "Vegetation Solutions: Firewood", "Vinavie", "Hourly", null, { "2026-01": 1.3, "2026-02": 2.5, "2026-03": 22.4, "2026-04": 21.1, "2026-05": 19.3, "2026-06": 13.0 }, { status: "active" }),
-
-  C("c18", "Aus3C", "Aus3C", "Shreya", "Package", 40, { "2026-01": 35.0, "2026-02": 58.9, "2026-03": 56.0, "2026-04": 27.4, "2026-05": 67.6, "2026-06": 18.6 }, { status: "active" }),
-  C("c19", "GPEX", "GPEX", "Shreya", "Package", 70, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 38.6, "2026-05": 105.3, "2026-06": 140.4 }, { status: "active" }),
-  C("c20", "BusSA", "BusSA", "Shreya", "Project", 25, { "2026-01": 0, "2026-02": 1.5, "2026-03": 9.0, "2026-04": 18.8, "2026-05": 46.5, "2026-06": 19.0 }, { status: "active", note: "A separate 'BusSA / BusSafe' one-off project ended ~May 2026 per the Inactive Clients list, but this account is the ongoing BusSAFE retainer and remains active." }),
-  C("c21", "Magain Real Estate", "Magain Real Estate", "Shreya", "Hourly", null, { "2026-01": 13.1, "2026-02": 8.8, "2026-03": 42.9, "2026-04": 24.0, "2026-05": 10.3, "2026-06": 7.6 }, { status: "active" }),
-
-  C("c23", "Baintech", "Baintech", "Lucy", "Package", 38, null, { status: "inactive", offboardedFrom: "2026-06", offboardNote: "Zero ClickUp folder activity found across the entire 13-month synced window (Jul 2025-Jul 2026), corroborating the PG Four Lists workbook note \"Offboarding planned for end Jun 2026 -- recommend confirming this went ahead as scheduled\"; mirrors the same status set on this client in the Supabase Clients module.", history: [{ from: "2026-06", agreed: 32.0 }] }),
-  C("c24", "BAMSS / Childcare Sec Services", "BAMSS Childcare Security Services (Qld)", "Lucy", "Package", 22, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 4.7, "2026-05": 5.8, "2026-06": 13.9 }, { status: "active" }),
-  C("c25", "Barclay Recruitment (Verity Cons)", "Barclay Recruitment", "Lucy", "Package", 27, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 0, "2026-05": 14.9, "2026-06": 48.5 }, { status: "active" }),
-  C("c26", "Bridge to Best", "Bridge to Best", "Lucy", "Package", 10, null, { status: "inactive", offboardedFrom: "2026-06", offboardNote: "Zero ClickUp folder activity found across the entire 13-month synced window (Jul 2025-Jul 2026), corroborating the PG Four Lists workbook note \"Offboarding planned for end Jun 2026 -- recommend confirming this went ahead as scheduled\"; mirrors the same status set on this client in the Supabase Clients module." }),
-  C("c27", "By the Rules", "By the Rules", "Lucy", "Package", 5, null, { status: "active" }),
-  C("c28", "Connection Central", "Connection Central", "Lucy", "Project", 25, null, { status: "inactive", offboardedFrom: "2026-05", offboardNote: "Project ended (source: Inactive Clients list, ~1 May 2026)" }),
-  C("c29", "Cowie Environmental", "Cowie Environmental", "Lucy", "Package", 16, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 31.7, "2026-05": 16.2, "2026-06": 33.5 }, { status: "active" }),
-  C("c30", "CRA Construction", "CRA Construction", "Lucy", "Package", 24, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 7.8, "2026-05": 25.7, "2026-06": 23.5 }, { status: "active" }),
-  C("c31", "Mary Di Marco – Ray White", "Mary Di Marco - Ray White (Qld)", "Lucy", "Package", 11, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 4.7, "2026-05": 6.4, "2026-06": 11.5 }, { status: "active", history: [{ from: "2026-06", agreed: 6 }] }),
-  C("c32", "Plumbaround", "Plumbaround", "Lucy", "Package", 16, null, { status: "inactive", offboardedFrom: "2026-06", offboardNote: "Zero ClickUp folder activity found across the entire 13-month synced window (Jul 2025-Jul 2026), corroborating the PG Four Lists workbook note \"Offboarding planned for end Jun 2026 -- recommend confirming this went ahead as scheduled\"; mirrors the same status set on this client in the Supabase Clients module." }),
-  C("c33", "Sunfresh Linen", "Sunfresh Linen", "Lucy", "Package", 22, { "2026-01": 0, "2026-02": 0, "2026-03": 0.3, "2026-04": 22.6, "2026-05": 21.7, "2026-06": 32.9 }, { status: "active" }),
-
-  C("c34", "Bee Squared Consulting", "Bee Squared", "Holly", "Package", 24, { "2026-01": 29.1, "2026-02": 25.7, "2026-03": 24.4, "2026-04": 13.4, "2026-05": 30.1, "2026-06": 29.4 }, { status: "active", history: [{ from: "2025-07", agreed: 24.0 }] }),
-  C("c35", "Comunet", "Comunet", "Holly", "Hourly", 32, { "2026-01": 22.8, "2026-02": 21.8, "2026-03": 20.8, "2026-04": 6.8, "2026-05": 47.4, "2026-06": 32.8 }, { status: "active" }),
-  C("c36", "Clarke Energy (base)", "Clarke Energy", "Holly", "Hourly", null, { "2026-01": 26.9, "2026-02": 37.2, "2026-03": 48.1, "2026-04": 26.0, "2026-05": 67.2, "2026-06": 112.3 }, { status: "active" }),
-  C("c37", "Clarke Energy: AEP", "Clarke Energy", "Holly", "Hourly", null, null, { status: "active" }),
-  C("c38", "Clarke Energy: ACES", "Clarke Energy", "Holly", "Hourly", null, null, { status: "active" }),
-  C("c39", "Clarke Energy: AIMEX", "Clarke Energy", "Holly", "Hourly", null, null, { status: "active" }),
-  C("c40", "Clarke Energy: WA", "Clarke Energy", "Holly", "Hourly", null, null, { status: "active" }),
-  C("c41", "History Trust of SA (HTSA)", "HTSA", "Holly", "MAP", 80, { "2026-01": 0, "2026-02": 0, "2026-03": 0, "2026-04": 0, "2026-05": 28.1, "2026-06": 82.6 }, { status: "active" }),
-  C("c42", "PRG Consulting", "PRG Financial Services Outsourced Marketing", "Holly", "Package", 8, { "2026-01": 13.5, "2026-02": 15.4, "2026-03": 13.1, "2026-04": 1.0, "2026-05": 5.0, "2026-06": 5.4 }, { status: "active", history: [{ from: "2026-01", agreed: 8.0 }] }),
-  C("c43", "Utter Gutters", "Utter Gutters", "Holly", "Package", 32, { "2026-01": 8.2, "2026-02": 6.5, "2026-03": 6.2, "2026-04": 6.0, "2026-05": 7.1, "2026-06": 9.0 }, { status: "active" }),
-  C("c44", "Villani Jewellers", "Villani Jewellers", "Holly", "Package", 16, { "2026-01": 12.8, "2026-02": 16.8, "2026-03": 16.5, "2026-04": 20.9, "2026-05": 16.8, "2026-06": 12.9 }, { status: "active", history: [{ from: "2025-09", agreed: 24.0 }, { from: "2026-05", agreed: 16.0 }] }),
-  C("c45", "Villani: Website Project", "Villani Jewellers", "Holly", "Project", 8, null, { status: "active" }),
-
-  C("c46", "Hills Medical (Better Medical)", "Hills Medical", "Alice", "Package", 32, { "2026-01": 48.0, "2026-02": 43.6, "2026-03": 47.6, "2026-04": 32.9, "2026-05": 18.1, "2026-06": 47.7 }, { status: "active" }),
-  C("c47", "Duco", "Duco", "Alice", "Package", 24, { "2026-01": 16.2, "2026-02": 34.8, "2026-03": 25.6, "2026-04": 27.2, "2026-05": 3.3, "2026-06": 0.0 }, { status: "active", history: [{ from: "2026-01", agreed: 24.0 }] }),
-  C("c48", "Osteria Polpo", "Osteria Polpo", "Alice", "Package", 16, null, { status: "archived", note: "Archived to match the main Clients module (not found in PG Four Lists / no ClickUp folder)." }),
-  C("c49", "Sidewood", "Sidewood", "Alice", "Hourly", null, { "2026-01": 26.6, "2026-02": 32.4, "2026-03": 37.8, "2026-04": 30.0, "2026-05": 31.8, "2026-06": 30.3 }, { status: "active" }),
-  C("c50", "Your Success Lab", "Your Success Lab", "Alice", "Package", 40, { "2026-01": 0, "2026-02": 0, "2026-03": 33.8, "2026-04": 61.6, "2026-05": 33.2, "2026-06": 35.1 }, { status: "active" }),
-
-  C("c51", "Blueforce", "Blueforce", "Amanda", "Package", 40, { "2026-01": 0, "2026-02": 0, "2026-03": 6.4, "2026-04": 27.2, "2026-05": 47.2, "2026-06": 51.4 }, { status: "active" }),
-  C("c53", "Filter Supplies (WA)", "Filter Supplies", "Amanda", "Package", 16, { "2026-01": 6.4, "2026-02": 9.8, "2026-03": 14.0, "2026-04": 17.8, "2026-05": 8.1, "2026-06": 15.0 }, { status: "active" }),
-  C("c54", "Green Shoots", "Green Shoots", "Amanda", "Package", 16, { "2026-01": 19.2, "2026-02": 6.6, "2026-03": 13.9, "2026-04": 7.5, "2026-05": 19.3, "2026-06": 24.8 }, { status: "active" }),
-  C("c55", "Majestic Plumbing", "Majestic Plumbing", "Amanda", "Package", 16, { "2026-01": 0, "2026-02": 0, "2026-03": 4.6, "2026-04": 11.7, "2026-05": 15.9, "2026-06": 32.2 }, { status: "active" }),
-  C("c56", "Rent Busters WA", "Rent Busters WA", "Amanda", "Package", 8, { "2026-01": 6.1, "2026-02": 6.6, "2026-03": 6.2, "2026-04": 8.3, "2026-05": 7.0, "2026-06": 7.0 }, { status: "active" }),
-  C("c57", "Zest", "Zest", "Amanda", "Package", 24, { "2026-01": 1.3, "2026-02": 36.6, "2026-03": 18.8, "2026-04": 42.7, "2026-05": 22.9, "2026-06": 1.3 }, { status: "inactive", offboardedFrom: "2026-06", offboardNote: "Appointed an in-house manager (source: Inactive Clients list, End Jun 2026)" }),
-
-  // Long-churned clients from the PG Four Lists workbook with no lead/basis/agreed-hours
-  // recorded in the source sheet -- kept as unassigned placeholders for history/lookup
-  // only. They carry no lead so they are excluded from every consultant's capacity math.
-  C("c58", "YSL", "YSL", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2026-06", offboardNote: "Appointed an in-house manager (source: Inactive Clients list, offboarded 26 Jun 2026). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c59", "Port Adelaide Enfield Council", "Port Adelaide Enfield Council", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2026-05", offboardNote: "Single invoice — one-off engagement (source: Inactive Clients list, offboarded 31 May 2026). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c60", "Leaker Partners", "Leaker Partners", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2026-03", offboardNote: "Single invoice — one-off engagement (source: Inactive Clients list, offboarded 23 Mar 2026). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c61", "Tyre Evolution", "Tyre Evolution", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2026-03", offboardNote: "Single invoice — one-off engagement (source: Inactive Clients list, offboarded 5 Mar 2026). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c62", "Dulux Flextool", "Dulux Flextool", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-12", offboardNote: "Single invoice — one-off engagement (source: Inactive Clients list, offboarded 31 Dec 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c63", "ONeills", "ONeills", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-12", offboardNote: "Taking work in-house (source: Inactive Clients list, offboarded 25 Dec 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c64", "Barkuma", "Barkuma", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-12", offboardNote: "'Taking work in-house?' — reason marked uncertain in source (source: Inactive Clients list, offboarded Dec 2025 (uncertain)). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c65", "ATR Guitars", "ATR Guitars", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-09", offboardNote: "Single invoice — one-off engagement (source: Inactive Clients list, offboarded 30 Sep 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c66", "Alix Doherty (Advisory/Consulting)", "Alix Doherty (Advisory/Consulting)", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-10", offboardNote: "Change in direction (source: Inactive Clients list, offboarded 25 Sep 2025-Oct 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c67", "Adelaide Direct Stationers", "Adelaide Direct Stationers", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-08", offboardNote: "Employed an in-house marketer (source: Inactive Clients list, offboarded 31 Aug 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c68", "Capital Prudential", "Capital Prudential", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-09", offboardNote: "Business model realignment to geography/direction (source: Inactive Clients list, offboarded 19 Aug 2025-Sep 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c69", "Killikanoon (Kilikanoon Wines)", "Killikanoon (Kilikanoon Wines)", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-08", offboardNote: "In-house resource returned from leave (source: Inactive Clients list, offboarded 15 Aug 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c70", "Orbis Wines", "Orbis Wines", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-08", offboardNote: "Unhappy with WordPress/ecommerce rebuild (source: Inactive Clients list, offboarded 1 Aug 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c71", "Prexus", "Prexus", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-06", offboardNote: "Client-initiated, unhappy with website management (source: Inactive Clients list, offboarded 23 Jun 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c72", "Franz Knoll / Franz Knoll Councillor", "Franz Knoll / Franz Knoll Councillor", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-08", offboardNote: "4-week project — fixed-term, not an ongoing retainer (source: Inactive Clients list, offboarded Jul-Aug 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c73", "Pursuit Allied Health", "Pursuit Allied Health", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-12", offboardNote: "No specific reason given at notice (source: Inactive Clients list, offboarded End Dec 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c74", "TradeiNet / TradieNet", "TradeiNet / TradieNet", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-12", offboardNote: "Strategy realignment for app (source: Inactive Clients list, offboarded From 25 Dec 2025 (paused)). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c75", "HSE Fit Tick", "HSE Fit Tick", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-12", offboardNote: "Moving work to the UK (source: Inactive Clients list, offboarded Sept-Dec 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-  C("c76", "Gatt Wines", "Gatt Wines", "Unassigned", "Hourly", null, null, { status: "inactive", offboardedFrom: "2025-09", offboardNote: "Reduced to ad hoc, then dropped (source: Inactive Clients list, offboarded ~Sep 2025). Added as an unassigned placeholder — the source sheet has no lead/basis/agreed-hours data for this client." }),
-];
-
-export const SEED_SUPPORT = [
-  { id: "s1", from: "Vinavie", to: "Holly", type: "pct", value: 0.30 },
-  { id: "s2", from: "Ariani", to: "Holly", type: "pct", value: 0.20 },
-  { id: "s3", from: "Chelsea", to: "Holly", type: "pct", value: 0.35 },
-  { id: "s4", from: "Ariani", to: "Shreya", type: "pct", value: 0.20 },
-  { id: "s5", from: "Alex", to: "Shreya", type: "pct", value: 0.75 },
-  { id: "s6", from: "Vinavie", to: "Shreya", type: "pct", value: 0.30 },
-  { id: "s7", from: "Ariani", to: "Chloe", type: "pct", value: 0.10 },
-  { id: "s8", from: "Alex", to: "Chloe", type: "pct", value: 0.05 },
-  { id: "s9", from: "DMA (external)", to: "Alice", type: "hours", value: 23 },
-  { id: "s10", from: "Chelsea", to: "Alice", type: "pct", value: 0.35 },
-  { id: "s11", from: "Ariani", to: "Alice", type: "pct", value: 0.20 },
-  { id: "s12", from: "Ariani", to: "Amanda", type: "pct", value: 0.20 },
-  { id: "s13", from: "Chelsea", to: "Amanda", type: "pct", value: 0.30 },
-  { id: "s14", from: "DMA (external)", to: "Amanda", type: "hours", value: 9 },
-  { id: "s15", from: "DMA (external)", to: "Vinavie", type: "hours", value: 5 },
-  { id: "s16", from: "Ariani", to: "Vinavie", type: "pct", value: 0.10 },
-  { id: "s17", from: "Vino", to: "Lucy", type: "hours", value: 99 },
-  { id: "s18", from: "Julia", to: "Lucy", type: "hours", value: 99 },
-  { id: "s19", from: "Ariani", to: "Lucy", type: "pct", value: 0.10 },
-  { id: "s20", from: "Alex", to: "Purple Giraffe (internal)", type: "pct", value: 0.20 },
-];
+export const SEED_SUPPORT = [];
 
 // Fallback owner order only (seed data / before the roster loads). Capacity Planning's real
 // owner list is the Consultants roster -- see ownersFor.
