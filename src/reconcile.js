@@ -98,10 +98,14 @@ export function aggregateMonthRows(rows, { monthKey, billableOnly, hasBillable, 
 // Billable, non-internal minutes per folderKey for one month -- the prior-month figure the
 // estimate and mismatch cross-check recompute from. Billable regardless of the toggle.
 // null when the rows don't cover that month at all (nothing to check).
-export function billableMinutesByFolder(rows, monthKey, hasBillable) {
+// `coveredMonths` (optional): the months the ClickUp sync holds data for, independent of
+// which rows this user can read. A non-admin only reads their own rows plus their clients'
+// folders, so a month where none of those had time would otherwise look "not covered" and
+// drop the prior-month estimate an admin gets (a whole package's difference in balance).
+export function billableMinutesByFolder(rows, monthKey, hasBillable, coveredMonths = null) {
   if (!monthKey) return null;
   const byFolder = new Map();
-  let covered = false;
+  let covered = !!coveredMonths?.includes?.(monthKey);
   for (const r of rows || []) {
     if (r.monthKey === monthKey) covered = true; else continue;
     if (hasBillable && !r.billable) continue;

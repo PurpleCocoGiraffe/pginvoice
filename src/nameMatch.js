@@ -279,6 +279,16 @@ export function splitTaskPrefixFolders(rows) {
   });
 }
 
+// The real, shared ClickUp folder behind a task-prefix synthetic folder ("Aus3C IRAP" ->
+// "Australian Cyber Collaboration Centre"), or null for any other folder. The database only
+// knows real folders (see folderAccess.js).
+export function taskPrefixSourceFolder(folder) {
+  for (const [sourceFolder, rules] of TASK_PREFIX_RULES) {
+    if (rules.some((rule) => rule.syntheticFolder === folder)) return sourceFolder;
+  }
+  return null;
+}
+
 // For the Clients module's cost-centre editor -- every task_prefix rule currently
 // registered for one client, in the shape the UI wants to list/remove them by.
 export function taskPrefixRulesFor(client) {
