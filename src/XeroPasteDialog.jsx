@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef } from "react";
 import { X, AlertTriangle, CheckCircle2, ClipboardPaste, Info } from "lucide-react";
 import { useEscape, useFocusTrap } from "./useDismissable.js";
-import { parseXeroPaste, matchXeroNames, normName, resolveXeroBatch } from "./wagesCalc.js";
+import { parseXeroPaste, matchXeroNames, normName, resolveXeroBatch, pendingXeroPlan } from "./wagesCalc.js";
 import { fmtH, fmtSigned } from "./wagesFormat.js";
 
 const METHOD_LABEL = {
@@ -26,7 +26,11 @@ export function XeroPasteDialog({ monthText, people, currentL, nameMap, onApply,
   const [choices, setChoices] = useState({}); // person_id -> resolveXeroBatch option key
   const [ignoreErrors, setIgnoreErrors] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [result, setResult] = useState(null); // { saved, failed: [{name, error}], mapError }
+  const [result, setResult] = useState(null); // { saved, total, failed: [{name, error}], mapError }
+  // Frozen at the first Apply (absolute hours per person). A retry after a partial failure
+  // re-sends only what isn't saved yet -- never re-resolves the batch, which would re-add an
+  // "Add together" choice on top of the hours the first attempt already saved.
+  const [plan, setPlan] = useState(null);
   const textRef = useRef(null);
   const dialogRef = useFocusTrap({ initialFocusRef: textRef });
   useEscape(onClose);
@@ -47,24 +51,27 @@ export function XeroPasteDialog({ monthText, people, currentL, nameMap, onApply,
   const unresolved = rows.filter((r) => (!r.target && !r.ignored) || r.awaitingConfirm);
   const batch = resolveXeroBatch(rows.filter((r) => r.target && !r.awaitingConfirm), currentL || {}, choices);
   const openConflicts = batch.conflicts.filter((c) => !c.choice);
-  const toApply = batch.apply;
+  const toApply = plan ? pendingXeroPlan(plan, currentL || {}) : batch.apply;
   const errorsOk = parsed.errors.length === 0 || ignoreErrors;
   // Remembered in settings.xero_name_map: a pick that differs from the automatic match, or
   // a first-name suggestion a person confirmed (by tick or by picking it). Exact matches
   // need no memory.
   const remembers = (r) => !!r.target && (r.manual ? (r.target !== r.person_id || r.needsConfirm) : (r.needsConfirm && !!confirmed[r.i]));
-  const canApply = toApply.length > 0 && unresolved.length === 0 && openConflicts.length === 0 && errorsOk && !applying && !(result && !result.failed?.length);
-  const reset = () => { setPicks({}); setConfirmed({}); setChoices({}); setIgnoreErrors(false); setResult(null); };
+  const canApply = toApply.length > 0 && (plan ? true : unresolved.length === 0 && openConflicts.length === 0 && errorsOk) && !applying && !(result && !result.failed?.length);
+  const reset = () => { setPicks({}); setConfirmed({}); setChoices({}); setIgnoreErrors(false); setResult(null); setPlan(null); };
   const nextBatch = () => { setText(""); reset(); textRef.current?.focus(); };
 
   const apply = async () => {
     setApplying(true);
     const remember = {};
-    rows.filter(remembers).forEach((r) => { remember[normName(r.name)] = r.target; });
+    if (!plan) rows.filter(remembers).forEach((r) => { remember[normName(r.name)] = r.target; });
+    const items = toApply.map((a) => ({ person_id: a.person_id, hours: a.hours, name: a.names.join(", "), names: a.names }));
+    if (!plan) setPlan(items);
     try {
-      setResult(await onApply(toApply.map((a) => ({ person_id: a.person_id, hours: a.hours, name: a.names.join(", ") })), remember));
+      const res = await onApply(items.map(({ names, ...rest }) => rest), remember);
+      setResult({ ...res, total: items.length });
     } catch (e) {
-      setResult({ saved: 0, failed: [{ name: "All rows", error: e?.message || String(e) }] });
+      setResult({ saved: 0, total: items.length, failed: [{ name: "All rows", error: e?.message || String(e) }] });
     }
     setApplying(false);
   };
@@ -123,7 +130,7 @@ export function XeroPasteDialog({ monthText, people, currentL, nameMap, onApply,
                       <td className="right num">{fmtH(r.hours, 2)}</td>
                       <td>
                         <select className="pg-select wr-select" aria-label={`Person for ${r.name}`}
-                          value={r.ignored ? IGNORE : (r.target || "")}
+                          value={r.ignored ? IGNORE : (r.target || "")} disabled={!!plan}
                           onChange={(e) => setPicks((p) => ({ ...p, [r.i]: e.target.value || undefined }))}>
                           <option value="">Pick a person…</option>
                           {people.map((p) => <option key={p.person_id} value={p.person_id}>{p.display_name}</option>)}
@@ -135,7 +142,7 @@ export function XeroPasteDialog({ monthText, people, currentL, nameMap, onApply,
                         </div>
                         {r.needsConfirm && !r.manual && !r.ignored && (
                           <label className="pg-checkbox-row wr-checkbox">
-                            <input type="checkbox" checked={!!confirmed[r.i]} onChange={(e) => setConfirmed((c) => ({ ...c, [r.i]: e.target.checked }))} />
+                            <input type="checkbox" checked={!!confirmed[r.i]} disabled={!!plan} onChange={(e) => setConfirmed((c) => ({ ...c, [r.i]: e.target.checked }))} />
                             Confirm {nameOf(r.target)}
                           </label>
                         )}
@@ -178,7 +185,7 @@ export function XeroPasteDialog({ monthText, people, currentL, nameMap, onApply,
           <div className={"wr-banner " + (result.failed?.length ? "wr-banner--error" : "wr-banner--ok")} role="status">
             {result.failed?.length ? <AlertTriangle size={13} aria-hidden="true" /> : <CheckCircle2 size={13} aria-hidden="true" />}
             <div>
-              <b>Saved {result.saved} of {toApply.length}.{!result.failed?.length && " Paste the next batch, or close."}</b>
+              <b>Saved {result.saved} of {result.total}.{!result.failed?.length && " Paste the next batch, or close."}</b>
               {result.failed?.length > 0 && <ul className="wr-banner__list">{result.failed.map((f, i) => <li key={i}>{f.name}: {f.error}</li>)}</ul>}
               {result.mapError && <div>Couldn't remember the picked names: {result.mapError}</div>}
             </div>

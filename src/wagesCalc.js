@@ -616,6 +616,18 @@ export function matchXeroNames(parsed, people, nameMap = {}) {
 //     "sum" adds this paste's rows together, plus the saved value when there is one.
 // Returns { apply: [{person_id, hours, names}], unchanged: [person_id], keep: [person_id],
 //           conflicts: [{ person_id, saved, rows: [{hours, name}], options: [{key, label, hours}], choice }] }
+// What a retry of an already-applied Xero batch still has to save. The plan is frozen at the
+// first Apply ({ person_id, hours } with ABSOLUTE hours): recomputing the batch after a partial
+// failure would see the just-saved hours as a new "saved" value, and an "Add together" choice
+// would add the pasted hours a second time (40 + 40 -> 80 -> 160). A person whose saved hours
+// already equal the plan is done; re-sending an absolute value is otherwise harmless.
+export function pendingXeroPlan(plan, currentL = {}) {
+  return (plan || []).filter((a) => {
+    const saved = currentL[a.person_id];
+    return saved == null || Math.abs(saved - a.hours) >= 0.005;
+  });
+}
+
 export function resolveXeroBatch(rows, currentL = {}, choices = {}) {
   const byPerson = new Map();
   for (const r of rows || []) {
