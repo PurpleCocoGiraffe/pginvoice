@@ -508,8 +508,8 @@ Deno.serve(async (req: Request) => {
         await admin.from("pginvoice_user_clients").delete().eq("user_id", targetUserId).eq("source", "clickup");
       }
 
-      const signOutError = await revokeSessions(admin, targetUserId);
-      if (signOutError) console.error("Couldn't sign the user out after a role change:", signOutError);
+      // No forced sign-out: RLS reads the role and clients on every query, so data access
+      // changes at once; their nav catches up the next time they focus or reload the app.
 
       await logAudit("update_role", { userId: targetUserId, email: targetProfile.email }, {
         from: targetProfile.role, to: role, clients, clickupUserName, ...(clearedAccess ? { clearedAccess } : {}),
