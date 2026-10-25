@@ -1,6 +1,6 @@
 import React, { useCallback, useId, useRef, useState } from "react";
-import { Trash2, Loader2, X } from "lucide-react";
-import { updateUserRoleAndClients, deleteUser, setUserAccess } from "./usersSync.js";
+import { Trash2, Loader2, X, KeyRound } from "lucide-react";
+import { updateUserRoleAndClients, deleteUser, setUserAccess, resetUserPassword } from "./usersSync.js";
 import { ROLES, ROLE_LABELS, CLIENT_SCOPED_ROLES, CLICKUP_REQUIRED_ROLES, CLIENT_SOURCE_LABELS, ADMIN_TIER_ROLES } from "./roles.js";
 import { overrideChanges, hasAccessConfig } from "./permissions.js";
 import { useEscape, useFocusTrap } from "./useDismissable.js";
@@ -40,15 +40,20 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState(null);
+  // Reset password: null = closed, string = the temporary password being typed.
+  const [tempPassword, setTempPassword] = useState(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetDone, setResetDone] = useState(false);
   const closeRef = useRef(null);
   const dialogRef = useFocusTrap({ initialFocusRef: closeRef });
-  const busy = saving || deleting;
+  const busy = saving || deleting || resetting;
   useEscape(useCallback(() => { if (!busy) onClose(); }, [busy, onClose]));
   const roleId = useId();
   const clickupId = useId();
   const personFieldId = useId();
   const accessId = useId();
   const titleId = useId();
+  const passwordId = useId();
 
   const isAdminRole = ADMIN_TIER_ROLES.has(draft.role);
   const accessEditable = !isAdminRole && hasAccessConfig(moduleScopes);
@@ -91,6 +96,23 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
     }
   }
 
+  // Only a Super Admin may reset a Super Admin's password (checked server-side too).
+  const canResetPassword = user.role !== "super_admin" || ownRole === "super_admin";
+  async function resetPassword() {
+    if (!tempPassword || tempPassword.length < 8) return;
+    setResetting(true);
+    setError(null);
+    try {
+      await resetUserPassword(user.id, tempPassword);
+      setTempPassword(null);
+      setResetDone(true);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setResetting(false);
+    }
+  }
+
   async function remove() {
     if (!window.confirm(`Remove ${user.email}'s access? This cannot be undone.`)) return;
     setDeleting(true);
@@ -129,6 +151,31 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
             </select>
             <span className="pg-footnote">Changing role, ClickUp name or clients signs them out so it applies straight away.</span>
           </label>
+          {!canResetPassword ? (
+            <p className="pg-footnote">Only a Super Admin can reset a Super Admin's password.</p>
+          ) : tempPassword === null ? (
+            <div>
+              <button type="button" className="pg-btn-ghost" disabled={busy} onClick={() => { setTempPassword(""); setResetDone(false); }} style={{ gap: 6 }}>
+                <KeyRound size={13} /> Reset password
+              </button>
+              {resetDone && <p className="pg-footnote" role="status">Password reset. Give them the temporary password — they'll choose their own when they next sign in.</p>}
+            </div>
+          ) : (
+            <div className="pg-field">
+              <label className="pg-field__label" htmlFor={passwordId}>New temporary password</label>
+              <input id={passwordId} className="pg-input" type="text" autoComplete="off" placeholder="At least 8 characters" value={tempPassword}
+                disabled={resetting} onChange={(e) => setTempPassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); resetPassword(); } }} />
+              <span className="pg-footnote">Signs them out everywhere. They'll be asked to choose their own password when they next sign in.</span>
+              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                <button type="button" className="pg-btn" disabled={busy || tempPassword.length < 8} onClick={resetPassword} style={{ gap: 6 }}>
+                  {resetting && <Loader2 size={13} style={{ animation: "pg-spin 1s linear infinite" }} />}
+                  {resetting ? "Resetting…" : "Set temporary password"}
+                </button>
+                <button type="button" className="pg-btn-ghost" disabled={resetting} onClick={() => setTempPassword(null)}>Cancel</button>
+              </div>
+            </div>
+          )}
           <div>
             <button type="button" className="pg-btn-ghost" disabled={busy} onClick={remove} style={{ gap: 6 }}>
               {deleting ? <Loader2 size={13} style={{ animation: "pg-spin 1s linear infinite" }} /> : <Trash2 size={13} />} Remove user

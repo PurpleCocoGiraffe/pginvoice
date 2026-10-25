@@ -7,6 +7,7 @@
 // to them) rather than trusting anything the request body claims about who's
 // calling, since the body is attacker-controlled input.
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { passwordResetDecision } from "../_shared/authz.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -100,6 +101,14 @@ async function syncClickupClientsForUser(admin: any, userId: string, clickupUser
     if (insErr) throw insErr;
   }
   return clients;
+}
+
+// Ends every session of a user (refresh tokens deleted; an issued access token lasts until
+// it expires). Via an RPC because admin.auth.admin.signOut takes the user's own JWT, not a
+// user id. Returns an error message, or null.
+async function revokeSessions(admin: any, userId: string): Promise<string | null> {
+  const { error } = await admin.rpc("pginvoice_revoke_user_sessions", { p_user_id: userId });
+  return error ? error.message : null;
 }
 
 // Capacity Planning's "lead" is a free-text first name (e.g. "Holly"), not tied
@@ -499,7 +508,8 @@ Deno.serve(async (req: Request) => {
         await admin.from("pginvoice_user_clients").delete().eq("user_id", targetUserId).eq("source", "clickup");
       }
 
-      await admin.auth.admin.signOut(targetUserId, "global").catch(() => {});
+      const signOutError = await revokeSessions(admin, targetUserId);
+      if (signOutError) console.error("Couldn't sign the user out after a role change:", signOutError);
 
       await logAudit("update_role", { userId: targetUserId, email: targetProfile.email }, {
         from: targetProfile.role, to: role, clients, clickupUserName, ...(clearedAccess ? { clearedAccess } : {}),
@@ -594,6 +604,40 @@ Deno.serve(async (req: Request) => {
 
       await logAudit("set_access", { userId: targetUserId, email: targetProfile.email }, diff);
       return new Response(JSON.stringify({ ok: true, personId: resolved.personId, moduleOverrides: resolved.overrides }), { headers: JSON_HEADERS });
+    }
+
+    if (action === "reset_password") {
+      // An admin sets a new temporary password (same as create): the user is signed out
+      // everywhere and must choose their own password at next sign-in. The password itself
+      // is never written to the audit log.
+      const targetUserId = typeof body.userId === "string" ? body.userId : "";
+      const { data: targetProfile, error: targetErr } = targetUserId
+        ? await admin.from("pginvoice_profiles").select("role, email").eq("user_id", targetUserId).maybeSingle()
+        : { data: null, error: null };
+      if (targetErr) throw targetErr;
+      const decision = passwordResetDecision(
+        { callerRole, callerId: callerUser.user.id },
+        { targetRole: targetProfile?.role ?? null, targetId: targetUserId },
+        body.password,
+      );
+      if (!decision.ok) return bad(decision.error, decision.status);
+
+      const { error: pwErr } = await admin.auth.admin.updateUserById(targetUserId, { password: body.password });
+      if (pwErr) throw pwErr;
+      // Password is already changed: still record it even if a follow-up step fails.
+      let flagError: string | null = null;
+      const { error: flagErr } = await admin
+        .from("pginvoice_profiles")
+        .update({ must_change_password: true, updated_at: new Date().toISOString() })
+        .eq("user_id", targetUserId);
+      if (flagErr) flagError = flagErr.message;
+      const signOutError = await revokeSessions(admin, targetUserId);
+
+      const problems = { ...(flagError ? { mustChangePasswordError: flagError } : {}), ...(signOutError ? { signOutError } : {}) };
+      await logAudit("reset_password", { userId: targetUserId, email: targetProfile!.email }, Object.keys(problems).length ? problems : undefined);
+      if (flagError) return bad(`Password was reset, but they won't be asked to change it: ${flagError}`, 500);
+      if (signOutError) return bad(`Password was reset, but their existing sessions couldn't be ended: ${signOutError}`, 500);
+      return new Response(JSON.stringify({ ok: true }), { headers: JSON_HEADERS });
     }
 
     if (action === "sync_capacity_leads") {

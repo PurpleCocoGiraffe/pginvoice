@@ -92,6 +92,12 @@ export async function updateUserRoleAndClients({ userId, role, clients, clickupU
   return callManageUsers({ action: "update_role_and_clients", userId, role, clients, clickupUserName });
 }
 
+// Admin-set temporary password: the server signs them out everywhere and they must choose
+// their own at next sign-in. Refused for yourself, and for a Super Admin unless you are one.
+export async function resetUserPassword(userId, password) {
+  return callManageUsers({ action: "reset_password", userId, password });
+}
+
 export async function deleteUser(userId) {
   return callManageUsers({ action: "delete", userId });
 }
