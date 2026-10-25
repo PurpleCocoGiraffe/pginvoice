@@ -25,9 +25,9 @@ function DrawerSection({ title, children }) {
 }
 
 // Account / Identity / Module access / Clients for one user. Role, ClickUp name and manual
-// clients save through update_role_and_clients; roster person and module access through
-// set_access. Neither signs them out: data access changes at once (RLS), and their nav
-// refetches on focus. One Save runs whichever of the two changed.
+// clients save through update_role_and_clients (signs them out only if the role changed);
+// roster person and module access through set_access (no sign-out). Data access changes at
+// once (RLS), and their nav refetches on focus. One Save runs whichever of the two changed.
 // Access fields (roster person, module access) only show once `list` returned the grantable
 // modules (hasAccessConfig) -- an older manage-users would silently drop them.
 export default function UserDrawer({ user, ownRole, presets, moduleScopes, allClients, clickupNames, roster, rosterError, wagePeople, wageError, linkedTo, onClose, onChanged, onRemoved }) {
@@ -149,7 +149,7 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
                 <option key={r} value={r} disabled={r === "super_admin" && ownRole !== "super_admin"}>{ROLE_LABELS[r]}</option>
               ))}
             </select>
-            <span className="pg-footnote">Their data access changes as soon as you save. Their menu updates the next time they switch back to the app.</span>
+            <span className="pg-footnote">Changing role signs them out. ClickUp name and client changes apply as soon as you save, without signing them out.</span>
           </label>
           {!canResetPassword ? (
             <p className="pg-footnote">Only a Super Admin can reset a Super Admin's password.</p>
