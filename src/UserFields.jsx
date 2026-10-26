@@ -80,7 +80,7 @@ export function WageSetupCheck({ personId, wagePeople, wageError }) {
   if (w) return <p className="pg-footnote" style={{ color: "var(--status-ok)" }}>Wage setup found{w.xero_name ? `: Xero name ${w.xero_name}` : " (no Xero name yet)"}.</p>;
   return (
     <p className="pg-footnote" style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--status-warn, var(--status-over))" }}>
-      <AlertTriangle size={12} aria-hidden="true" /> No wage setup — Wages (own) will show nothing.
+      <AlertTriangle size={12} aria-hidden="true" /> No wage setup — Billability Overview (own) will show nothing.
     </p>
   );
 }

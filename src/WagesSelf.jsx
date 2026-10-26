@@ -118,7 +118,7 @@ export default function WagesSelf({ personId }) {
       <div className="pg-app-header">
         <div>
           <span className="pg-eyebrow">Purple Giraffe</span>
-          <h1 className="pg-app-header__title">My wages.</h1>
+          <h1 className="pg-app-header__title">My billability.</h1>
           <p className="pg-app-header__sub">Your reviewed hours for each closed month: tracked time, Xero, leave and expected hours.</p>
         </div>
       </div>

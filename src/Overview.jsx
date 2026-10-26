@@ -202,7 +202,7 @@ export default function Overview({ scope = null }) {
             <p className="pg-app-header__sub">
               {scoped
                 ? "A live snapshot of your clients and your own hours — your clients' accruals and your utilization this month."
-                : "A live cross-module snapshot of the whole business — clients, accruals, and team utilization, pulled straight from Client Invoicing, Client Accruals, and Capacity Planning's own data."}
+                : "A live cross-module snapshot of the whole business — clients, accruals, and team utilization, pulled straight from Client Accruals, Client Accruals Management, and Capacity Planning's own data."}
             </p>
           </div>
         </div>
@@ -274,7 +274,7 @@ export default function Overview({ scope = null }) {
                     </p>
                   </>
                 ) : (
-                  <div className="pg-empty">No accrual data yet to chart a trend — upload/sync Client Accruals to see this fill in.</div>
+                  <div className="pg-empty">No accrual data yet to chart a trend — upload/sync Client Accruals Management to see this fill in.</div>
                 )}
               </div>
 

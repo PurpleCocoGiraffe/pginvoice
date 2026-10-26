@@ -575,13 +575,13 @@ function PerformanceInner() {
         <div>
           <span className="pg-eyebrow">Purple Giraffe · Internal</span>
           <h1 className="pg-app-header__title">Performance scorecard: how is the business actually doing?</h1>
-          <p className="pg-app-header__sub">Select a client or consultant to see their own trend; leave it blank for the whole-business view. Figures come live from whatever ClickUp export is loaded in Client Invoicing, and the roster/client list from Capacity Planning.</p>
+          <p className="pg-app-header__sub">Select a client or consultant to see their own trend; leave it blank for the whole-business view. Figures come live from whatever ClickUp export is loaded in Client Accruals, and the roster/client list from Capacity Planning.</p>
         </div>
       </div>
 
       {!hasData && (
         <div className="pg-banner-warn">
-          No ClickUp data loaded yet, upload a CSV in Client Invoicing to see real trends here. The roster and client list below are shown with no actuals until then.
+          No ClickUp data loaded yet, upload a CSV in Client Accruals to see real trends here. The roster and client list below are shown with no actuals until then.
         </div>
       )}
       {hasData && botHours > 0.05 && (
@@ -750,7 +750,7 @@ function PerformanceInner() {
         </>
       )}
 
-      <p className="pg-footnote">Purple Giraffe · Performance Scorecard · Client and Team figures are computed live from the ClickUp export loaded in Client Invoicing.</p>
+      <p className="pg-footnote">Purple Giraffe · Performance Scorecard · Client and Team figures are computed live from the ClickUp export loaded in Client Accruals.</p>
     </div>
   );
 }

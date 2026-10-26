@@ -7,11 +7,11 @@ import {
 // What Shell.jsx rendered before per-user permissions (main @ 106b899), copied verbatim
 // as data so the new access-driven nav can be pinned against it.
 const OLD_MODULES = [
-  ["overview", "Overview"], ["invoicing", "Client Invoicing"], ["capacity", "Capacity Planning"],
+  ["overview", "Overview"], ["invoicing", "Client Accruals"], ["capacity", "Capacity Planning"],
   ["team", "Consultants"], ["clients", "Clients"], ["timesheet", "Timesheets"],
-  ["accruals", "Client Accruals"], ["performance", "Reporting"], ["wages", "Wages review"], ["bdm", "BDM"],
+  ["accruals", "Client Accruals Management"], ["performance", "Reporting"], ["wages", "Billability Overview"], ["bdm", "BDM"],
 ];
-const OLD_BOTTOM = [["overview", "Overview"], ["invoicing", "Invoicing"], ["capacity", "Capacity"], ["team", "Team"]];
+const OLD_BOTTOM = [["overview", "Overview"], ["invoicing", "Accruals"], ["capacity", "Capacity"], ["team", "Team"]];
 const OLD_CLIENT_SCOPED = new Set(["overview", "clients", "accruals", "performance"]);
 const oldNav = (role) => {
   const scoped = role === "consultant" || role === "coordinator";
@@ -89,7 +89,7 @@ describe("nav: admin tier unchanged; phase-1 consultants keep their sidebar", ()
       for (const access of [rpcAccess(role), accessFromRole(role, ["Aus3C"])]) {
         const before = oldNav(role);
         expect(pairs(visibleNav(access).modules)).toEqual(before.modules);
-        expect(pairs(bottomNavFor(access))).toEqual([["overview", "Overview"], ["clients", "Clients"], ["accruals", "Accruals"], ["performance", "Reporting"]]);
+        expect(pairs(bottomNavFor(access))).toEqual([["overview", "Overview"], ["clients", "Clients"], ["accruals", "Accruals Mgmt"], ["performance", "Reporting"]]);
         expect(pairs(visibleNav(access).secondary)).toEqual(before.secondary);
         expect(settingsTabsFor(access)).toEqual([]);
       }
@@ -103,12 +103,12 @@ describe("phase 2 consultant / coordinator preset (20261017_scoped_modules.sql)"
     clients: "none", accruals: "none", performance: "none",
   };
   for (const role of ["consultant", "coordinator"]) {
-    it(`${role}: Overview / Client Invoicing / Timesheets / Wages review, and all four on the bottom bar`, () => {
+    it(`${role}: Overview / Client Accruals / Timesheets / Billability Overview, and all four on the bottom bar`, () => {
       const a = rpcAccess(role, PRESET);
       expect(pairs(visibleNav(a).modules)).toEqual([
-        ["overview", "Overview"], ["invoicing", "Client Invoicing"], ["timesheet", "Timesheets"], ["wages", "Wages review"],
+        ["overview", "Overview"], ["invoicing", "Client Accruals"], ["timesheet", "Timesheets"], ["wages", "Billability Overview"],
       ]);
-      expect(pairs(bottomNavFor(a))).toEqual([["overview", "Overview"], ["invoicing", "Invoicing"], ["timesheet", "Timesheet"], ["wages", "Wages"]]);
+      expect(pairs(bottomNavFor(a))).toEqual([["overview", "Overview"], ["invoicing", "Accruals"], ["timesheet", "Timesheet"], ["wages", "Billability"]]);
       expect(visibleNav(a).secondary).toEqual([]);
     });
   }
@@ -203,13 +203,13 @@ describe("accessSummary", () => {
   const presets = { consultant: { overview: "assigned", clients: "assigned", accruals: "assigned", performance: "assigned" } };
   it("lists granted modules in nav order with client counts", () => {
     expect(accessSummary({ role: "consultant", overrides: { performance: "none" }, presets, moduleScopes, clientCount: 12 }))
-      .toBe("Overview (12 clients) · Clients (12 clients) · Client Accruals (12 clients)");
+      .toBe("Overview (12 clients) · Clients (12 clients) · Client Accruals Management (12 clients)");
   });
   it("an older manage-users (no moduleScopes): the role default, never 'No modules'", () => {
     expect(hasAccessConfig({})).toBe(false);
     expect(hasAccessConfig(undefined)).toBe(false);
     expect(accessSummary({ role: "consultant", overrides: {}, presets: {}, moduleScopes: {}, clientCount: 2 }))
-      .toBe("Overview (2 clients) · Clients (2 clients) · Client Accruals (2 clients) · Reporting (2 clients)");
+      .toBe("Overview (2 clients) · Clients (2 clients) · Client Accruals Management (2 clients) · Reporting (2 clients)");
   });
   it("admins are full access; nothing granted says so", () => {
     expect(accessSummary({ role: "admin", overrides: {}, presets, moduleScopes })).toBe("Full access");

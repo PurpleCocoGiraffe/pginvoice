@@ -12,14 +12,14 @@ export const SCOPE_LABELS = { none: "Off", own: "Own", assigned: "Their clients"
 // Sidebar, in the approved Design OS order. Labels are pinned by permissions.test.js.
 export const NAV_MODULES = [
   { key: "overview", label: "Overview" },
-  { key: "invoicing", label: "Client Invoicing" },
+  { key: "invoicing", label: "Client Accruals" },
   { key: "capacity", label: "Capacity Planning" },
   { key: "team", label: "Consultants" },
   { key: "clients", label: "Clients" },
   { key: "timesheet", label: "Timesheets" },
-  { key: "accruals", label: "Client Accruals" },
+  { key: "accruals", label: "Client Accruals Management" },
   { key: "performance", label: "Reporting" },
-  { key: "wages", label: "Wages review" },
+  { key: "wages", label: "Billability Overview" },
   { key: "bdm", label: "BDM" },
 ];
 // Mobile bottom tab bar (plus "More"): short labels so five tabs fit a phone-width bar.
@@ -27,11 +27,11 @@ export const NAV_MODULES = [
 // modules in NAV_MODULES order, using BOTTOM_NAV_SHORT_LABELS.
 export const BOTTOM_NAV_SIZE = 4;
 export const BOTTOM_NAV_SHORT_LABELS = {
-  clients: "Clients", timesheet: "Timesheet", accruals: "Accruals", performance: "Reporting", wages: "Wages", bdm: "BDM",
+  clients: "Clients", timesheet: "Timesheet", accruals: "Accruals Mgmt", performance: "Reporting", wages: "Billability", bdm: "BDM",
 };
 export const BOTTOM_NAV_MODULES = [
   { key: "overview", label: "Overview" },
-  { key: "invoicing", label: "Invoicing" },
+  { key: "invoicing", label: "Accruals" },
   { key: "capacity", label: "Capacity" },
   { key: "team", label: "Team" },
 ];
