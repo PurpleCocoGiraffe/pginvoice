@@ -69,11 +69,16 @@ async function callManageUsers(payload) {
   return data;
 }
 
-// { users, presets: { role: { module: scope } }, moduleScopes: { module: [scopes] } } --
-// moduleScopes lists only the modules a non-admin can be granted.
+// { users, presets: { role: { module: scope } }, moduleScopes: { module: [scopes] },
+// consultantMatchIssues: [{ consultant, matches, clients }] } -- moduleScopes lists only the
+// modules a non-admin can be granted; match issues are Consultant names on active clients that
+// match no account or several, so nobody gets those clients automatically.
 export async function fetchUsers() {
   const body = await callManageUsers({ action: "list" });
-  return { users: body.users || [], presets: body.presets || {}, moduleScopes: body.moduleScopes || {} };
+  return {
+    users: body.users || [], presets: body.presets || {}, moduleScopes: body.moduleScopes || {},
+    consultantMatchIssues: Array.isArray(body.consultantMatchIssues) ? body.consultantMatchIssues : [],
+  };
 }
 
 export async function createUser({ email, password, role, clients, clickupUserName, personId, moduleOverrides }) {

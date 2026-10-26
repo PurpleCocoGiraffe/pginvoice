@@ -232,3 +232,43 @@ describe("Overview assigned scope", () => {
     expect(teamUtilization(people, tm, "2026-05").perConsultant.length).toBe(2);
   });
 });
+
+describe("scoped Overview: clients logged on this month (activityClients)", () => {
+  // Holly's RLS view: her two clients. Aus 3C / Spectrum / Bee Squared she only logged time on.
+  const own = [
+    { client: "HTSA", status: "active", type: "package" },
+    { client: "Clarke Energy (CEA)", status: "active", type: "hourly" },
+  ];
+  const scope = {
+    clients: ["HTSA", "Clarke Energy (CEA)"], personName: "Holly", userNames: ["Holly Latham"],
+    activityClients: [
+      { client: "Aus 3C", status: "active", type: "package" },
+      { client: "Bee Squared", status: "offboarded", type: "package" },
+      { client: "HTSA", status: "active", type: "package" }, // already hers: not double counted
+    ],
+  };
+
+  it("counts active activity clients in My active clients, and says how many", () => {
+    expect(activeClientStats(own, scope)).toMatchObject({ active: 3, activityActive: 1 });
+    expect(activeClientStats(own, { ...scope, activityClients: [] })).toMatchObject({ active: 2, activityActive: 0 });
+    expect(activeClientStats(own, { ...scope, activityClients: undefined })).toMatchObject({ active: 2, activityActive: 0 });
+  });
+
+  it("adds active activity clients to the type mix only", () => {
+    expect(clientTypeMix(own, scope)).toEqual({ package: 2, hourly: 1 });
+  });
+
+  it("never feeds accrual figures: accrual health ignores activity clients", () => {
+    const accrualClients = [
+      { client: "HTSA", agreedHpm: 10, months: { "2026-10": { accrualValue: -2, agreedHpm: 10 } } },
+      { client: "Aus 3C", agreedHpm: 20, months: { "2026-10": { accrualValue: -50, agreedHpm: 20 } } },
+    ];
+    const scoped = filterToActiveClients(accrualClients, [...own, { client: "Aus 3C", status: "active" }], scope);
+    expect(scoped.map((c) => c.client)).toEqual(["HTSA"]);
+  });
+
+  it("the whole business (no scope) is unchanged", () => {
+    expect(activeClientStats(own)).toMatchObject({ active: 2, activityActive: 0 });
+    expect(clientTypeMix(own)).toEqual({ package: 1, hourly: 1 });
+  });
+});

@@ -61,13 +61,17 @@ export function canSee(access, moduleKey) {
 // null = everything (admin tier, or a module at "all" -- exactly as before), otherwise
 // { personId, userNames, clients }. userNames null = pginvoice_my_access() predates
 // clickupUserNames (modules say "not available yet" where they need it). Overview at
-// anything short of "all" counts only the user's clients and their own hours.
+// anything short of "all" counts only the user's clients and their own hours, plus (for client
+// counts only) `activityClients`: clients they logged time on this month.
 export function moduleScopeProps(access) {
   const scoped = (key, scopes) => (scopes.includes(effectiveScope(access, key))
     ? { personId: access.personId || null, userNames: access.clickupUserNames ?? null, clients: access.clients || [] }
     : null);
+  // Overview alone also counts clients they logged time on this month that aren't theirs
+  // (pginvoice_my_access().activityClients: { client, status, type }, no figures).
+  const overview = scoped("overview", ["own", "assigned"]);
   return {
-    overview: scoped("overview", ["own", "assigned"]),
+    overview: overview && { ...overview, activityClients: Array.isArray(access.activityClients) ? access.activityClients : [] },
     invoicing: scoped("invoicing", ["assigned"]),
     timesheet: scoped("timesheet", ["own"]),
     wages: scoped("wages", ["own"]),
