@@ -106,6 +106,23 @@ begin
   if (select string_agg(x ->> 'consultant', ',') from jsonb_array_elements(pginvoice_consultant_match_issues()) x) is distinct from 'Holly F' then
     raise exception 'issues after resolving: %', pginvoice_consultant_match_issues(); end if;
   raise notice 'ok: name clash grants nobody, clash and no-match values are listed for admins, and it clears when resolved';
+
+  -- Two ACCOUNTS with one ClickUp name are a clash too (a duplicate / re-created account).
+  insert into pginvoice_profiles (user_id, email, role, clickup_user_name) values ('00000000-0000-0000-0000-0000000000e3', 'dup@example.test', 'consultant', 'Holly Latham');
+  if exists (select 1 from pginvoice_user_clients where client = 'Holly L Client') then raise exception 'duplicate account kept the client'; end if;
+  if (select jsonb_array_length(x -> 'matches') from jsonb_array_elements(pginvoice_consultant_match_issues()) x where x ->> 'consultant' = 'Holly L') <> 2 then
+    raise exception 'duplicate-name clash not listed: %', pginvoice_consultant_match_issues(); end if;
+  if not exists (select 1 from jsonb_array_elements(pginvoice_consultant_match_issues()) x, jsonb_array_elements_text(x -> 'matches') m where m like '%dup@example.test%') then
+    raise exception 'clash should show the accounts emails'; end if;
+  delete from pginvoice_profiles where user_id = '00000000-0000-0000-0000-0000000000e3';
+  -- Spelling variants of one name are one entry.
+  update pginvoice_clients set consultant = ' holly  f ' where client = 'New Co';
+  insert into pginvoice_clients (client, type, status, consultant) values ('Other F Co', 'package', 'active', 'Holly F');
+  if (select count(*) from jsonb_array_elements(pginvoice_consultant_match_issues()) x where lower(x ->> 'consultant') like 'holly%f%') <> 1 then
+    raise exception 'spelling variants not grouped: %', pginvoice_consultant_match_issues(); end if;
+  if (select jsonb_array_length(x -> 'clients') from jsonb_array_elements(pginvoice_consultant_match_issues()) x where lower(x ->> 'consultant') like 'holly%f%') <> 2 then
+    raise exception 'grouped entry should list both clients'; end if;
+  raise notice 'ok: duplicate accounts are a clash (shown with emails); spelling variants grouped';
 end $$;
 
 -- activityClients: e1 ("Chloe Smith") owns Majestic Plumbing and Aus3C (Consultant "Chloe").

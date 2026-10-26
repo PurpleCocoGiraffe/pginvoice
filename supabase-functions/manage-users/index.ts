@@ -442,6 +442,10 @@ Deno.serve(async (req: Request) => {
       // those), so neither gets wiped out by an unrelated manual edit.
       const { error: delManualErr } = await admin.from("pginvoice_user_clients").delete().eq("user_id", targetUserId).eq("source", "manual");
       if (delManualErr) throw delManualErr;
+      // Retired all-time ClickUp-history grants: the migration deleted them, but the previous
+      // manage-users could re-add some between the migration and this deploy. Any edit clears them.
+      const { error: delClickupErr } = await admin.from("pginvoice_user_clients").delete().eq("user_id", targetUserId).eq("source", "clickup");
+      if (delClickupErr) throw delClickupErr;
       if ((role === "consultant" || role === "coordinator") && clients.length) {
         const rows = clients.map((client) => ({ user_id: targetUserId, client, source: "manual" }));
         const { error: insErr } = await admin.from("pginvoice_user_clients").insert(rows);

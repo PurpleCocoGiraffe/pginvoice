@@ -54,12 +54,16 @@ language sql immutable set search_path = public, pg_temp as $fn$
   end;
 $fn$;
 
+revoke all on function public.pg_consultant_matches(text, text) from public, anon, authenticated;
+
 -- 3. Rebuild source='consultant' rows for one user (or everyone when p_user_id is null).
 create or replace function public.pginvoice_sync_consultant_clients(p_user_id uuid default null)
 returns integer
 language plpgsql security definer set search_path = public, pg_temp as $fn$
 declare n integer;
 begin
+  -- One rebuild at a time: two edits committing together must not leave a stale row behind.
+  perform pg_advisory_xact_lock(hashtext('pginvoice_sync_consultant_clients'));
   delete from pginvoice_user_clients uc
    where uc.source = 'consultant' and (p_user_id is null or uc.user_id = p_user_id);
   -- Pairs are formed over EVERY eligible account, so a value matching two of them is seen as
@@ -88,22 +92,32 @@ grant execute on function public.pginvoice_sync_consultant_clients(uuid) to serv
 create or replace function public.pginvoice_consultant_match_issues()
 returns jsonb
 language sql stable security definer set search_path = public, pg_temp as $fn$
-  select coalesce(jsonb_agg(jsonb_build_object('consultant', v.consultant, 'matches', v.matches, 'clients', v.clients)
+  -- Grouped by the normalised spelling ("Holly F", "holly  f " are one entry); `matches` lists
+  -- every matching ACCOUNT (two accounts with one ClickUp name are a clash too), shown as
+  -- "ClickUp name (email)".
+  with vals as (
+    select lower(regexp_replace(trim(c.consultant), '\s+', ' ', 'g')) as norm,
+           min(trim(c.consultant)) as consultant,
+           jsonb_agg(c.client order by c.client) as clients
+      from pginvoice_clients c
+     where c.status in ('active', 'on_hold')
+       and nullif(trim(coalesce(c.consultant, '')), '') is not null
+       and lower(trim(c.consultant)) <> 'purple giraffe'
+     group by 1
+  ), m as (
+    select v.norm,
+           count(p.user_id) as n,
+           coalesce(jsonb_agg(p.clickup_user_name || coalesce(' (' || p.email || ')', '') order by p.clickup_user_name)
+                    filter (where p.user_id is not null), '[]'::jsonb) as matches
+      from vals v
+      left join pginvoice_profiles p
+        on p.role in ('consultant', 'coordinator') and pg_consultant_matches(v.consultant, p.clickup_user_name)
+     group by v.norm
+  )
+  select coalesce(jsonb_agg(jsonb_build_object('consultant', v.consultant, 'matches', m.matches, 'clients', v.clients)
                             order by v.consultant), '[]'::jsonb)
-    from (
-      select trim(c.consultant) as consultant,
-             coalesce((select jsonb_agg(distinct p.clickup_user_name)
-                         from pginvoice_profiles p
-                        where p.role in ('consultant', 'coordinator')
-                          and pg_consultant_matches(c.consultant, p.clickup_user_name)), '[]'::jsonb) as matches,
-             jsonb_agg(c.client order by c.client) as clients
-        from pginvoice_clients c
-       where c.status in ('active', 'on_hold')
-         and nullif(trim(coalesce(c.consultant, '')), '') is not null
-         and lower(trim(c.consultant)) <> 'purple giraffe'
-       group by trim(c.consultant), c.consultant
-    ) v
-   where jsonb_array_length(v.matches) <> 1;
+    from vals v join m using (norm)
+   where m.n <> 1;
 $fn$;
 revoke all on function public.pginvoice_consultant_match_issues() from public, anon, authenticated;
 grant execute on function public.pginvoice_consultant_match_issues() to service_role;

@@ -159,7 +159,9 @@ export default function Overview({ scope = null }) {
   const trend = useMemo(() => sixMonthTrend(activeAccrualClients, clickup?.rows, monthKeys), [activeAccrualClients, clickup, monthKeys]);
   const typeMix = useMemo(() => clientTypeMix(activeClients, dataScope), [activeClients, dataScope]);
 
-  const hasClients = clients.length > 0;
+  // Scoped: clients they logged time on this month count too, so someone named as Consultant on
+  // nothing (a coordinator, say) still sees their real count rather than "no client data".
+  const hasClients = clients.length > 0 || (dataScope?.activityClients?.length ?? 0) > 0;
   const scoped = !!dataScope;
   // Scoped "My utilization" card: why there's no figure, when there isn't one.
   const ownUtil = utilization.perConsultant[0] || null;
