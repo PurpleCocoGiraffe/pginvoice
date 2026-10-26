@@ -5,7 +5,7 @@ vi.mock("./supabaseClient.js", () => ({ supabase: {} }));
 
 import {
   buildMonthView, buildSnapshot, computeTotals, groupLines, filterLines, normaliseSettings, typeShort,
-  hasExpected, adjustedExpected, variancePctOfAdjusted, toWorkbookRows, WORKBOOK_HEADINGS, REVIEW_FIELDS, COMMENT_FIELDS, selfWageView,
+  hasExpected, adjustedExpected, variancePctOfAdjusted, toWorkbookRows, WORKBOOK_HEADINGS, REVIEW_FIELDS, COMMENT_FIELDS, selfWageView, selfLiveView, selfMonthOptions,
 } from "./wagesView.js";
 import { expectedFor, computeLine } from "./wagesCalc.js";
 
@@ -381,5 +381,78 @@ describe("selfWageView", () => {
     expect(v.view.weekdays).toBe(22);
     expect(v.view.perDay).toBe(normaliseSettings({}).hours_per_day);
     expect(v.view.holidaysByState).toHaveProperty("SA");
+  });
+});
+
+describe("selfLiveView (Wages own, open month)", () => {
+  // What pginvoice_my_wage_live returns for Holly: her own wage person (no xero_name), rules,
+  // leave and ClickUp rows only, the safe settings plus PG folders, and the client list.
+  const hollyRpc = (o = {}) => ({
+    monthKey: MONTH,
+    status: "open",
+    wagePerson: wagePeople[0],
+    rules: rules.filter((r) => r.person_id === "p1"),
+    settings: { hours_per_day: 7.6, xero_tolerance_h: 0.25, variance_threshold_h: 3.8, pg_folders: ["Purple Giraffe"] },
+    leaveEntries: leaveEntries.filter((l) => l.person_id === "p1"),
+    clickupSummary: clickupSummary.filter((r) => r.user_name === "Holly Nguyen"),
+    clients: [],
+    firstMonth: "2025-06",
+    ...o,
+  });
+  const holly = roster[0];
+  const NUMBERS = ["H", "D", "E", "F", "G", "N", "O", "P", "Q", "S", "unspecified"];
+
+  it("matches the admin's card for the same person, with Xero left empty", () => {
+    const admin = byId(buildMonthView(sources({ lines: [] }), MONTH), "p1");
+    const self = selfLiveView(hollyRpc(), { person: holly, capLeaves });
+    expect(self.state).toBe("live");
+    for (const k of NUMBERS) expect(self.line[k]).toEqual(admin[k]);
+    expect(self.line.split).toEqual(admin.split);
+    expect(self.line.byFolder).toEqual(admin.byFolder);
+    expect(self.line.status).toBe(admin.status);
+    expect(self.line.L ?? null).toBeNull();
+  });
+
+  it("never carries the admin's Xero hours, overrides or comments", () => {
+    const admin = byId(buildMonthView(sources(), MONTH), "p1");
+    expect(admin.L).toBe(167.2); // the admin's card has Xero...
+    const self = selfLiveView(hollyRpc(), { person: holly, capLeaves });
+    expect(self.line.L ?? null).toBeNull(); // ...the consultant's never does
+    expect(self.line.status).toBe("awaiting_xero");
+    for (const f of COMMENT_FIELDS) expect(self.line).not.toHaveProperty(f);
+    expect(self.line).not.toHaveProperty("expected_override_reason");
+    expect(Object.keys(self.view.settings).sort()).toEqual(["hours_per_day", "variance_threshold_h", "xero_tolerance_h"]);
+    expect(self.view).toMatchObject({ monthKey: MONTH, closed: false, fromSnapshot: false, perDay: 7.6 });
+  });
+
+  it("closed, not set up and outside-employment months show no numbers", () => {
+    expect(selfLiveView({ monthKey: MONTH, status: "closed" }, { person: holly })).toEqual({ state: "closed", monthKey: MONTH });
+    expect(selfLiveView({ monthKey: MONTH, status: "not_set_up" }, { person: holly })).toEqual({ state: "not_set_up", monthKey: MONTH });
+    expect(selfLiveView(hollyRpc(), { person: null })).toEqual({ state: "not_set_up", monthKey: MONTH });
+    const left = hollyRpc({ wagePerson: { ...wagePeople[0], end_date: "2026-09-30" } });
+    expect(selfLiveView(left, { person: holly, capLeaves })).toEqual({ state: "not_included", monthKey: MONTH });
+  });
+
+  it("uses a legacy cap_leaves total when there are no typed entries", () => {
+    const self = selfLiveView(hollyRpc({ leaveEntries: [] }), { person: holly, capLeaves: { [`p1_${MONTH}`]: 7.6 } });
+    expect(self.line.unspecified).toBe(7.6);
+  });
+});
+
+describe("selfMonthOptions", () => {
+  it("lists every month from the first one to the current one, newest first", () => {
+    expect(selfMonthOptions({ firstMonth: "2026-08", currentMonth: "2026-10", closed: [] }))
+      .toEqual([{ monthKey: "2026-10", closed: false }, { monthKey: "2026-09", closed: false }, { monthKey: "2026-08", closed: false }]);
+  });
+  it("marks closed months, keeps one outside the range, and crosses year ends", () => {
+    const opts = selfMonthOptions({ firstMonth: "2025-12", currentMonth: "2026-01", closed: [{ monthKey: "2025-12" }, { monthKey: "2025-06" }] });
+    expect(opts).toEqual([
+      { monthKey: "2026-01", closed: false }, { monthKey: "2025-12", closed: true }, { monthKey: "2025-06", closed: true },
+    ]);
+  });
+  it("caps how far back it goes, and falls back to the current month alone", () => {
+    expect(selfMonthOptions({ firstMonth: "2020-01", currentMonth: "2026-10", maxMonths: 3 }).map((o) => o.monthKey))
+      .toEqual(["2026-10", "2026-09", "2026-08"]);
+    expect(selfMonthOptions({ firstMonth: null, currentMonth: "2026-10" })).toEqual([{ monthKey: "2026-10", closed: false }]);
   });
 });

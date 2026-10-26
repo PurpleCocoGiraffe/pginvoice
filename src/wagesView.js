@@ -500,3 +500,62 @@ export function selfWageView(result, { photo = "" } = {}) {
     },
   };
 }
+
+// Wages `own` for a month that isn't closed: the caller's own line computed live with the
+// admin page's own computeLiveView, from pginvoice_my_wage_live() (their wage person, rules,
+// leave and ClickUp rows only) plus their roster record and cap_leaves from
+// pginvoice_my_roster(). No wage line row is passed in, so Xero hours, overrides and
+// comments are always empty: the card shows "awaiting Xero" until the month is reviewed.
+// state: "live" | "closed" (use the snapshot instead) | "not_set_up" | "not_included".
+export function selfLiveView(result, { person = null, capLeaves = {}, photo = "" } = {}) {
+  const monthKey = result?.monthKey ?? null;
+  if (result?.status === "closed") return { state: "closed", monthKey };
+  if (!result || result.status !== "open" || !result.wagePerson || !person) return { state: "not_set_up", monthKey };
+  const live = computeLiveView({
+    settings: result.settings,
+    roster: [{ ...person, photo: photo || person.photo || "" }],
+    wagePeople: [result.wagePerson],
+    rules: result.rules || [],
+    lines: [],
+    leaveEntries: result.leaveEntries || [],
+    capLeaves,
+    clickupSummary: result.clickupSummary || [],
+    clients: result.clients || [],
+  }, monthKey);
+  const own = live.lines.find((l) => l.person_id === result.wagePerson.person_id);
+  if (!own) return { state: "not_included", monthKey };
+  const line = { ...own };
+  for (const k of SELF_HIDDEN_FIELDS) delete line[k];
+  const settings = Object.fromEntries(SAFE_SETTING_KEYS.map((k) => [k, live.settings[k]]));
+  return {
+    state: "live",
+    monthKey,
+    line,
+    view: {
+      monthKey, closed: false, fromSnapshot: false, settings,
+      perDay: settings.hours_per_day,
+      weekdays: wageWeekdaysInMonth(monthKey),
+      standardHours: standardMonthHours(monthKey, settings.hours_per_day),
+      holidaysByState: holidaysByState(monthKey),
+    },
+  };
+}
+
+// Month picker for the Wages `own` page: every month from `firstMonth` (capped at
+// `maxMonths` back) to `currentMonth`, plus any closed month outside that, newest first.
+export function selfMonthOptions({ firstMonth, currentMonth, closed = [], maxMonths = 24 }) {
+  const shift = (mk, n) => {
+    const [y, m] = mk.split("-").map(Number);
+    const t = y * 12 + (m - 1) + n;
+    return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`;
+  };
+  const closedKeys = new Set(closed.map((c) => c.monthKey));
+  const keys = new Set(closedKeys);
+  if (currentMonth) {
+    const floor = shift(currentMonth, -(maxMonths - 1));
+    let mk = firstMonth && firstMonth > floor ? firstMonth : floor;
+    if (!firstMonth) mk = currentMonth;
+    for (; mk <= currentMonth; mk = shift(mk, 1)) keys.add(mk);
+  }
+  return [...keys].sort((a, b) => (a < b ? 1 : -1)).map((monthKey) => ({ monthKey, closed: closedKeys.has(monthKey) }));
+}

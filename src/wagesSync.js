@@ -209,3 +209,11 @@ export async function fetchMyWageLine(monthKey) {
   if (error) throw error;
   return data;
 }
+// An open (not closed) month for the caller's own card: { monthKey, status: 'open' |
+// 'closed' | 'not_set_up', wagePerson, rules, settings, leaveEntries, clickupSummary,
+// clients, firstMonth } -- see selfLiveView and 20261026_my_wage_live.sql.
+export async function fetchMyWageLive(monthKey) {
+  const { data, error } = await supabase.rpc("pginvoice_my_wage_live", { p_month: monthKey });
+  if (error) throw error;
+  return data;
+}
