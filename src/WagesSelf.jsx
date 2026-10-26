@@ -1,18 +1,19 @@
 import React, { useState, useEffect } from "react";
 import { AlertTriangle, Info, Lock } from "lucide-react";
 import { loadMyRoster } from "./capacityStore.js";
-import { wagesReviewMonthKey } from "./dateMath.js";
+import { adelaideMonthKey } from "./dateMath.js";
 import { isMissingRpcError } from "./permissions.js";
-import { fetchMyWageMonths, fetchMyWageLine } from "./wagesSync.js";
-import { selfWageView } from "./wagesView.js";
+import { fetchMyWageMonths, fetchMyWageLine, fetchMyWageLive } from "./wagesSync.js";
+import { selfWageView, selfLiveView, selfMonthOptions } from "./wagesView.js";
 import { monthLabel } from "./wagesFormat.js";
 import { WageCard } from "./WageCard.jsx";
 
-// Wages review for a non-admin whose Wages scope is "own" (permissions.js): their own card,
-// read-only, for months the admin team has closed. Everything comes from two SECURITY DEFINER
-// RPCs (20261017_scoped_modules.sql) that return only the caller's own snapshot line --
-// payroll tables stay admin-tier-only under RLS. A month that isn't closed shows "Not yet
-// reviewed" and no numbers (never zeros). No drawer, inputs, settings, Xero paste or close
+// Billability Overview for a non-admin whose Wages scope is "own" (permissions.js): their own
+// card, read-only. A closed month shows the signed-off snapshot (pginvoice_my_wage_line,
+// 20261017_scoped_modules.sql); every other month from their first month to the current one
+// is computed live from their own ClickUp time, leave and hours rule (pginvoice_my_wage_live,
+// 20261026_my_wage_live.sql) with Xero always empty until the month is reviewed. Payroll
+// tables stay admin-tier-only under RLS. No drawer, inputs, settings, Xero paste or close
 // controls exist on this page at all.
 
 function Notice({ tone = "warn", icon: Icon = AlertTriangle, children }) {
@@ -29,43 +30,51 @@ export default function WagesSelf({ personId }) {
   const [months, setMonths] = useState(null);
   const [monthKey, setMonthKey] = useState(null);
   const [result, setResult] = useState(null); // { monthKey, data } | { monthKey, error }
-  const [photo, setPhoto] = useState("");
-  // The month currently under review (same rule as WagesReview.jsx).
-  const pending = wagesReviewMonthKey();
+  // roster: null = loading; { person, capLeaves } (person null when not found) | { error }
+  const [roster, setRoster] = useState(null);
+  const current = adelaideMonthKey();
 
   useEffect(() => {
     if (!personId) return;
     let live = true;
-    fetchMyWageMonths().then(
-      (list) => { if (!live) return; setMonths({ list }); setMonthKey(list[0]?.monthKey ?? pending); },
-      (error) => { if (!live) return; setMonths(isMissingRpcError(error) ? { unavailable: true } : { error }); },
-    );
-    // The roster photo is display-only; a failed read just shows initials.
+    // The current month's live call also tells us how far back the picker goes (firstMonth).
+    Promise.allSettled([fetchMyWageMonths(), fetchMyWageLive(current)]).then(([closedRes, liveRes]) => {
+      if (!live) return;
+      if (closedRes.status === "rejected") {
+        setMonths(isMissingRpcError(closedRes.reason) ? { unavailable: true } : { error: closedRes.reason });
+        return;
+      }
+      const list = closedRes.value;
+      const firstMonth = liveRes.status === "fulfilled" ? liveRes.value?.firstMonth ?? null : null;
+      setMonths({ list, options: selfMonthOptions({ firstMonth, currentMonth: current, closed: list }) });
+      setMonthKey(current);
+    });
     loadMyRoster().then(
-      ({ people }) => { if (live) setPhoto(people.find((p) => p.id === personId)?.photo || ""); },
-      () => {},
+      ({ people, leaves }) => { if (live) setRoster({ person: people.find((p) => p.id === personId) || null, capLeaves: leaves }); },
+      (error) => { if (live) setRoster({ error }); },
     );
     return () => { live = false; };
-  }, [personId, pending]);
+  }, [personId, current]);
 
+  const isClosed = !!months?.options?.find((o) => o.monthKey === monthKey)?.closed;
   useEffect(() => {
-    if (!monthKey) return;
+    if (!monthKey || !months?.options) return;
     let live = true;
     setResult(null);
-    fetchMyWageLine(monthKey).then(
-      (data) => { if (live) setResult({ monthKey, data }); },
+    (isClosed ? fetchMyWageLine(monthKey) : fetchMyWageLive(monthKey)).then(
+      (data) => { if (live) setResult({ monthKey, closed: isClosed, data }); },
       (error) => { if (live) setResult({ monthKey, error }); },
     );
     return () => { live = false; };
-  }, [monthKey]);
+  }, [monthKey, months, isClosed]);
 
-  const closedKeys = new Set((months?.list || []).map((m) => m.monthKey));
-  // Closed months, plus the month currently under review so the person can see it's pending.
-  const options = months?.list
-    ? [...(closedKeys.has(pending) ? [] : [{ monthKey: pending, pending: true }]), ...months.list]
-        .sort((a, b) => (a.monthKey < b.monthKey ? 1 : -1))
-    : [];
-  const self = result && !result.error && result.monthKey === monthKey ? selfWageView(result.data, { photo }) : null;
+  const options = months?.options || [];
+  const photo = roster?.person?.photo || "";
+  const ready = result && !result.error && result.monthKey === monthKey;
+  const self = !ready ? null
+    : result.closed ? selfWageView(result.data, { photo })
+    : roster ? selfLiveView(result.data, { person: roster.person, capLeaves: roster.capLeaves, photo })
+    : null;
   const monthText = monthKey ? monthLabel(monthKey) : "";
 
   let body;
@@ -84,22 +93,36 @@ export default function WagesSelf({ personId }) {
           <span className="wr-sr">Month</span>
           <select value={monthKey || ""} onChange={(e) => setMonthKey(e.target.value)} aria-label="Month">
             {options.map((o) => (
-              <option key={o.monthKey} value={o.monthKey}>{monthLabel(o.monthKey)}{o.pending ? " · not yet reviewed" : ""}</option>
+              <option key={o.monthKey} value={o.monthKey}>{monthLabel(o.monthKey)}{o.closed ? " · reviewed" : " · live"}</option>
             ))}
           </select>
         </label>
       </div>
-      {!months.list.length && <Notice icon={Info}>No months have been reviewed and closed yet. Your card appears here once a month is signed off.</Notice>}
       {result?.error ? (
         isMissingRpcError(result.error)
           ? <Notice icon={Info}>Your wage card isn't available yet — this view is still being switched on.</Notice>
           : <Notice tone="error">Couldn't load {monthText}: {result.error.message || String(result.error)}</Notice>
+      ) : roster?.error && !result?.closed ? (
+        <Notice tone="error">Couldn't load your roster record: {roster.error.message || String(roster.error)}</Notice>
       ) : !self ? (
         <div className="pg-empty">Loading…</div>
       ) : self.state === "not_reviewed" ? (
         <div className="pg-empty"><Lock size={14} aria-hidden="true" /> {monthText}: not yet reviewed. Your numbers appear once the month is closed.</div>
       ) : self.state === "not_included" ? (
-        <div className="pg-empty">You weren't part of the wages review for {monthText}.</div>
+        <div className="pg-empty">You weren't part of the billability review for {monthText}.</div>
+      ) : self.state === "not_set_up" ? (
+        <Notice icon={Info}>Your billability setup isn't finished yet, so there's nothing to show for {monthText}. Ask an admin to set you up in Billability Overview.</Notice>
+      ) : self.state === "closed" ? (
+        <Notice icon={Info}>{monthText} has just been reviewed. Reload the page to see the signed-off numbers.</Notice>
+      ) : self.state === "live" ? (
+        <>
+          <p className="pg-footnote">
+            {monthText} hasn't been reviewed yet. These are live figures from your ClickUp time, leave and hours. Xero hours are added when the month is reviewed.
+          </p>
+          <div className="wr-grid">
+            <WageCard line={self.line} view={self.view} monthText={monthText} readOnly />
+          </div>
+        </>
       ) : (
         <>
           <p className="pg-footnote">
@@ -119,7 +142,7 @@ export default function WagesSelf({ personId }) {
         <div>
           <span className="pg-eyebrow">Purple Giraffe</span>
           <h1 className="pg-app-header__title">My billability.</h1>
-          <p className="pg-app-header__sub">Your reviewed hours for each closed month: tracked time, Xero, leave and expected hours.</p>
+          <p className="pg-app-header__sub">Your tracked time, leave and expected hours for each month. Xero hours appear once a month is reviewed.</p>
         </div>
       </div>
       {body}
