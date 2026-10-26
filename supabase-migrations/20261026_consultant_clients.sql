@@ -1,5 +1,5 @@
 -- Consultant client access follows the Clients module's Consultant field, not ClickUp history.
--- NOT YET APPLIED to fzvlnzlecchsubkpsmew. Apply BEFORE deploying the manage-users that stops
+-- APPLIED to fzvlnzlecchsubkpsmew on 2026-10-26, then manage-users v8. (Order: migration first, then the manage-users that stops
 -- writing source='clickup' rows (until then the old function re-adds them on a user edit).
 --
 -- Before: manage-users gave a consultant/coordinator every client whose ClickUp folder they had
