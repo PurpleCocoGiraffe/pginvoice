@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { authorize, parseMonthOffset, MAX_MONTH_OFFSET } from "../supabase-functions/_shared/authz.ts";
+import { authorize, parseMonthOffset, MAX_MONTH_OFFSET, passwordResetDecision, MIN_PASSWORD_LENGTH } from "../supabase-functions/_shared/authz.ts";
 
 // clickup-key and clickup-sync used to do no caller check: the app's public anon key is a
 // valid JWT, so platform verify_jwt alone let anyone replace the ClickUp token or run syncs.
@@ -73,5 +73,44 @@ describe("edge functions authorize before doing anything", () => {
     expect(src).toMatch(/monthOffset = parseMonthOffset\(body\?\.monthOffset\)/);
     // The raw ClickUp time entry (email, task, description) is no longer returned.
     expect(src).not.toMatch(/raw_sample|rawSample/);
+  });
+});
+
+describe("passwordResetDecision (manage-users reset_password)", () => {
+  const caller = (callerRole, callerId = "me") => ({ callerRole, callerId });
+  const target = (targetRole, targetId = "them") => ({ targetRole, targetId });
+  const PW = "temporary1";
+
+  it("an admin-tier caller can reset a consultant, coordinator or admin", () => {
+    for (const callerRole of ["super_admin", "admin"]) {
+      for (const targetRole of ["consultant", "coordinator", "admin"]) {
+        expect(passwordResetDecision(caller(callerRole), target(targetRole), PW)).toEqual({ ok: true });
+      }
+    }
+  });
+
+  it("only a super_admin can reset a super_admin", () => {
+    expect(passwordResetDecision(caller("super_admin"), target("super_admin"), PW)).toEqual({ ok: true });
+    expect(passwordResetDecision(caller("admin"), target("super_admin"), PW)).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it("non-admins and unknown callers are refused", () => {
+    for (const role of ["consultant", "coordinator", null, "made_up"]) {
+      expect(passwordResetDecision(caller(role), target("consultant"), PW)).toMatchObject({ ok: false, status: 403 });
+    }
+  });
+
+  it("refuses your own account, a missing id and an unknown user", () => {
+    expect(passwordResetDecision(caller("super_admin", "x"), target("super_admin", "x"), PW)).toMatchObject({ ok: false, status: 400 });
+    expect(passwordResetDecision(caller("admin"), target("consultant", ""), PW)).toMatchObject({ ok: false, status: 400 });
+    expect(passwordResetDecision(caller("admin"), target(null), PW)).toMatchObject({ ok: false, status: 404 });
+  });
+
+  it("needs a password of at least MIN_PASSWORD_LENGTH characters", () => {
+    expect(MIN_PASSWORD_LENGTH).toBe(8);
+    for (const pw of ["", "short12", undefined, null, 12345678]) {
+      expect(passwordResetDecision(caller("admin"), target("consultant"), pw)).toMatchObject({ ok: false, status: 400 });
+    }
+    expect(passwordResetDecision(caller("admin"), target("consultant"), "12345678")).toEqual({ ok: true });
   });
 });

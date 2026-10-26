@@ -40,3 +40,29 @@ export function parseMonthOffset(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
   return Math.min(Math.floor(value), MAX_MONTH_OFFSET);
 }
+
+// manage-users reset_password: may this admin-tier caller set a new temporary password for
+// the target? Never your own (another admin resets it), and only a Super Admin may
+// reset a Super Admin's -- otherwise an Admin could take over a Super Admin account.
+export const MIN_PASSWORD_LENGTH = 8;
+export function passwordResetDecision(
+  { callerRole, callerId }: { callerRole: string | null; callerId: string },
+  { targetRole, targetId }: { targetRole: string | null; targetId: string },
+  password: unknown,
+): { ok: true } | { ok: false; status: 400 | 403 | 404; error: string } {
+  if (!callerRole || !ADMIN_TIER_ROLES.includes(callerRole)) {
+    return { ok: false, status: 403, error: "You don't have permission to manage users." };
+  }
+  if (!targetId) return { ok: false, status: 400, error: "Missing userId." };
+  if (targetId === callerId) {
+    return { ok: false, status: 400, error: "You can't reset your own password — ask another Super Admin or Admin to do it." };
+  }
+  if (!targetRole) return { ok: false, status: 404, error: "User not found." };
+  if (targetRole === "super_admin" && callerRole !== "super_admin") {
+    return { ok: false, status: 403, error: "Only a Super Admin can reset a Super Admin's password." };
+  }
+  if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+    return { ok: false, status: 400, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` };
+  }
+  return { ok: true };
+}
