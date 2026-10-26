@@ -63,6 +63,26 @@
 .wr-group__count { font-weight: 500; color: var(--fg-tertiary); }
 .wr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); gap: 16px; margin-top: 16px; align-items: start; }
 .wr-group .wr-grid { margin-top: 0; }
+/* My billability (WagesSelf): one card, so give it room instead of a 380px column, and keep
+   the filters, banner and card on the same width. */
+.wr-self-body { max-width: 720px; }
+.wr-grid--self { grid-template-columns: minmax(0, 1fr); }
+.wr-self-month { position: relative; cursor: pointer; }
+.wr-self-month select {
+  appearance: none; -webkit-appearance: none; background: transparent; border: none; outline: none;
+  font: inherit; font-family: var(--font-body); font-size: 13px; font-weight: 500; color: var(--fg-primary);
+  cursor: pointer; padding: 0 18px 0 0; margin-right: -16px;
+}
+.wr-self-month select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.wr-self-month option { background: var(--bg-card); color: var(--fg-primary); font-family: var(--font-body); font-size: 13px; }
+.wr-self-month .pg-pill__chevron { pointer-events: none; color: var(--fg-tertiary); }
+.wr-self-status {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 500; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.wr-self-status.is-reviewed { color: var(--status-ok); background: color-mix(in srgb, var(--status-ok) 10%, var(--bg-card)); border-color: color-mix(in srgb, var(--status-ok) 25%, transparent); }
 
 /* ---- card skin: token aliases ------------------------------------------------------
    Panels are the same neutral well as --wr-section-bg (a few % of the text colour
