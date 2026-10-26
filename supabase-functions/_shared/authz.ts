@@ -42,7 +42,7 @@ export function parseMonthOffset(value: unknown): number {
 }
 
 // manage-users reset_password: may this admin-tier caller set a new temporary password for
-// the target? Never your own (use the normal password change), and only a Super Admin may
+// the target? Never your own (another admin resets it), and only a Super Admin may
 // reset a Super Admin's -- otherwise an Admin could take over a Super Admin account.
 export const MIN_PASSWORD_LENGTH = 8;
 export function passwordResetDecision(
@@ -55,7 +55,7 @@ export function passwordResetDecision(
   }
   if (!targetId) return { ok: false, status: 400, error: "Missing userId." };
   if (targetId === callerId) {
-    return { ok: false, status: 400, error: "You can't reset your own password here — sign out and use your normal password change." };
+    return { ok: false, status: 400, error: "You can't reset your own password — ask another Super Admin or Admin to do it." };
   }
   if (!targetRole) return { ok: false, status: 404, error: "User not found." };
   if (targetRole === "super_admin" && callerRole !== "super_admin") {

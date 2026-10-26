@@ -1,5 +1,5 @@
 -- Ends every session of one user, for manage-users (password reset, role change).
--- NOT YET APPLIED to fzvlnzlecchsubkpsmew. Apply before deploying the manage-users that calls it.
+-- APPLIED to fzvlnzlecchsubkpsmew on 2026-10-25 (before the manage-users that calls it).
 --
 -- Why: manage-users called supabase-js admin.auth.admin.signOut(userId, "global"), but that
 -- method takes the user's own access token, not a user id -- so it always failed (silently,
