@@ -215,6 +215,7 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
                   {derived.map((cd) => <span key={`${cd.client}-${cd.source}`} className="pg-source-chip">{cd.client} · {CLIENT_SOURCE_LABELS[cd.source] || cd.source}</span>)}
                 </div>
               ) : <p className="pg-footnote">No clients name them as Consultant yet (Clients module), and none via Capacity Planning.</p>}
+              <p className="pg-footnote">Their clients come from the Consultant field in the Clients module and update by themselves. A client they log time on in a month also shows in their Client Accruals for that month, with its package figures hidden.</p>
               {CLIENT_SCOPED_ROLES.has(draft.role) && (
                 <ClientCheckboxList label="Also grant these clients manually" options={allClients} selected={draft.clients}
                   onToggle={(c) => setDraft((d) => ({ ...d, clients: toggleIn(d.clients, c) }))} />

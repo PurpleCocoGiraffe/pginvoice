@@ -17,7 +17,9 @@ import { ownNameSet, isOwnName } from "./ownTime.js";
 // For a user whose Overview scope is "assigned" (permissions.js):
 //   { clients: [client names],            -- client counts, accrual health and trend
 //     personName: string | null,          -- the linked roster person (own hours/utilisation)
-//     userNames: [exact ClickUp spellings] } -- whose logged time counts as theirs
+//     userNames: [exact ClickUp spellings], -- whose logged time counts as theirs
+//     activityClients: [{ client, status, type }] } -- other clients they logged time on this
+//                                            month: client COUNTS only, never accrual figures
 // Each client figure is still the client's own real number (the same accrual cell an admin
 // sees); the scope only decides WHICH clients are counted. Team figures collapse to the one
 // linked person.
@@ -25,6 +27,20 @@ function clientInScope(scope) {
   if (!scope) return () => true;
   const names = new Set(scope.clients || []);
   return (name) => names.has(name);
+}
+
+// Client COUNTS (active clients, type mix) for a scoped user also include
+// `scope.activityClients`: clients they logged time on this month that aren't theirs
+// ({ client, status, type } from pginvoice_my_access(); RLS hides those rows, and their
+// figures stay withheld, so accrual metrics never use this). Returns the rows to count plus
+// which of them came only from activity.
+function withActivityClients(clients, scope) {
+  const inScope = clientInScope(scope);
+  const own = (clients || []).filter((c) => inScope(c.client));
+  if (!scope) return { list: own, activityOnly: new Set() };
+  const have = new Set(own.map((c) => c.client));
+  const extra = (scope.activityClients || []).filter((c) => c && c.client && !have.has(c.client));
+  return { list: [...own, ...extra], activityOnly: new Set(extra.map((c) => c.client)) };
 }
 
 /* ============================================================
@@ -93,13 +109,15 @@ export function teamMonthlyTotals(people, clickupData, monthKeys, scope) {
 // different fact than "0% of clients are over-serviced", and collapsing them
 // would make an empty book look like a healthy one.
 export function activeClientStats(clients, scope) {
-  const inScope = clientInScope(scope);
-  const list = (clients || []).filter((c) => inScope(c.client));
-  const active = list.filter((c) => c.status === "active").length;
+  const { list, activityOnly } = withActivityClients(clients, scope);
+  const activeRows = list.filter((c) => c.status === "active");
+  const active = activeRows.length;
+  // activityActive: how many of `active` are only there because they logged time this month.
+  const activityActive = activeRows.filter((c) => activityOnly.has(c.client)).length;
   // Real per-month over-serviced flagging lives in accrualHealth/the accrual data
   // (this function only has the client roster, no monthly actuals) — callers that
   // want the over-serviced count should combine this with accrualHealth's output.
-  return { active, overServiced: 0, overServicedPct: active === 0 ? null : 0 };
+  return { active, activityActive, overServiced: 0, overServicedPct: active === 0 ? null : 0 };
 }
 
 // fetchAccrualsFromSupabase() returns a row for every client that ever had an
@@ -272,11 +290,11 @@ export function sixMonthTrend(accrualClients, clickupRows, monthKeysOverride, sc
 // string is still counted (under its own raw key) rather than thrown away or
 // throwing — a bad/legacy value in the data shouldn't make this card blow up
 // or silently under-count the client base.
+// Scoped: activity clients count too, but only active ones (callers pass active clients).
 export function clientTypeMix(clients, scope) {
-  const inScope = clientInScope(scope);
+  const { list } = withActivityClients(clients, scope ? { ...scope, activityClients: (scope.activityClients || []).filter((c) => c?.status === "active") } : scope);
   const counts = {};
-  for (const c of clients || []) {
-    if (!inScope(c.client)) continue;
+  for (const c of list) {
     const key = c.type || "unknown";
     counts[key] = (counts[key] || 0) + 1;
   }

@@ -226,9 +226,18 @@ describe("moduleScopeProps", () => {
     const a = { ...rpcAccess("consultant", { overview: "assigned", invoicing: "assigned", timesheet: "own", wages: "own" }),
       personId: "p1", clients: ["Apex"], clickupUserNames: ["Holly Fraser"] };
     const shape = { personId: "p1", userNames: ["Holly Fraser"], clients: ["Apex"] };
-    expect(moduleScopeProps(a)).toEqual({ overview: shape, invoicing: shape, timesheet: shape, wages: shape });
+    expect(moduleScopeProps(a)).toEqual({ overview: { ...shape, activityClients: [] }, invoicing: shape, timesheet: shape, wages: shape });
     const { clickupUserNames: _drop, ...old } = a;
     expect(moduleScopeProps(old).timesheet.userNames).toBeNull();
+  });
+  it("activityClients (this month's other clients) reach the Overview scope only", () => {
+    const activityClients = [{ client: "Aus 3C", status: "active", type: "package" }];
+    const a = { ...rpcAccess("consultant", { overview: "assigned", invoicing: "assigned", timesheet: "own", wages: "own" }),
+      personId: "p1", clients: ["HTSA"], clickupUserNames: ["Holly Latham"], activityClients };
+    const props = moduleScopeProps(a);
+    expect(props.overview.activityClients).toEqual(activityClients);
+    for (const k of ["invoicing", "timesheet", "wages"]) expect(props[k]).not.toHaveProperty("activityClients");
+    expect(props.invoicing.clients).toEqual(["HTSA"]); // never widened by activity
   });
   it("a non-admin granted all / none gets null", () => {
     const a = rpcAccess("consultant", { overview: "all", invoicing: "none" });

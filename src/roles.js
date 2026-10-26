@@ -17,4 +17,4 @@ export const ADMIN_TIER_ROLES = new Set(["super_admin", "admin"]);
 export const CLICKUP_REQUIRED_ROLES = new Set(["consultant", "coordinator"]);
 // consultant = the Clients module names them as Consultant (20261026_consultant_clients.sql);
 // clickup = the retired all-time ClickUp-history grant, kept only so an old row still reads.
-export const CLIENT_SOURCE_LABELS = { manual: "manual", consultant: "their client", clickup: "via ClickUp", capacity_lead: "via Capacity lead" };
+export const CLIENT_SOURCE_LABELS = { manual: "manual", consultant: "Consultant", clickup: "via ClickUp", capacity_lead: "via Capacity lead" };

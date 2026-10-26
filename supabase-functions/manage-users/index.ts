@@ -278,7 +278,16 @@ Deno.serve(async (req: Request) => {
             lastSignInAt: u.last_sign_in_at,
           };
         });
-      return new Response(JSON.stringify({ ok: true, users, presets: config.presets, moduleScopes: config.moduleScopes }), { headers: JSON_HEADERS });
+      // Consultant names on active clients that match no account or several (nobody gets those
+      // clients automatically). [] until 20261026_consultant_clients.sql is applied.
+      let consultantMatchIssues: unknown[] = [];
+      const { data: issues, error: issuesErr } = await admin.rpc("pginvoice_consultant_match_issues");
+      if (issuesErr) {
+        if (!["PGRST202", "42883"].includes(issuesErr.code)) throw issuesErr;
+      } else if (Array.isArray(issues)) {
+        consultantMatchIssues = issues;
+      }
+      return new Response(JSON.stringify({ ok: true, users, presets: config.presets, moduleScopes: config.moduleScopes, consultantMatchIssues }), { headers: JSON_HEADERS });
     }
 
     if (action === "create") {

@@ -131,7 +131,7 @@ export default function Overview({ scope = null }) {
   // The pure functions' scope: the user's clients + their linked roster person.
   const personName = scope ? (people.find((p) => p.id === scope.personId)?.name ?? null) : null;
   const dataScope = useMemo(
-    () => (scope ? { clients: scope.clients || [], personName, userNames: scope.userNames || [] } : null),
+    () => (scope ? { clients: scope.clients || [], personName, userNames: scope.userNames || [], activityClients: scope.activityClients || [] } : null),
     [scope, personName]
   );
   const activeClients = useMemo(() => clients.filter((c) => c.status === "active"), [clients]);
@@ -218,7 +218,8 @@ export default function Overview({ scope = null }) {
             <div className="ov-kpi-grid">
               <OverviewKpiCard
                 index={0}
-                primaryLabel={scoped ? "My active clients" : "Active clients"}
+                primaryLabel={!scoped ? "Active clients"
+                  : clientStats.activityActive > 0 ? `My active clients (incl. ${clientStats.activityActive} you logged time on this month)` : "My active clients"}
                 primary={hasClients ? fmt0(clientStats.active) : "—"}
                 secondary={hasAccruals ? (overServiced.withData > 0 ? `${fmt0(overServiced.overServiced)} over-serviced` : "—") : null}
                 secondaryLabel={
@@ -229,7 +230,7 @@ export default function Overview({ scope = null }) {
               />
               <OverviewKpiCard
                 index={1}
-                primaryLabel="Accrual balance (net)"
+                primaryLabel={scoped ? "Accrual balance (net, your clients)" : "Accrual balance (net)"}
                 primary={hasAccruals ? `${fmt1(health.netHours)} h` : "—"}
                 tone={hasAccruals && health.netHours < 0 ? "var(--status-warn)" : undefined}
                 secondary={hasAccruals ? fmt0(health.negativeCount) : null}
