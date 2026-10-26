@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { AlertTriangle, Info, Lock } from "lucide-react";
+import { AlertTriangle, Info, Lock, ChevronLeft, ChevronRight, ChevronDown, Calendar, Radio, CheckCircle2 } from "lucide-react";
 import { loadMyRoster } from "./capacityStore.js";
 import { adelaideMonthKey } from "./dateMath.js";
 import { isMissingRpcError } from "./permissions.js";
@@ -69,6 +69,7 @@ export default function WagesSelf({ personId }) {
   }, [monthKey, months, isClosed]);
 
   const options = months?.options || [];
+  const monthIndex = options.findIndex((o) => o.monthKey === monthKey);
   const photo = roster?.person?.photo || "";
   const ready = result && !result.error && result.monthKey === monthKey;
   const self = !ready ? null
@@ -89,14 +90,27 @@ export default function WagesSelf({ personId }) {
   } else {
     body = <>
       <div className="pg-pillbar wr-filters">
-        <label className="pg-pill">
-          <span className="wr-sr">Month</span>
-          <select value={monthKey || ""} onChange={(e) => setMonthKey(e.target.value)} aria-label="Month">
-            {options.map((o) => (
-              <option key={o.monthKey} value={o.monthKey}>{monthLabel(o.monthKey)}{o.closed ? " · reviewed" : " · live"}</option>
-            ))}
-          </select>
-        </label>
+        {/* Same stepper as the admin page; the label is a styled <select> to jump straight to
+            a month. options are newest first, so "previous" is the next index. */}
+        <div className="pg-pill pg-pill--stepper" role="group" aria-label="Month">
+          <button type="button" className="pg-pill__step" aria-label="Previous month" disabled={monthIndex < 0 || monthIndex >= options.length - 1}
+            onClick={() => setMonthKey(options[monthIndex + 1].monthKey)}><ChevronLeft size={14} /></button>
+          <label className="pg-pill__step-label wr-self-month">
+            <Calendar size={13} className="pg-pill__icon" aria-hidden="true" />
+            <select value={monthKey || ""} onChange={(e) => setMonthKey(e.target.value)} aria-label="Choose month">
+              {options.map((o) => <option key={o.monthKey} value={o.monthKey}>{monthLabel(o.monthKey)}</option>)}
+            </select>
+            <ChevronDown size={13} className="pg-pill__chevron" aria-hidden="true" />
+          </label>
+          <button type="button" className="pg-pill__step" aria-label="Next month" disabled={monthIndex <= 0}
+            onClick={() => setMonthKey(options[monthIndex - 1].monthKey)}><ChevronRight size={14} /></button>
+        </div>
+        {monthIndex >= 0 && (
+          <span className={`wr-self-status${isClosed ? " is-reviewed" : ""}`}>
+            {isClosed ? <CheckCircle2 size={13} aria-hidden="true" /> : <Radio size={13} aria-hidden="true" />}
+            {isClosed ? "Reviewed" : "Live · not yet reviewed"}
+          </span>
+        )}
       </div>
       {result?.error ? (
         isMissingRpcError(result.error)
@@ -116,19 +130,19 @@ export default function WagesSelf({ personId }) {
         <Notice icon={Info}>{monthText} has just been reviewed. Reload the page to see the signed-off numbers.</Notice>
       ) : self.state === "live" ? (
         <>
-          <p className="pg-footnote">
-            {monthText} hasn't been reviewed yet. These are live figures from your ClickUp time, leave and hours. Xero hours are added when the month is reviewed.
-          </p>
-          <div className="wr-grid">
+          <Notice tone="info" icon={Info}>
+            {monthText} hasn't been reviewed yet. These are live figures from your ClickUp time, leave and hours rule. Xero hours are added when the month is reviewed.
+          </Notice>
+          <div className="wr-grid wr-grid--self">
             <WageCard line={self.line} view={self.view} monthText={monthText} readOnly />
           </div>
         </>
       ) : (
         <>
-          <p className="pg-footnote">
-            {monthText} was closed{self.closedAt ? ` on ${new Date(self.closedAt).toLocaleDateString("en-AU")}` : ""}. These are the signed-off numbers.
-          </p>
-          <div className="wr-grid">
+          <Notice tone="ok" icon={CheckCircle2}>
+            {monthText} was reviewed{self.closedAt ? ` on ${new Date(self.closedAt).toLocaleDateString("en-AU")}` : ""}. These are the signed-off numbers.
+          </Notice>
+          <div className="wr-grid wr-grid--self">
             <WageCard line={self.line} view={self.view} monthText={monthText} readOnly />
           </div>
         </>
@@ -145,7 +159,7 @@ export default function WagesSelf({ personId }) {
           <p className="pg-app-header__sub">Your tracked time, leave and expected hours for each month. Xero hours appear once a month is reviewed.</p>
         </div>
       </div>
-      {body}
+      <div className="wr-self-body">{body}</div>
     </div>
   );
 }
