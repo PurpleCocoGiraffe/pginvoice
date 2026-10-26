@@ -379,7 +379,7 @@ function TimesheetInner({ own = null }) {
       )}
       {!own && !hasData && (
         <div className="pg-banner-warn">
-          No ClickUp data loaded yet, upload a CSV in Client Invoicing to see daily hours here.
+          No ClickUp data loaded yet, upload a CSV in Client Accruals to see daily hours here.
         </div>
       )}
 

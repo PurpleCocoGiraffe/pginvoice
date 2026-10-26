@@ -168,7 +168,7 @@ export default function ClientAccruals({ canWrite = false }) {
       <div className="pg-app-header">
         <div>
           <span className="pg-eyebrow">Purple Giraffe · Internal</span>
-          <h1 className="pg-app-header__title">Client Accruals</h1>
+          <h1 className="pg-app-header__title">Client Accruals Management</h1>
           <p className="pg-app-header__sub">Package clients only. Accrual is auto-computed from ClickUp hours each month — worked − agreed + prior — and isn't directly editable; {canWrite ? "only comments are" : "this view is read-only"}.</p>
         </div>
       </div>
@@ -345,7 +345,7 @@ export default function ClientAccruals({ canWrite = false }) {
           </tbody>
         </table>
       </div>
-      <p className="pg-footnote">Purple Giraffe · Client Accruals · Accrual = hours worked − agreed hours + prior month's accrual, computed automatically each time from ClickUp. Only package clients (see the Clients module) accrue. Shows Active clients by default — use the Status filter to include offboarded or archived (unverified) ones.</p>
+      <p className="pg-footnote">Purple Giraffe · Client Accruals Management · Accrual = hours worked − agreed hours + prior month's accrual, computed automatically each time from ClickUp. Only package clients (see the Clients module) accrue. Shows Active clients by default — use the Status filter to include offboarded or archived (unverified) ones.</p>
     </div>
   );
 }

@@ -1056,7 +1056,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
             <div className="pg-app-header__icon"><FileText size={18} /></div>
             <div>
               <span className="pg-eyebrow">Purple Giraffe · Internal</span>
-              <h1 className="pg-app-header__title">Client Invoicing</h1>
+              <h1 className="pg-app-header__title">Client Accruals</h1>
               <p className="pg-app-header__sub">
                 Reconcile monthly hours, review client servicing and generate invoice-ready summaries.
               </p>
@@ -1130,11 +1130,11 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
         {scoped && scopedLoad?.status === "loading" && <div className="pg-empty">Loading your clients…</div>}
         {scoped && scopedLoad?.status === "unavailable" && (
           <div className="pg-banner-warn">
-            Client Invoicing for your account isn't available yet: it needs a database update that hasn't been applied. Nothing is shown rather than figures that might not match. Ask an Admin.
+            Client Accruals for your account isn't available yet: it needs a database update that hasn't been applied. Nothing is shown rather than figures that might not match. Ask an Admin.
           </div>
         )}
         {scoped && scopedLoad?.status === "error" && (
-          <div className="pg-banner-warn">Couldn't load Client Invoicing: {scopedLoad.message}. Reload to try again.</div>
+          <div className="pg-banner-warn">Couldn't load Client Accruals: {scopedLoad.message}. Reload to try again.</div>
         )}
         {scoped && ready && clients.length === 0 && (
           <div className="pg-empty">No clients are assigned to you, and you haven't logged time on a client this month.</div>

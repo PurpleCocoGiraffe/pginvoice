@@ -68,7 +68,7 @@ class ErrorBoundary extends React.Component {
     if (this.state.error) {
       return (
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, padding: 24, margin: 24, color: "var(--status-over)", background: "var(--status-over-soft)", borderRadius: "var(--app-radius)", whiteSpace: "pre-wrap" }}>
-          <b>Something broke while rendering Wages review:</b>
+          <b>Something broke while rendering Billability Overview:</b>
           {"\n\n"}{String(this.state.error && this.state.error.message ? this.state.error.message : this.state.error)}
           {"\n\n"}{this.state.error && this.state.error.stack}
         </div>
@@ -478,12 +478,12 @@ function WagesReviewInner() {
       <div className="pg-app-header">
         <div>
           <span className="pg-eyebrow">Purple Giraffe · Admin</span>
-          <h1 className="pg-app-header__title">Wages review.</h1>
+          <h1 className="pg-app-header__title">Billability Overview.</h1>
           <p className="pg-app-header__sub">Monthly reconciliation of tracked time against Xero and expected hours.</p>
         </div>
       </div>
 
-      <TabBar tabs={PAGE_TABS} active={tab} onChange={setTab} idBase="wr-page" label="Wages review sections" />
+      <TabBar tabs={PAGE_TABS} active={tab} onChange={setTab} idBase="wr-page" label="Billability Overview sections" />
 
       <div className="pg-pillbar wr-filters">
         <label className="pg-pill pg-pill--search">
