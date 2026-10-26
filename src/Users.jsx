@@ -138,7 +138,7 @@ export default function Users({ ownRole, ownUserId }) {
           />
           {CLICKUP_REQUIRED_ROLES.has(draft.role) && (
             <p className="pg-footnote">
-              Picking a ClickUp name auto-assigns the clients they've logged time against — tick more below if you'd also like to grant one they haven't worked on yet.
+              They automatically get the active clients that name them as Consultant in the Clients module. Tick more below to grant extra clients.
             </p>
           )}
           {createAccessEditable && (

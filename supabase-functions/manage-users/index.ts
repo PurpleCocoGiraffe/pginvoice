@@ -28,80 +28,17 @@ function bad(message: string, status = 400) {
   return new Response(JSON.stringify({ ok: false, error: message }), { status, headers: JSON_HEADERS });
 }
 
-const PAGE_SIZE = 1000; // PostgREST's default row cap per request -- paginate past it
-
-// PostgREST caps a single request at PAGE_SIZE rows regardless of role/RLS --
-// several people here have well over 1000 logged entries (Alexander: 6851,
-// Vinavie: 4687, Holly: 4644, ...), so an unpaginated select silently missed
-// every folder past the first page, which meant this whole feature under-
-// assigned clients for exactly the busiest consultants.
-async function fetchAllFolders(admin: any, clickupUserName: string): Promise<string[]> {
-  const folders = new Set<string>();
-  let from = 0;
-  while (true) {
-    const { data, error } = await admin
-      .from("pginvoice_clickup_entries")
-      .select("folder")
-      .ilike("user_name", clickupUserName)
-      // Unique order -- without one, pages can skip/duplicate rows between requests.
-      .order("entry_id", { ascending: true })
-      .range(from, from + PAGE_SIZE - 1);
-    if (error) throw error;
-    if (!data || !data.length) break;
-    for (const e of data) if (e.folder) folders.add(e.folder);
-    if (data.length < PAGE_SIZE) break;
-    from += PAGE_SIZE;
-  }
-  return [...folders];
-}
-
-// Resolves a ClickUp person's worked folders (all-time, not just recent syncs)
-// into real pginvoice_clients client names -- via the two exact-match columns
-// that already link a folder to a client (pginvoice_clients.clickup_folder for
-// a client's primary folder, pginvoice_cost_centres.folder for every
-// sub-project/cost-centre folder rolled into a client). Doesn't chase the
-// fuzzy client-side matching nameMatch.js does for edge cases with no direct
-// mapping row -- those just won't auto-assign, which is a reasonable scope cut
-// (an admin can still tick the client manually) rather than porting that whole
-// matcher into this Deno runtime.
-async function resolveClickupClients(admin: any, clickupUserName: string): Promise<string[]> {
-  const folders = await fetchAllFolders(admin, clickupUserName);
-  if (!folders.length) return [];
-
-  const [{ data: directClients, error: dcErr }, { data: costCentres, error: ccErr }] = await Promise.all([
-    admin.from("pginvoice_clients").select("client, clickup_folder").in("clickup_folder", folders),
-    admin.from("pginvoice_cost_centres").select("client, folder").in("folder", folders),
-  ]);
-  if (dcErr) throw dcErr;
-  if (ccErr) throw ccErr;
-  const clients = new Set<string>();
-  for (const c of directClients || []) if (c.client) clients.add(c.client);
-  for (const c of costCentres || []) if (c.client) clients.add(c.client);
-  return [...clients];
-}
-
 async function clickupNameExists(admin: any, name: string): Promise<boolean> {
   const { data, error } = await admin.from("pginvoice_clickup_entries").select("user_name").ilike("user_name", name).limit(1);
   if (error) throw error;
   return !!(data && data.length);
 }
 
-// Replaces every source='clickup' row for one user with exactly what
-// resolveClickupClients currently says -- used both at create time and
-// whenever an admin edits a consultant/coordinator's role or ClickUp name.
-// Rows with source='manual' or 'capacity_lead' are never touched here.
-async function syncClickupClientsForUser(admin: any, userId: string, clickupUserName: string) {
-  const clients = await resolveClickupClients(admin, clickupUserName);
-  const { error: delErr } = await admin.from("pginvoice_user_clients").delete().eq("user_id", userId).eq("source", "clickup");
-  if (delErr) throw delErr;
-  if (clients.length) {
-    const { error: insErr } = await admin
-      .from("pginvoice_user_clients")
-      .insert(clients.map((client) => ({ user_id: userId, client, source: "clickup" })));
-    if (insErr) throw insErr;
-  }
-  return clients;
-}
+// A consultant/coordinator's clients come from the Clients module's Consultant field
+// (source='consultant', 20261026_consultant_clients.sql), rebuilt by database triggers whenever
+// a profile's role / ClickUp name or a client's consultant / status changes -- this function
+// writes the profile and lets the trigger do it. The old all-time ClickUp-history grants
+// (source='clickup') gave people every client they had ever logged time on.
 
 // Ends every session of a user (refresh tokens deleted; an issued access token lasts until
 // it expires). Via an RPC because admin.auth.admin.signOut takes the user's own JWT, not a
@@ -413,7 +350,6 @@ Deno.serve(async (req: Request) => {
           const { error: assignErr } = await admin.from("pginvoice_user_clients").insert(rows);
           if (assignErr) throw assignErr;
         }
-        if (requiresClickup) await syncClickupClientsForUser(admin, newUserId, clickupUserName);
       } catch (setupErr) {
         await admin.auth.admin.deleteUser(newUserId).catch(() => {});
         throw setupErr;
@@ -491,21 +427,16 @@ Deno.serve(async (req: Request) => {
         .eq("user_id", targetUserId);
       if (updErr) throw updErr;
 
-      // Only the manual grants are replaced wholesale here -- clickup-source rows
-      // are re-derived below (or cleared if the role/name no longer qualifies),
-      // and capacity_lead rows are left untouched entirely (only sync_capacity_leads
-      // owns those), so neither gets wiped out by an unrelated manual edit.
+      // Only the manual grants are replaced wholesale here -- consultant-source rows were
+      // just rebuilt by the profile trigger (role / ClickUp name are always in this update),
+      // and capacity_lead rows are left untouched entirely (only sync_capacity_leads owns
+      // those), so neither gets wiped out by an unrelated manual edit.
       const { error: delManualErr } = await admin.from("pginvoice_user_clients").delete().eq("user_id", targetUserId).eq("source", "manual");
       if (delManualErr) throw delManualErr;
       if ((role === "consultant" || role === "coordinator") && clients.length) {
         const rows = clients.map((client) => ({ user_id: targetUserId, client, source: "manual" }));
         const { error: insErr } = await admin.from("pginvoice_user_clients").insert(rows);
         if (insErr) throw insErr;
-      }
-      if (requiresClickup) {
-        await syncClickupClientsForUser(admin, targetUserId, clickupUserName);
-      } else {
-        await admin.from("pginvoice_user_clients").delete().eq("user_id", targetUserId).eq("source", "clickup");
       }
 
       // Sign out only when the role itself changed: a demoted admin's open browser still holds

@@ -214,7 +214,7 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
                 <div className="pg-chip-list" aria-label="Automatically assigned clients">
                   {derived.map((cd) => <span key={`${cd.client}-${cd.source}`} className="pg-source-chip">{cd.client} · {CLIENT_SOURCE_LABELS[cd.source] || cd.source}</span>)}
                 </div>
-              ) : <p className="pg-footnote">No clients assigned via ClickUp or Capacity Planning yet.</p>}
+              ) : <p className="pg-footnote">No clients name them as Consultant yet (Clients module), and none via Capacity Planning.</p>}
               {CLIENT_SCOPED_ROLES.has(draft.role) && (
                 <ClientCheckboxList label="Also grant these clients manually" options={allClients} selected={draft.clients}
                   onToggle={(c) => setDraft((d) => ({ ...d, clients: toggleIn(d.clients, c) }))} />
