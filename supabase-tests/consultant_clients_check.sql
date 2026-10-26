@@ -9,14 +9,18 @@
 --     consultant gets only ACTIVE / ON-HOLD clients naming them;
 --   - the triggers: reassigning a client, offboarding one, adding one, renaming a profile's
 --     ClickUp name and promoting someone to admin all resync access;
---   - signed-in users can't call the sync function.
+--   - a Consultant value matching two accounts goes to no one and is listed for admins;
+--   - pginvoice_my_access().activityClients: current-month clients only, own clients left out,
+--     [] for admins, old keys unchanged;
+--   - signed-in users can't call the sync, the issues list or pg_my_activity_clients().
 -- Run like scoped_modules_check.sql:
 --   psql -h <socket dir> -p <port> -d scratch -f supabase-tests/consultant_clients_check.sql
 \set ON_ERROR_STOP 1
 begin;
 \ir _permissions_setup.sql
 
-alter table public.pginvoice_clients add column consultant text;
+-- Folder map + pg_my_clickup_name_keys(), which activityClients builds on.
+\ir ../supabase-migrations/20261022_entries_own_clients.sql
 alter table public.pginvoice_user_clients add constraint pginvoice_user_clients_source_check
   check (source = any (array['manual', 'clickup', 'capacity_lead']));
 -- c1 = "Holly Fraser", c2 = "Chloe Smith", d1 (coordinator) = "Coord One".
@@ -84,15 +88,68 @@ begin
   if not exists (select 1 from pginvoice_user_clients where user_id = '00000000-0000-0000-0000-0000000000e1' and client = 'Majestic Plumbing') then
     raise exception 'new account not granted'; end if;
   raise notice 'ok: profile triggers (rename, promote, create)';
+
+  -- c1 is now "Holly Latham" and owns 'Holly L Client'. A second "Holly L..." makes it ambiguous.
+  insert into pginvoice_profiles (user_id, email, role, clickup_user_name) values ('00000000-0000-0000-0000-0000000000e2', 'lee@example.test', 'consultant', 'Holly Lee');
+  if exists (select 1 from pginvoice_user_clients where client = 'Holly L Client') then
+    raise exception 'ambiguous Consultant value was granted: %', (select string_agg(user_id::text, ',') from pginvoice_user_clients where client = 'Holly L Client'); end if;
+  -- "Holly F" (New Co) matches nobody since c1 became Holly Latham: listed too, with no matches.
+  got := (select string_agg(x ->> 'consultant', ',' order by x ->> 'consultant') from jsonb_array_elements(pginvoice_consultant_match_issues()) x);
+  if got is distinct from 'Holly F,Holly L' then raise exception 'match issues: %', pginvoice_consultant_match_issues(); end if;
+  if (select jsonb_array_length(x -> 'matches') from jsonb_array_elements(pginvoice_consultant_match_issues()) x where x ->> 'consultant' = 'Holly L') <> 2 then
+    raise exception 'clash should list both accounts'; end if;
+  if (select jsonb_array_length(x -> 'matches') from jsonb_array_elements(pginvoice_consultant_match_issues()) x where x ->> 'consultant' = 'Holly F') <> 0 then
+    raise exception 'unmatched value should list no accounts'; end if;
+  delete from pginvoice_profiles where user_id = '00000000-0000-0000-0000-0000000000e2';
+  if not exists (select 1 from pginvoice_user_clients where client = 'Holly L Client' and user_id = '00000000-0000-0000-0000-0000000000c1') then
+    raise exception 'removing the clash did not restore Holly L Client'; end if;
+  if (select string_agg(x ->> 'consultant', ',') from jsonb_array_elements(pginvoice_consultant_match_issues()) x) is distinct from 'Holly F' then
+    raise exception 'issues after resolving: %', pginvoice_consultant_match_issues(); end if;
+  raise notice 'ok: name clash grants nobody, clash and no-match values are listed for admins, and it clears when resolved';
 end $$;
 
+-- activityClients: e1 ("Chloe Smith") owns Majestic Plumbing and Aus3C (Consultant "Chloe").
+-- This month: Majestic and Aus3C IRAP (own, left out), AWIWA (someone else's), and a cost-centre
+-- folder of the offboarded Warrina Homes (wrap-up work still counts); last month: MP Web Project.
+insert into public.pginvoice_cost_centres (client, folder, kind) values ('Warrina Homes', 'Warrina Extras', 'cost_centre');
+insert into public.pginvoice_clickup_entries (entry_id, user_name, folder, minutes, month_key) values
+  ('a1', 'Chloe Smith', 'Majestic Plumbing (WA)', 60, to_char(now() at time zone 'Australia/Adelaide', 'YYYY-MM')),
+  ('a2', ' chloe smith', 'AWIWA', 30, to_char(now() at time zone 'Australia/Adelaide', 'YYYY-MM')),
+  ('a3', 'Chloe Smith', 'Aus3C IRAP', 15, to_char(now() at time zone 'Australia/Adelaide', 'YYYY-MM')),
+  ('a4', 'Chloe Smith', 'Warrina Extras', 45, to_char(now() at time zone 'Australia/Adelaide', 'YYYY-MM')),
+  ('a6', 'Chloe Smith', 'Majestic Plumbing Quoted Web Project (WA)', 45, to_char((now() at time zone 'Australia/Adelaide') - interval '1 month', 'YYYY-MM')),
+  ('a5', 'Someone Else', 'AWIWA', 99, to_char(now() at time zone 'Australia/Adelaide', 'YYYY-MM'));
 set local role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000e1', true);
+do $$
+declare a jsonb := pginvoice_my_access(); got text;
+begin
+  got := (select string_agg(x ->> 'client', ',' order by x ->> 'client') from jsonb_array_elements(a -> 'activityClients') x);
+  if got is distinct from 'AWIWA,Warrina Homes' then raise exception 'activityClients: %', a -> 'activityClients'; end if;
+  if (select x ->> 'type' from jsonb_array_elements(a -> 'activityClients') x where x ->> 'client' = 'AWIWA') <> 'quoted' then
+    raise exception 'activityClients should carry type'; end if;
+  if exists (select 1 from jsonb_array_elements(a -> 'activityClients') x where x ? 'agreed_hours' or x ? 'fixed_fee') then
+    raise exception 'activityClients leaks figures'; end if;
+  if not (a ? 'role' and a ? 'isAdminTier' and a ? 'personId' and a ? 'clickupUserName' and a ? 'modules' and a ? 'clients' and a ? 'clickupUserNames') then
+    raise exception 'my_access lost a key: %', a; end if;
+  if a -> 'clients' <> '["Aus3C", "Majestic Plumbing"]'::jsonb then raise exception 'clients: %', a -> 'clients'; end if;
+  raise notice 'ok: activityClients = this month only, own clients left out, no figures, old keys kept';
+
+  begin perform pginvoice_sync_consultant_clients(null); raise exception 'authenticated could call the sync';
+  exception when insufficient_privilege then null; end;
+  begin perform pginvoice_consultant_match_issues(); raise exception 'authenticated could read match issues';
+  exception when insufficient_privilege then null; end;
+  begin perform pg_my_activity_clients(); raise exception 'authenticated could call pg_my_activity_clients';
+  exception when insufficient_privilege then null; end;
+  raise notice 'ok: signed-in users cannot call the sync, the issues list or the activity helper';
+end $$;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000a1', true);
 do $$
 begin
-  perform pginvoice_sync_consultant_clients(null); raise exception 'authenticated could call the sync';
-exception when insufficient_privilege then raise notice 'ok: signed-in users cannot call the sync';
+  if pginvoice_my_access() -> 'activityClients' <> '[]'::jsonb then raise exception 'admin activityClients should be []'; end if;
+  raise notice 'ok: admin activityClients is []';
 end $$;
 reset role;
+
 
 rollback;
