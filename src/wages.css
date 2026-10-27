@@ -271,6 +271,15 @@
 .wr-donut__arc { fill: none; stroke-width: 11; stroke-linecap: round; }
 .wr-donut--purple .wr-donut__arc { stroke: var(--wr-accent); }
 .wr-donut--green .wr-donut__arc { stroke: var(--wr-ok); }
+/* Total time donut against the roster Billable % target (billableTone) */
+.wr-donut--ok .wr-donut__arc { stroke: var(--wr-ok); }
+.wr-donut--warn .wr-donut__arc { stroke: var(--wr-warn); }
+.wr-donut--over .wr-donut__arc { stroke: var(--status-over); }
+.wr-donut--ok .wr-donut__pct, .wr-dtarget--ok, .wr-k--ok { color: var(--wr-ok-text, var(--status-ok-text)); }
+.wr-donut--warn .wr-donut__pct, .wr-dtarget--warn, .wr-k--warn { color: var(--wr-warn-text, var(--status-warn-text)); }
+.wr-donut--over .wr-donut__pct, .wr-dtarget--over, .wr-k--over { color: var(--status-over-text); }
+.wr-dtarget { margin: -4px 0 clamp(6px, 1.8cqi, 10px); font-family: var(--font-body); font-size: clamp(10px, 2.3cqi, 12.5px); font-weight: 600; text-align: center; }
+td.wr-k--ok, td.wr-k--warn, td.wr-k--over { font-weight: 700; }
 .wr-donut__centre { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .wr-donut__pct { font-family: var(--font-body); font-weight: 700; font-size: clamp(15px, 4.6cqi, 26px); color: var(--wr-text); font-variant-numeric: tabular-nums; line-height: 1.1; }
 .wr-donut__cap { font-family: var(--font-body); font-size: clamp(9px, 2.4cqi, 14px); color: var(--wr-text-2); }
@@ -328,6 +337,8 @@
   .wr-dcard { display: grid; grid-template-columns: auto 1fr; grid-template-areas: "title title" "donut legend"; column-gap: 14px; align-items: center; }
   .wr-dcard__title { grid-area: title; justify-self: start; }
   .wr-donut { grid-area: donut; width: 92px; margin: 8px 0 2px; }
+  .wr-dcard { grid-template-areas: "title title" "donut legend" "target target"; }
+  .wr-dtarget { grid-area: target; justify-self: start; margin: 4px 0 0; }
   .wr-dlegend { grid-area: legend; border-top: 0; padding-top: 0; }
   .wr-dlegend li { font-size: 12px; }
 }

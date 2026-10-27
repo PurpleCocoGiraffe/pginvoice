@@ -21,6 +21,7 @@ import {
   closeMonth, reopenMonth, resyncClickupMonth,
 } from "./wagesSync.js";
 import { fmtH, fmtSigned, fmtPct, fmtDay, monthLabel } from "./wagesFormat.js";
+import { billableTone } from "./wagesCalc.js";
 import { WageCard, StatusPill, ReviewDots, overUnderText, expectedText, TabBar, tabPanelProps } from "./WageCard.jsx";
 import { WageDrawer, HoursInput } from "./WageDrawer.jsx";
 import { XeroPasteDialog } from "./XeroPasteDialog.jsx";
@@ -201,7 +202,8 @@ function WagesTable({ lines, closed, onSaveLine, onOpen }) {
                 <td className="right num">{fmtH(l.H)}</td>
                 <td className="right num">{fmtSigned(l.M, 2)}</td>
                 <td className="right num">{fmtPct(l.J)}</td>
-                <td className="right num">{fmtPct(l.K)}</td>
+                <td className={`right num${billableTone(l.K, l.targetRate) ? ` wr-k--${billableTone(l.K, l.targetRate)}` : ""}`}
+                  title={l.targetRate ? `Target ${Math.round(l.targetRate * 100)}%` : undefined}>{fmtPct(l.K)}</td>
                 <td><ReviewDots line={l} /></td>
                 <td><StatusPill status={l.status} compact /></td>
               </tr>

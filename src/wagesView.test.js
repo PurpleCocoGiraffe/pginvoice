@@ -340,6 +340,12 @@ describe("selfWageView", () => {
     standardHours: 167.2, weekdays: 22, holidaysByState: { SA: [], WA: [], QLD: [] },
   };
 
+  it("billable target: the snapshot's own wins, else the current roster Billable %", () => {
+    expect(selfWageView(closedResult, { targetRate: 0.7 }).line.targetRate).toBe(0.7);
+    expect(selfWageView(closedResult).line.targetRate).toBeNull();
+    expect(selfWageView({ ...closedResult, line: { ...closedResult.line, targetRate: 0.6 } }, { targetRate: 0.7 }).line.targetRate).toBe(0.6);
+  });
+
   it("a closed month gives one read-only line without comments, sign-offs or override reasons", () => {
     const v = selfWageView(closedResult, { photo: "data:x" });
     expect(v.state).toBe("closed");

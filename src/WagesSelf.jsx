@@ -73,7 +73,7 @@ export default function WagesSelf({ personId }) {
   const photo = roster?.person?.photo || "";
   const ready = result && !result.error && result.monthKey === monthKey;
   const self = !ready ? null
-    : result.closed ? selfWageView(result.data, { photo })
+    : result.closed ? selfWageView(result.data, { photo, targetRate: roster?.person?.rate })
     : roster ? selfLiveView(result.data, { person: roster.person, capLeaves: roster.capLeaves, photo })
     : null;
   const monthText = monthKey ? monthLabel(monthKey) : "";

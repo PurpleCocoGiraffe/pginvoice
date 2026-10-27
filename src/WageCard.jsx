@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { PersonAvatar } from "./avatar.jsx";
 import { useDismissable } from "./useDismissable.js";
-import { DEFAULT_XERO_TOLERANCE_H, STANDARD_DAY_HOURS, round2 } from "./wagesCalc.js";
+import { DEFAULT_XERO_TOLERANCE_H, STANDARD_DAY_HOURS, round2, billableTone } from "./wagesCalc.js";
 import { REVIEWER_FIELDS, COMMENT_FIELDS, adjustedExpected, variancePctOfAdjusted } from "./wagesView.js";
 import { fmtH, fmtNum, fmtSigned, fmtDay, basisName } from "./wagesFormat.js";
 
@@ -271,15 +271,24 @@ function Donut({ pct, tone, label }) {
 // `base` is the percentage's denominator: every donut is a share of the person's whole
 // ClickUp time (H), so PG % + Client % = Total % (owner's rule: client billable / total
 // time logged), not a share of that donut's own PG or client total.
-function DonutCard({ title, tone, base, total, totalLabel, billable, billableLabel, nonBillable, nonBillableLabel }) {
+// Against the roster Billable % target (billableTone): green at or above, amber a little
+// under, red well under. Only the Total time donut has a target.
+const TARGET_WORDS = { ok: "on target", warn: "below target", over: "well below target" };
+function DonutCard({ title, tone, base, total, totalLabel, billable, billableLabel, nonBillable, nonBillableLabel, target = null, status = null }) {
   const pct = base > 0 ? billable / base : null;
+  const targetText = status ? ` Target ${Math.round(target * 100)}%, ${TARGET_WORDS[status]}.` : "";
   const aria = base > 0
-    ? `${title}: ${billableLabel} is ${Math.round(pct * 100)}% of all ClickUp time. ${totalLabel} ${fmtH(total)}, ${billableLabel} ${fmtH(billable)}, ${nonBillableLabel} ${fmtH(nonBillable)}`
+    ? `${title}: ${billableLabel} is ${Math.round(pct * 100)}% of all ClickUp time.${targetText} ${totalLabel} ${fmtH(total)}, ${billableLabel} ${fmtH(billable)}, ${nonBillableLabel} ${fmtH(nonBillable)}`
     : `${title}: no time tracked`;
   return (
     <div className="wr-dcard">
       <div className="wr-dcard__title">{title}</div>
-      <Donut pct={pct} tone={tone} label={aria} />
+      <Donut pct={pct} tone={status || tone} label={aria} />
+      {status && (
+        <div className={`wr-dtarget wr-dtarget--${status}`} aria-hidden="true">
+          Target {Math.round(target * 100)}% · {TARGET_WORDS[status]}
+        </div>
+      )}
       <ul className="wr-dlegend">
         <li><Clock size={14} aria-hidden="true" className="wr-dlegend__icon" /><span>{totalLabel}</span><b>{fmtH(total)}</b></li>
         <li><span className={`wr-dlegend__dot wr-dlegend__dot--${tone}`} aria-hidden="true" /><span>{billableLabel}</span><span>{fmtH(billable)}</span></li>
@@ -302,7 +311,8 @@ export function BillableSection({ line }) {
     <Section icon={BarChart3} title="Billable breakdown">
       <div className="wr-donuts">
         <DonutCard title="Total time" tone="purple" base={H} total={H} totalLabel="Total Worked"
-          billable={Number(line.D) || 0} billableLabel="Billable" nonBillable={Number(line.G) || 0} nonBillableLabel="Unbillable" />
+          billable={Number(line.D) || 0} billableLabel="Billable" nonBillable={Number(line.G) || 0} nonBillableLabel="Unbillable"
+          target={line.targetRate} status={billableTone(line.K, line.targetRate)} />
         <DonutCard title="PG time" tone="purple" base={H} total={round2(E + pgNon)} totalLabel="Total PG Time"
           billable={E} billableLabel="PG Billable" nonBillable={pgNon} nonBillableLabel="PG Non-billable" />
         <DonutCard title="Client time" tone="green" base={H} total={round2(F + clientNon)} totalLabel="Total Client Time"

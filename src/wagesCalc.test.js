@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  billableTone,
   monthDays, wageWeekdaysInMonth, standardMonthHours, classifyClickup, attributeToPeople,
   expectedFor, computeLine, parseXeroPaste, resolveXeroBatch, isClientOnboardingFolder, parseXeroTime, matchXeroNames, normName,
   typeLabelFor, parseHoursInput, pendingXeroPlan,
@@ -678,5 +679,20 @@ describe("pendingXeroPlan -- retrying a partly failed Xero paste", () => {
     expect(pendingXeroPlan(plan, { jane: 78, bob: 30 })).toEqual([]);
     expect(pendingXeroPlan(plan, before).map((a) => a.hours)).toEqual([78, 30]);
     expect(pendingXeroPlan(null, {})).toEqual([]);
+  });
+});
+
+describe("billableTone", () => {
+  it("green at or above the target, amber up to 10 points under, red beyond", () => {
+    expect(billableTone(0.7, 0.7)).toBe("ok");
+    expect(billableTone(0.85, 0.7)).toBe("ok");
+    expect(billableTone(0.65, 0.7)).toBe("warn");
+    expect(billableTone(0.6, 0.7)).toBe("warn");
+    expect(billableTone(0.59, 0.7)).toBe("over");
+  });
+  it("no time or no target: no colour", () => {
+    expect(billableTone(null, 0.7)).toBeNull();
+    expect(billableTone(0.5, null)).toBeNull();
+    expect(billableTone(0.5, 0)).toBeNull();
   });
 });
