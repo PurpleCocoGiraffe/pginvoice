@@ -1450,6 +1450,16 @@ span.pg-team-name { cursor: default; }
   .wr-drawer.pg-team-drawer { width: auto; padding-bottom: 0; }
   .pg-team-foot { margin: 4px -14px 0; padding: 12px 14px calc(18px + env(safe-area-inset-bottom)); }
 }
+.pg-team-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pg-team-actions .pg-btn-ghost { min-height: 44px; }
+.pg-bulk-text { font-family: var(--font-mono); font-size: 12px; line-height: 1.6; resize: vertical; min-height: 120px; }
+.pg-bulk-list { list-style: none; margin: 0; padding: 0; }
+.pg-bulk-row { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; align-items: start; padding: 8px 2px; border-bottom: 1px dashed var(--border-subtle); }
+.pg-bulk-row:last-child { border-bottom: 0; }
+.pg-bulk-icon { display: flex; padding-top: 2px; color: var(--status-ok); }
+.pg-bulk-row .pg-team-email { white-space: normal; overflow-wrap: anywhere; }
+.pg-bulk-row.is-bad .pg-bulk-icon, .pg-bulk-row.is-bad .pg-team-email { color: var(--status-over-text); }
+.pg-bulk-email { font-family: var(--font-body); font-size: 13px; font-weight: 500; color: var(--fg-primary); overflow-wrap: anywhere; }
 .pg-client-picker { position: relative; }
 .pg-client-picker__icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--fg-tertiary); display: flex; pointer-events: none; }
 .pg-client-picker__input { width: 100%; padding-left: 32px; box-sizing: border-box; }
