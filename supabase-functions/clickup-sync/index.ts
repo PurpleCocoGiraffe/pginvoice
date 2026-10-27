@@ -360,89 +360,11 @@ Deno.serve(async (req: Request) => {
       if (deleteError) throw deleteError;
     }
 
-    // Keeps every consultant/coordinator's ClickUp-derived client access current
-    // with what they've actually logged time against, all-time (not just this
-    // month) -- a newly-worked folder gets auto-granted, one they've stopped
-    // logging to gets auto-revoked. Runs on every sync (every 20 min for the
-    // current month) so this stays close to live without a separate job.
-    // source='manual'/'capacity_lead' rows are untouched: only source='clickup'
-    // rows are ever added or removed here.
-    //
-    // Every read below checks its error: a failed (not empty) read used to look identical
-    // to "this person logged no time / has no matching clients", and the diff then REVOKED
-    // all of their clickup-sourced access. Any error for a user skips that user entirely --
-    // their existing rows stay as they are until a later sync reads cleanly.
-    try {
-      const { data: profiles, error: profilesError } = await supabase
-        .from("pginvoice_profiles")
-        .select("user_id, clickup_user_name")
-        .in("role", ["consultant", "coordinator"])
-        .not("clickup_user_name", "is", null);
-      if (profilesError) throw profilesError;
-      for (const p of profiles || []) {
-        try {
-          // Paginated -- PostgREST caps a single request at 1000 rows, and several
-          // people here log well over that many entries all-time (Alexander: 6851,
-          // Vinavie: 4687, ...), so an unpaginated select silently missed every
-          // folder past the first page.
-          const folderSet = new Set<string>();
-          let pageFrom = 0;
-          while (true) {
-            // Unique tie-breaker order so pages can't skip/duplicate rows between requests.
-            const { data: page, error: pageError } = await supabase
-              .from("pginvoice_clickup_entries")
-              .select("folder")
-              .ilike("user_name", p.clickup_user_name)
-              .order("entry_id", { ascending: true })
-              .range(pageFrom, pageFrom + 999);
-            if (pageError) throw pageError;
-            if (!page || !page.length) break;
-            for (const e of page) if (e.folder) folderSet.add(e.folder);
-            if (page.length < 1000) break;
-            pageFrom += 1000;
-          }
-          const folders = [...folderSet];
-          let clients: string[] = [];
-          if (folders.length) {
-            const [{ data: directClients, error: clientsError }, { data: costCentres, error: costCentresError }] = await Promise.all([
-              supabase.from("pginvoice_clients").select("client, clickup_folder").in("clickup_folder", folders),
-              supabase.from("pginvoice_cost_centres").select("client, folder").in("folder", folders),
-            ]);
-            if (clientsError) throw clientsError;
-            if (costCentresError) throw costCentresError;
-            const set = new Set<string>();
-            for (const c of directClients || []) if (c.client) set.add(c.client);
-            for (const c of costCentres || []) if (c.client) set.add(c.client);
-            clients = [...set];
-          }
-          const { data: existingRows, error: existingRowsError } = await supabase
-            .from("pginvoice_user_clients")
-            .select("client")
-            .eq("user_id", p.user_id)
-            .eq("source", "clickup");
-          if (existingRowsError) throw existingRowsError;
-          const existingSet = new Set((existingRows || []).map((r: any) => r.client));
-          const desiredSet = new Set(clients);
-          const toDelete = [...existingSet].filter((c) => !desiredSet.has(c));
-          const toInsert = clients.filter((c) => !existingSet.has(c));
-          // Grant before revoke: if the insert fails, nothing has been taken away yet.
-          if (toInsert.length) {
-            const { error: insertError } = await supabase.from("pginvoice_user_clients").insert(toInsert.map((client) => ({ user_id: p.user_id, client, source: "clickup" })));
-            if (insertError) throw insertError;
-          }
-          if (toDelete.length) {
-            const { error: deleteError } = await supabase.from("pginvoice_user_clients").delete().eq("user_id", p.user_id).eq("source", "clickup").in("client", toDelete);
-            if (deleteError) throw deleteError;
-          }
-        } catch (userErr) {
-          console.error(`clickup-derived client reconciliation skipped for user ${p.user_id}:`, userErr);
-        }
-      }
-    } catch (reconcileErr) {
-      // Entries already upserted successfully above -- a reconciliation hiccup
-      // shouldn't fail the whole sync, just gets logged for visibility.
-      console.error("clickup-derived client assignment reconciliation failed:", reconcileErr);
-    }
+    // No client access is granted here. A consultant's clients come from the Clients module's
+    // Consultant field (source='consultant', rebuilt by database triggers --
+    // 20261026_consultant_clients.sql). This function used to grant every client a person had
+    // EVER logged time on (source='clickup') on every run; that rule was retired, and leaving
+    // it here re-granted it 20 minutes after the first consultant accounts were created.
 
     // Not start.toISOString() -- that's a UTC instant which, for a target month's
     // Adelaide-local midnight, can land on the previous UTC calendar date/month
