@@ -1,18 +1,44 @@
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Loader2, ShieldCheck, AlertTriangle, Info } from "lucide-react";
-import { fetchUsers, createUser, fetchClickupUserNames } from "./usersSync.js";
-import { ROLES, ROLE_LABELS, CLIENT_SCOPED_ROLES, CLICKUP_REQUIRED_ROLES, ADMIN_TIER_ROLES } from "./roles.js";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Info, Plus, Search, MoreHorizontal, Pencil, KeyRound, Trash2, ChevronDown } from "lucide-react";
+import { fetchUsers, fetchClickupUserNames, deleteUser } from "./usersSync.js";
+import { ROLES, ROLE_LABELS, CLICKUP_REQUIRED_ROLES, ADMIN_TIER_ROLES } from "./roles.js";
 import { fetchClients } from "./clientsSync.js";
 import { loadKey, SEED_PEOPLE } from "./capacityData.js";
 import { CAP_PEOPLE_KEY } from "./storageKeys.js";
 import { fetchWagePeople } from "./wagesSync.js";
-import { accessSummary, hasAccessConfig } from "./permissions.js";
-import { ClientCheckboxList, TeamMemberField, PersonField, ModuleAccessEditor, isClickupNameValid } from "./UserFields.jsx";
-import UserDrawer from "./UserDrawer.jsx";
+import { accessSummary } from "./permissions.js";
+import { useDismissable } from "./useDismissable.js";
+import { ClientAvatar } from "./avatar.jsx";
+import UserDrawer, { displayNameFor } from "./UserDrawer.jsx";
 
-const emptyDraft = { email: "", password: "", role: "consultant", clients: [], clickupUserName: "", personId: "", overrides: {} };
-const toggleIn = (list, item) => (list.includes(item) ? list.filter((c) => c !== item) : [...list, item]);
 const errText = (e) => e?.message || String(e);
+
+// Invites aren't emailed: an account is "Active" once they've signed in and set their own password.
+function statusOf(u) {
+  if (!u.lastSignInAt) return { ok: false, label: "Not signed in yet" };
+  if (u.mustChangePassword) return { ok: false, label: "Must set password" };
+  return { ok: true, label: "Active" };
+}
+
+// The row's "…" menu. Self rows have none (self-editing is refused server-side too).
+function RowMenu({ user, onEdit, onReset, onRemove, disabled }) {
+  const [open, setOpen] = useState(false);
+  const ref = useDismissable(() => setOpen(false));
+  const pick = (fn) => () => { setOpen(false); fn(user); };
+  return (
+    <div className="pg-team-menu" ref={ref} onClick={(e) => e.stopPropagation()}>
+      <button type="button" className="wr-iconbtn" aria-haspopup="menu" aria-expanded={open} disabled={disabled}
+        aria-label={`Actions for ${displayNameFor(user)}`} onClick={() => setOpen((o) => !o)}><MoreHorizontal size={16} /></button>
+      {open && (
+        <div className="pg-menu" role="menu">
+          <button type="button" role="menuitem" className="pg-menu-item" onClick={pick(onEdit)}><Pencil size={14} /> Edit</button>
+          <button type="button" role="menuitem" className="pg-menu-item" onClick={pick(onReset)}><KeyRound size={14} /> Reset password</button>
+          <button type="button" role="menuitem" className="pg-menu-item pg-menu-item--danger" onClick={pick(onRemove)}><Trash2 size={14} /> Remove user</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Settings → Users & permissions. Super Admin + Admin only (enforced both by Shell.jsx's
 // nav gating and, for real, by the manage-users Edge Function checking the caller's role
@@ -27,12 +53,10 @@ export default function Users({ ownRole, ownUserId }) {
   const [wageError, setWageError] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
-  const [draft, setDraft] = useState(emptyDraft);
-  const [creating, setCreating] = useState(false);
-  const [openId, setOpenId] = useState(null);
-  const createClickupId = useId();
-  const createPersonId = useId();
-  const createAccessId = useId();
+  const [query, setQuery] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  // The drawer: null = closed, { id: null } = adding, { id, reset } = editing (reset: open on Reset password).
+  const [drawer, setDrawer] = useState(null);
 
   async function load() {
     try {
@@ -61,56 +85,48 @@ export default function Users({ ownRole, ownUserId }) {
   const matchIssues = data?.consultantMatchIssues ?? [];
   const clashes = matchIssues.filter((m) => (m.matches || []).length > 1);
   const noAccount = matchIssues.filter((m) => (m.matches || []).length === 0);
-  const rosterName = useMemo(() => Object.fromEntries(roster.map((p) => [p.id, p.name])), [roster]);
+  const rosterPerson = useMemo(() => Object.fromEntries(roster.map((p) => [p.id, p])), [roster]);
   const linkedToFor = (excludeUserId) => Object.fromEntries((users || [])
     .filter((u) => u.personId && u.id !== excludeUserId).map((u) => [u.personId, u.email]));
-
-  const createClickupValid = isClickupNameValid(draft.role, draft.clickupUserName, clickupNames);
-  // Only offer roster person / module access once `list` returned the grantable modules.
-  const createAccessEditable = !ADMIN_TIER_ROLES.has(draft.role) && hasAccessConfig(moduleScopes);
-
-  async function handleCreate(e) {
-    e.preventDefault();
-    if (!draft.email.trim() || draft.password.length < 8 || !createClickupValid) return;
-    setCreating(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await createUser({
-        email: draft.email.trim(),
-        password: draft.password,
-        role: draft.role,
-        clients: CLIENT_SCOPED_ROLES.has(draft.role) ? draft.clients : [],
-        clickupUserName: draft.clickupUserName.trim(),
-        personId: createAccessEditable ? (draft.personId || undefined) : undefined,
-        moduleOverrides: createAccessEditable ? draft.overrides : undefined,
-      });
-      setDraft(emptyDraft);
-      setNotice(`${draft.email.trim()} was added.`);
-      await load();
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setCreating(false);
-    }
-  }
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (users || [])
+      .filter((u) => !roleFilter || u.role === roleFilter)
+      .filter((u) => !q || [u.email, u.clickupUserName, displayNameFor(u)].some((v) => (v || "").toLowerCase().includes(q)))
+      .sort((x, y) => displayNameFor(x).localeCompare(displayNameFor(y)));
+  }, [users, query, roleFilter]);
 
   const onChanged = useCallback(async (message) => {
     setError(null);
     if (message) setNotice(message);
     await load();
   }, []);
-  const closeDrawer = useCallback(() => setOpenId(null), []);
+  const closeDrawer = useCallback(() => setDrawer(null), []);
   const teamHeadingRef = useRef(null);
   // After "Remove user" the row (the drawer's trigger) is gone -- land on the list heading.
   const onRemoved = useCallback(() => {
-    setOpenId(null);
+    setDrawer(null);
     setTimeout(() => teamHeadingRef.current?.focus(), 0);
   }, []);
-  const openUser = users?.find((u) => u.id === openId) || null;
+  const [removingId, setRemovingId] = useState(null);
+  async function removeUser(u) {
+    if (!window.confirm(`Remove ${u.email}'s access? This cannot be undone.`)) return;
+    setRemovingId(u.id);
+    try {
+      await deleteUser(u.id);
+      await onChanged(`${u.email} was removed.`);
+      teamHeadingRef.current?.focus();
+    } catch (e) {
+      setNotice(null);
+      setError(errText(e));
+    } finally {
+      setRemovingId(null);
+    }
+  }
+  const openUser = drawer?.id ? users?.find((u) => u.id === drawer.id) || null : null;
 
   return (
-    <div>
+    <div className="pg-team">
       {/* aria-live so screen-reader users hear the outcome of create/save/delete,
           not just sighted users watching the banner appear. */}
       <div aria-live="polite">
@@ -151,110 +167,79 @@ export default function Users({ ownRole, ownUserId }) {
         </div>
       )}
 
-      <div className="pg-cap-card" style={{ maxWidth: 560, display: "flex", flexDirection: "column", gap: 14, marginBottom: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <ShieldCheck size={16} />
-          <h2 style={{ margin: 0, fontSize: 15 }}>Add a user</h2>
-        </div>
-        <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <label className="pg-field">
-            <span className="pg-field__label">Role</span>
-            <select className="pg-input" value={draft.role} onChange={(e) => setDraft((d) => ({ ...d, role: e.target.value, clients: [], overrides: {} }))}>
-              {ROLES.filter((r) => r !== "super_admin" || ownRole === "super_admin").map((r) => (
-                <option key={r} value={r}>{ROLE_LABELS[r]}</option>
-              ))}
-            </select>
-          </label>
-          <TeamMemberField
-            id={createClickupId}
-            value={draft.clickupUserName}
-            onChange={(v) => setDraft((d) => ({ ...d, clickupUserName: v }))}
-            clickupNames={clickupNames}
-            required={CLICKUP_REQUIRED_ROLES.has(draft.role)}
-          />
-          {CLICKUP_REQUIRED_ROLES.has(draft.role) && (
-            <p className="pg-footnote">
-              They automatically get the active clients that name them as Consultant in the Clients module. Tick more below to grant extra clients.
-            </p>
-          )}
-          {createAccessEditable && (
-            <PersonField id={createPersonId} value={draft.personId} onChange={(v) => setDraft((d) => ({ ...d, personId: v }))}
-              roster={roster} rosterError={rosterError} linkedTo={linkedToFor(null)} />
-          )}
-          <label className="pg-field">
-            <span className="pg-field__label">Email address</span>
-            <input className="pg-input" type="email" autoComplete="off" value={draft.email} onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value }))} />
-          </label>
-          <label className="pg-field">
-            <span className="pg-field__label">Temp password</span>
-            <input className="pg-input" type="text" autoComplete="off" placeholder="At least 8 characters" value={draft.password} onChange={(e) => setDraft((d) => ({ ...d, password: e.target.value }))} />
-          </label>
-          <p className="pg-footnote">They'll be asked to set their own password the first time they sign in.</p>
-          {createAccessEditable && (
-            <div className="pg-field">
-              <span className="pg-field__label">Module access</span>
-              <ModuleAccessEditor role={draft.role} overrides={draft.overrides} onChange={(overrides) => setDraft((d) => ({ ...d, overrides }))}
-                presets={presets} moduleScopes={moduleScopes} disabled={creating} idBase={createAccessId} />
-            </div>
-          )}
-          {CLIENT_SCOPED_ROLES.has(draft.role) && (
-            <ClientCheckboxList
-              label="Also grant these clients manually"
-              options={allClients}
-              selected={draft.clients}
-              onToggle={(c) => setDraft((d) => ({ ...d, clients: toggleIn(d.clients, c) }))}
-            />
-          )}
-          <button className="pg-btn" type="submit" disabled={creating || !draft.email.trim() || draft.password.length < 8 || !createClickupValid} style={{ justifyContent: "center", gap: 6 }}>
-            {creating && <Loader2 size={13} style={{ animation: "pg-spin 1s linear infinite" }} />}
-            {creating ? "Creating…" : "Create user"}
-          </button>
-        </form>
+      <div className="pg-team-head">
+        <h2 ref={teamHeadingRef} tabIndex={-1}>
+          Team members
+          {users && <span className="pg-team-count">{users.length} {users.length === 1 ? "member" : "members"}</span>}
+        </h2>
+        <button type="button" className="pg-btn" onClick={() => setDrawer({ id: null })} disabled={!users}><Plus size={14} /> Add team member</button>
       </div>
 
-      <div className="pg-cap-card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <h2 ref={teamHeadingRef} tabIndex={-1} style={{ margin: 0, fontSize: 15 }}>Team</h2>
+      <div className="pg-team-toolbar">
+        <label className="pg-pill pg-pill--search">
+          <Search size={14} className="pg-pill__icon" aria-hidden="true" />
+          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name or email…" aria-label="Search team members" />
+        </label>
+        <label className="pg-pill pg-pill--select">
+          <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} aria-label="Filter by role">
+            <option value="">All roles</option>
+            {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+          </select>
+          <ChevronDown size={14} className="pg-pill__chevron" aria-hidden="true" />
+        </label>
+      </div>
+
+      <div className="pg-cap-card pg-team-card">
         {users === null ? (
-          <p className="pg-footnote">{error ? "Couldn't load users." : "Loading…"}</p>
-        ) : users.length === 0 ? (
-          <p className="pg-footnote">No users yet.</p>
+          <p className="pg-footnote pg-team-empty">{error ? "Couldn't load team members." : "Loading…"}</p>
+        ) : shown.length === 0 ? (
+          <p className="pg-footnote pg-team-empty">{users.length === 0 ? "No team members yet." : "No one matches that search."}</p>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {users.map((u) => {
-              const isSelf = u.id === ownUserId;
-              const clientCount = new Set(u.clients || []).size;
-              return (
-                <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 0", borderBottom: "1px solid var(--border-default)" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{u.email}{isSelf ? " (you)" : ""}</div>
-                    <div className="pg-footnote">
-                      {ROLE_LABELS[u.role] || u.role}
-                      {u.personId ? ` · ${rosterName[u.personId] || u.personId}` : ""}
-                      {u.clickupUserName ? ` · ClickUp: ${u.clickupUserName}` : ""}
-                      {CLICKUP_REQUIRED_ROLES.has(u.role) && !u.clickupUserName && (
-                        <span style={{ color: "var(--status-warn, var(--status-over))" }}> · no ClickUp name flagged</span>
-                      )}
-                      {` · ${u.lastSignInAt ? `last signed in ${new Date(u.lastSignInAt).toLocaleDateString()}` : "never signed in"}`}
+          <>
+            <div className="pg-team-row pg-team-row--head" aria-hidden="true">
+              <span>Member</span><span>Role</span><span>Status</span><span />
+            </div>
+            <ul className="pg-team-list">
+              {shown.map((u) => {
+                const isSelf = u.id === ownUserId;
+                const name = displayNameFor(u);
+                const status = statusOf(u);
+                const missingClickup = CLICKUP_REQUIRED_ROLES.has(u.role) && !u.clickupUserName;
+                const open = isSelf ? undefined : () => setDrawer({ id: u.id });
+                return (
+                  <li key={u.id} className={"pg-team-row" + (isSelf ? "" : " pg-team-row--clickable")} onClick={open}
+                    title={accessSummary({ role: u.role, overrides: u.moduleOverrides, presets, moduleScopes, clientCount: new Set(u.clients || []).size })}>
+                    <div className="pg-team-member">
+                      <ClientAvatar name={name} logo={rosterPerson[u.personId]?.photo} size={34} />
+                      <div style={{ minWidth: 0 }}>
+                        {isSelf ? (
+                          <span className="pg-team-name">{name}<span className="pg-team-you">(you)</span></span>
+                        ) : (
+                          <button type="button" className="pg-team-name" onClick={(e) => { e.stopPropagation(); open(); }}>{name}</button>
+                        )}
+                        <div className="pg-team-email">{u.email}</div>
+                        {missingClickup && <div className="pg-team-warn"><AlertTriangle size={11} aria-hidden="true" /> No ClickUp user set</div>}
+                      </div>
                     </div>
-                    <div className="pg-footnote" style={{ marginTop: 2 }}>
-                      {accessSummary({ role: u.role, overrides: u.moduleOverrides, presets, moduleScopes, clientCount })}
-                    </div>
-                  </div>
-                  {/* Self-editing is refused server-side too; hiding it avoids a dead-end flow. */}
-                  {!isSelf && (
-                    <button className="pg-btn-ghost" type="button" onClick={() => setOpenId(u.id)} aria-label={`Manage ${u.email}`}>Manage</button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                    <span className={"pg-team-role" + (ADMIN_TIER_ROLES.has(u.role) ? " pg-team-role--admin" : "")}>{ROLE_LABELS[u.role] || u.role}</span>
+                    <span className={"pg-team-status" + (status.ok ? " pg-team-status--ok" : "")}>{status.label}</span>
+                    {isSelf ? <span /> : (
+                      <RowMenu user={u} disabled={removingId === u.id}
+                        onEdit={() => setDrawer({ id: u.id })} onReset={() => setDrawer({ id: u.id, reset: true })} onRemove={removeUser} />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )}
       </div>
 
-      {openUser && (
+      {drawer && (drawer.id === null || openUser) && (
         <UserDrawer
-          key={openUser.id}
+          key={drawer.id ?? "new"}
           user={openUser}
+          startWithReset={!!drawer.reset}
           ownRole={ownRole}
           presets={presets}
           moduleScopes={moduleScopes}
@@ -264,7 +249,7 @@ export default function Users({ ownRole, ownUserId }) {
           rosterError={rosterError}
           wagePeople={wagePeople}
           wageError={wageError}
-          linkedTo={linkedToFor(openUser.id)}
+          linkedTo={linkedToFor(openUser?.id ?? null)}
           onClose={closeDrawer}
           onChanged={onChanged}
           onRemoved={onRemoved}

@@ -7,7 +7,7 @@
 import { ADMIN_TIER_ROLES, CLIENT_SCOPED_ROLES } from "./roles.js";
 
 export const SCOPES = ["none", "own", "assigned", "all"];
-export const SCOPE_LABELS = { none: "Off", own: "Own", assigned: "Their clients", all: "All" };
+export const SCOPE_LABELS = { none: "No access", own: "Own records", assigned: "Assigned clients", all: "Full access" };
 
 // Sidebar, in the approved Design OS order. Labels are pinned by permissions.test.js.
 export const NAV_MODULES = [
