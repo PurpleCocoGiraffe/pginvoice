@@ -188,6 +188,8 @@ export function computeLiveView(sources, monthKey) {
       name: r.name || pid,
       role: r.role || "",
       photo: r.photo || "",
+      // Roster Billable % (Consultants), the target the card's billable % is coloured against.
+      targetRate: Number(r.rate) > 0 ? Number(r.rate) : null,
       state,
       typeLabel: res.type,
       typeShort: typeShort(res.type),
@@ -316,10 +318,13 @@ export function buildMonthView(sources, monthKey) {
     const liveRows = new Map((sources.lines || []).map((l) => [l.person_id, l]));
     // Photos aren't frozen (see buildSnapshot); take the current one when the roster loaded.
     const photoById = new Map((sources.roster || []).map((p) => [p.id, p.photo || ""]));
+    const rateById = new Map((sources.roster || []).map((p) => [p.id, Number(p.rate) > 0 ? Number(p.rate) : null]));
     const lines = snap.lines.map((l) => {
       const row = liveRows.get(l.person_id);
       const merged = row ? { ...l, ...commentsOf(row) } : { ...l };
       if (merged.photo == null) merged.photo = photoById.get(l.person_id) || "";
+      // A month closed before targets were stored takes the current roster target.
+      if (merged.targetRate === undefined) merged.targetRate = rateById.get(l.person_id) ?? null;
       return merged;
     });
     let liveDiffers = [];
@@ -477,11 +482,12 @@ export function toWorkbookRows(lines, people) {
 // keeps only the safe settings, so nothing reviewer-only can reach the card.
 const SELF_HIDDEN_FIELDS = [...COMMENT_FIELDS, "phil_leave_applied", "expected_override_reason"];
 const SAFE_SETTING_KEYS = ["hours_per_day", "xero_tolerance_h", "variance_threshold_h"];
-export function selfWageView(result, { photo = "" } = {}) {
+export function selfWageView(result, { photo = "", targetRate = null } = {}) {
   const monthKey = result?.monthKey ?? null;
   if (!result || result.status !== "closed") return { state: "not_reviewed", monthKey };
   if (!result.line) return { state: "not_included", monthKey };
   const line = { ...result.line, photo: photo || "" };
+  if (line.targetRate === undefined) line.targetRate = Number(targetRate) > 0 ? Number(targetRate) : null;
   for (const k of SELF_HIDDEN_FIELDS) delete line[k];
   const normalised = normaliseSettings(result.settings);
   const settings = Object.fromEntries(SAFE_SETTING_KEYS.map((k) => [k, normalised[k]]));

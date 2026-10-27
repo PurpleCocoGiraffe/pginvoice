@@ -407,6 +407,18 @@ export function computeLine({ clickup, leave, xeroHours, expected, overrides = {
 // instead of silently becoming 1525. A monthly value over MONTHLY_HOURS_WARN is allowed
 // but comes back with a warning. Returns { ok, value, error?, warning? }.
 export const MONTHLY_HOURS_WARN = 400;
+
+// Billable % (K = billable / all ClickUp time) against the person's roster Billable % target:
+// "ok" at or above it, "warn" a little under, "over" (red) more than BILLABLE_RED_GAP under.
+// null when there's no time or no target (a 0% target counts as none).
+export const BILLABLE_RED_GAP = 0.1;
+export function billableTone(K, target) {
+  const t = Number(target);
+  if (K == null || !Number.isFinite(t) || t <= 0) return null;
+  const k = Number(K);
+  if (k >= t - 1e-9) return "ok";
+  return t - k > BILLABLE_RED_GAP + 1e-9 ? "over" : "warn";
+}
 const THOUSANDS_RE = /^[1-9]\d{0,2}(,\d{3})+(\.\d+)?$/;
 const PLAIN_NUMBER_RE = /^(\d+(\.\d*)?|\.\d+)$/;
 export function parseHoursInput(text) {
