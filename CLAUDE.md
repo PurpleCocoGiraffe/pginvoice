@@ -129,7 +129,7 @@ The live RLS policies and `pg_*` helpers (`pg_is_admin_tier`, `pg_has_client_acc
 ### Small/shared components, one-liners
 
 - `avatar.jsx` — `resizePhotoFile` (cover-crops an uploaded photo to a 160×160 JPEG data URL), `PersonAvatar`, `ClientAvatar` (colored-initials fallback hashed from name, graceful favicon `onError` fallback).
-- `LeaveEditor.jsx` — typed-leave popover in Consultants (portal-rendered; type / days / hrs per entry; Days only for 38 h/week full-timers); read-only until both typed entries and `cap_leaves` load. The per-month total is mirrored into `cap_leaves` by TeamDashboard.
+- `LeaveEditor.jsx` — typed-leave popover in Consultants (portal-rendered; type / days / hrs per entry; Days only for 38 h/week full-timers); read-only until both typed entries and `cap_leaves` load; closing it (Done, click away, Escape) first saves a filled-in "Add leave" row (`pendingAddRef`) -- it used to need the small + and silently dropped typed leave otherwise -- and scrolling repositions it rather than closing. The per-month total is mirrored into `cap_leaves` by TeamDashboard.
 - `DateRangePicker.jsx` — wraps `react-day-picker`; exists specifically to avoid a UTC-parsing off-by-one-day bug (local-time `Date` constructor/getters only, never `toISOString`); uses `required` so re-clicking the same day to confirm a 1-day range isn't treated as a deselect.
 - `LineChart.jsx` — full SVG line chart with click-to-isolate legend, hover tooltips, gradient fill reserved for a "primary" series and only shown with ≤3 visible lines.
 - `Sparkline.jsx` — tiny inline SVG trend squiggle for KPI cards, no axes/legend/hover.
