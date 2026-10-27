@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Loader2, ShieldCheck, AlertTriangle } from "lucide-react";
+import { Loader2, ShieldCheck, AlertTriangle, Info } from "lucide-react";
 import { fetchUsers, createUser, fetchClickupUserNames } from "./usersSync.js";
 import { ROLES, ROLE_LABELS, CLIENT_SCOPED_ROLES, CLICKUP_REQUIRED_ROLES, ADMIN_TIER_ROLES } from "./roles.js";
 import { fetchClients } from "./clientsSync.js";
@@ -59,6 +59,8 @@ export default function Users({ ownRole, ownUserId }) {
   const presets = data?.presets ?? {};
   const moduleScopes = data?.moduleScopes ?? {};
   const matchIssues = data?.consultantMatchIssues ?? [];
+  const clashes = matchIssues.filter((m) => (m.matches || []).length > 1);
+  const noAccount = matchIssues.filter((m) => (m.matches || []).length === 0);
   const rosterName = useMemo(() => Object.fromEntries(roster.map((p) => [p.id, p.name])), [roster]);
   const linkedToFor = (excludeUserId) => Object.fromEntries((users || [])
     .filter((u) => u.personId && u.id !== excludeUserId).map((u) => [u.personId, u.email]));
@@ -116,21 +118,35 @@ export default function Users({ ownRole, ownUserId }) {
         {notice && !error && <p className="pg-footnote" style={{ color: "var(--status-ok)" }}>{notice}</p>}
       </div>
 
-      {/* Consultants get the active clients whose Consultant field names them; a name that fits
-          no account, or several, gives that client to nobody (20261026_consultant_clients.sql). */}
-      {matchIssues.length > 0 && (
-        <div className="wr-banner wr-banner--warn" role="status" style={{ marginBottom: 16 }}>
+      {/* Consultants get the active clients whose Consultant field names them (20261026_consultant_clients.sql).
+          A name matching several accounts is a real problem (nobody gets those clients); a name with
+          no account yet is normal while people are being set up, so it's one quiet line. */}
+      {clashes.length > 0 && (
+        <div className="wr-banner wr-banner--warn" role="status" style={{ marginBottom: 12 }}>
           <AlertTriangle size={14} aria-hidden="true" />
           <div className="wr-banner__body">
-            These Consultant names in the Clients module don't match exactly one team account, so nobody gets those clients automatically. Fix the name in Clients, or tick the client for the right person here.
+            These Consultant names in the Clients module match more than one team account, so nobody gets those clients automatically. Fix the name in Clients, remove the duplicate account, or tick the client for the right person here.
             <ul className="wr-banner__list">
-              {matchIssues.map((m) => (
-                <li key={m.consultant}>
-                  <b>{m.consultant}</b> ({(m.clients || []).join(", ")}):{" "}
-                  {(m.matches || []).length ? `matches ${m.matches.join(" and ")}` : "matches no team account"}
-                </li>
+              {clashes.map((m) => (
+                <li key={m.consultant}><b>{m.consultant}</b> ({(m.clients || []).join(", ")}): matches {m.matches.join(" and ")}</li>
               ))}
             </ul>
+          </div>
+        </div>
+      )}
+      {noAccount.length > 0 && (
+        <div className="wr-banner wr-banner--info" role="status" style={{ marginBottom: 16 }}>
+          <Info size={14} aria-hidden="true" />
+          <div className="wr-banner__body">
+            {noAccount.length} {noAccount.length === 1 ? "consultant named" : "consultants named"} in the Clients module {noAccount.length === 1 ? "doesn't" : "don't"} have a login yet. Create their account with their exact ClickUp name and their clients are assigned automatically.
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: "pointer" }}>Show names</summary>
+              <ul className="wr-banner__list">
+                {noAccount.map((m) => (
+                  <li key={m.consultant}><b>{m.consultant}</b> ({(m.clients || []).join(", ")})</li>
+                ))}
+              </ul>
+            </details>
           </div>
         </div>
       )}
