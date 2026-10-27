@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Info, Plus, Search, MoreHorizontal, Pencil, KeyRound, Trash2, ChevronDown } from "lucide-react";
+import { AlertTriangle, Info, Plus, Search, MoreHorizontal, Pencil, KeyRound, Trash2, ChevronDown, Users as Users2 } from "lucide-react";
 import { fetchUsers, fetchClickupUserNames, deleteUser } from "./usersSync.js";
 import { ROLES, ROLE_LABELS, CLICKUP_REQUIRED_ROLES, ADMIN_TIER_ROLES } from "./roles.js";
 import { fetchClients } from "./clientsSync.js";
@@ -10,6 +10,7 @@ import { accessSummary } from "./permissions.js";
 import { useDismissable } from "./useDismissable.js";
 import { ClientAvatar } from "./avatar.jsx";
 import UserDrawer, { displayNameFor } from "./UserDrawer.jsx";
+import BulkAddDrawer from "./BulkAddDrawer.jsx";
 
 const errText = (e) => e?.message || String(e);
 
@@ -57,6 +58,7 @@ export default function Users({ ownRole, ownUserId }) {
   const [roleFilter, setRoleFilter] = useState("");
   // The drawer: null = closed, { id: null } = adding, { id, reset } = editing (reset: open on Reset password).
   const [drawer, setDrawer] = useState(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   async function load() {
     try {
@@ -172,7 +174,10 @@ export default function Users({ ownRole, ownUserId }) {
           Team members
           {users && <span className="pg-team-count">{users.length} {users.length === 1 ? "member" : "members"}</span>}
         </h2>
-        <button type="button" className="pg-btn" onClick={() => setDrawer({ id: null })} disabled={!users}><Plus size={14} /> Add team member</button>
+        <div className="pg-team-actions">
+          <button type="button" className="pg-btn-ghost" onClick={() => setBulkOpen(true)} disabled={!users}><Users2 size={13} /> Bulk add</button>
+          <button type="button" className="pg-btn" onClick={() => setDrawer({ id: null })} disabled={!users}><Plus size={14} /> Add team member</button>
+        </div>
       </div>
 
       <div className="pg-team-toolbar">
@@ -235,6 +240,10 @@ export default function Users({ ownRole, ownUserId }) {
         )}
       </div>
 
+      {bulkOpen && (
+        <BulkAddDrawer ownRole={ownRole} users={users} moduleScopes={moduleScopes} clickupNames={clickupNames} roster={roster}
+          onClose={() => setBulkOpen(false)} onChanged={onChanged} />
+      )}
       {drawer && (drawer.id === null || openUser) && (
         <UserDrawer
           key={drawer.id ?? "new"}
