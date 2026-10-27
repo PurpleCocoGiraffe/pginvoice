@@ -1,9 +1,10 @@
-import React from "react";
-import { AlertTriangle, Lock } from "lucide-react";
+import React, { useState } from "react";
+import { AlertTriangle, Lock, Search, X } from "lucide-react";
+import { useDismissable } from "./useDismissable.js";
 import { ADMIN_TIER_ROLES, CLICKUP_REQUIRED_ROLES } from "./roles.js";
 import { NAV_MODULES, SCOPES, SCOPE_LABELS, resolveModuleScope } from "./permissions.js";
 
-// Form pieces shared by Settings → Users & permissions' add-user form and UserDrawer.
+// Form pieces for Settings → Users & permissions' add / edit drawer (UserDrawer).
 
 // A role that needs a ClickUp identity must have one picked from the synced names.
 export function isClickupNameValid(role, name, clickupNames) {
@@ -12,18 +13,52 @@ export function isClickupNameValid(role, name, clickupNames) {
   return !!trimmed && clickupNames.some((n) => n.toLowerCase() === trimmed);
 }
 
-export function ClientCheckboxList({ label, options, selected, onToggle }) {
+// Search-and-pick for extra clients: picked ones show as removable chips. `exclude` = clients
+// they already have another way (not offered again).
+export function ClientPicker({ id, label, options, selected, onChange, exclude = [], disabled }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const ref = useDismissable(() => setOpen(false));
+  const listId = `${id}-list`;
+  const q = query.trim().toLowerCase();
+  const matches = options.filter((c) => !selected.includes(c) && !exclude.includes(c) && (!q || c.toLowerCase().includes(q))).slice(0, 8);
+  const add = (c) => { onChange([...selected, c]); setQuery(""); setActive(0); };
+  const onKeyDown = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setActive((i) => Math.min(i + 1, matches.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter" && open && matches[active]) { e.preventDefault(); add(matches[active]); }
+  };
   return (
     <div className="pg-field">
-      <span className="pg-field__label">{label}</span>
-      <div style={{ maxHeight: 160, overflowY: "auto", border: "1px solid var(--border-default)", borderRadius: 8, padding: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-        {options.map((c) => (
-          <label key={c} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-            <input type="checkbox" checked={selected.includes(c)} onChange={() => onToggle(c)} />
-            {c}
-          </label>
-        ))}
+      <label className="pg-field__label" htmlFor={id}>{label}</label>
+      <div className="pg-client-picker" ref={ref}>
+        <span className="pg-client-picker__icon" aria-hidden="true"><Search size={14} /></span>
+        <input id={id} className="pg-input pg-client-picker__input" placeholder="Search clients…" autoComplete="off" disabled={disabled}
+          role="combobox" aria-expanded={open && matches.length > 0} aria-controls={listId} aria-autocomplete="list"
+          aria-activedescendant={open && matches[active] ? `${listId}-${active}` : undefined}
+          value={query} onChange={(e) => { setQuery(e.target.value); setOpen(true); setActive(0); }}
+          onFocus={() => setOpen(true)} onKeyDown={onKeyDown} />
+        {open && matches.length > 0 && (
+          <ul className="pg-menu pg-client-picker__menu" id={listId} role="listbox">
+            {matches.map((c, i) => (
+              <li key={c} id={`${listId}-${i}`} role="option" aria-selected={i === active}
+                className={"pg-menu-item" + (i === active ? " is-active" : "")}
+                onMouseDown={(e) => e.preventDefault()} onMouseEnter={() => setActive(i)} onClick={() => add(c)}>{c}</li>
+            ))}
+          </ul>
+        )}
       </div>
+      {selected.length > 0 && (
+        <div className="pg-chip-list" aria-label="Additional clients">
+          {selected.map((c) => (
+            <span key={c} className="pg-pick-chip">
+              {c}
+              <button type="button" disabled={disabled} onClick={() => onChange(selected.filter((x) => x !== c))} aria-label={`Remove ${c}`}><X size={12} /></button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -35,12 +70,12 @@ export function TeamMemberField({ id, value, onChange, clickupNames, required })
   const showRequiredFlag = required && !value;
   return (
     <label className="pg-field" htmlFor={id}>
-      <span className="pg-field__label">ClickUp name{required ? "" : " (optional)"}</span>
+      <span className="pg-field__label">ClickUp user{required ? "" : " (optional)"}</span>
       <select id={id} className="pg-input" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{required ? "Select who this is…" : "— none —"}</option>
         {clickupNames.map((n) => <option key={n} value={n}>{n}</option>)}
       </select>
-      <span className="pg-footnote">This is who they are in ClickUp — it's how their worked-on clients get auto-assigned.</span>
+      <span className="pg-footnote">Who they are in ClickUp. Also their name here, and how the Consultant field in Clients finds them.</span>
       {showRequiredFlag && (
         <span className="pg-footnote" style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--status-warn, var(--status-over))" }}>
           <AlertTriangle size={12} />
@@ -68,7 +103,7 @@ export function PersonField({ id, value, onChange, roster, rosterError, linkedTo
       </select>
       {rosterError
         ? <span className="pg-footnote" style={{ color: "var(--status-over)" }}>Couldn't load the Consultants roster: {rosterError}</span>
-        : <span className="pg-footnote">Who they are on the Consultants roster — used for their own wages and timesheet views.</span>}
+        : <span className="pg-footnote">Their Consultants roster record, for their own billability and timesheet views.</span>}
     </label>
   );
 }
@@ -82,33 +117,6 @@ export function WageSetupCheck({ personId, wagePeople, wageError }) {
     <p className="pg-footnote" style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--status-warn, var(--status-over))" }}>
       <AlertTriangle size={12} aria-hidden="true" /> No wage setup — Billability Overview (own) will show nothing.
     </p>
-  );
-}
-
-// Radio group with a roving tabindex: Tab enters on the checked option, arrows (and
-// Home/End) move and select, matching the native radio-group pattern.
-function ScopeRadioGroup({ labelledBy, options, value, onChange, disabled }) {
-  const onKeyDown = (e) => {
-    const i = options.indexOf(value);
-    let n = null;
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") n = (i + 1) % options.length;
-    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") n = (i - 1 + options.length) % options.length;
-    else if (e.key === "Home") n = 0;
-    else if (e.key === "End") n = options.length - 1;
-    if (n == null || disabled) return;
-    e.preventDefault();
-    onChange(options[n]);
-    e.currentTarget.querySelectorAll('[role="radio"]')[n]?.focus();
-  };
-  return (
-    <span className="pg-seg" role="radiogroup" aria-labelledby={labelledBy} onKeyDown={onKeyDown}>
-      {options.map((s) => (
-        <button key={s} type="button" role="radio" aria-checked={value === s} tabIndex={value === s ? 0 : -1} disabled={disabled}
-          className={"pg-seg__opt" + (value === s ? " is-active" : "")} onClick={() => onChange(s)}>
-          {SCOPE_LABELS[s]}
-        </button>
-      ))}
-    </span>
   );
 }
 
@@ -131,18 +139,19 @@ export function ModuleAccessEditor({ role, overrides, onChange, presets, moduleS
     <div>
       {modules.map((m) => {
         const { scope, source } = resolveModuleScope({ role, overrides, presets }, m.key);
-        const labelId = `${idBase}-${m.key}`;
+        const preset = presets[role]?.[m.key] ?? "none";
+        const selectId = `${idBase}-${m.key}`;
         return (
           <div key={m.key} className="pg-access-row">
             <span className="pg-access-row__label">
-              <span id={labelId}>{m.label}</span>
-              <span className={"pg-access-badge" + (source === "override" ? " pg-access-badge--custom" : "")}>{source === "override" ? "Custom" : "Role default"}</span>
-              {source === "override" && (
-                <button type="button" className="pg-access-reset" disabled={disabled} onClick={() => set(m.key, presets[role]?.[m.key] ?? "none")}>Reset to role default</button>
-              )}
+              <label htmlFor={selectId}>{m.label}</label>
+              {source === "override" && <span className="pg-access-badge pg-access-badge--custom">Custom</span>}
             </span>
-            <ScopeRadioGroup labelledBy={labelId} options={SCOPES.filter((s) => moduleScopes[m.key].includes(s))}
-              value={scope} onChange={(s) => set(m.key, s)} disabled={disabled} />
+            <select id={selectId} className="pg-input pg-access-select" value={scope} disabled={disabled} onChange={(e) => set(m.key, e.target.value)}>
+              {SCOPES.filter((s) => moduleScopes[m.key].includes(s)).map((s) => (
+                <option key={s} value={s}>{SCOPE_LABELS[s]}{s === preset ? " (role default)" : ""}</option>
+              ))}
+            </select>
           </div>
         );
       })}
