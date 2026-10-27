@@ -28,19 +28,30 @@ export function LeaveEditor({ person, hours, typed }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const btnRef = useRef(null);
+  // The "Add leave" row's save, set while it holds a valid unsaved entry (else null).
+  // Closing the popover saves it first: Done and clicking away used to discard what was
+  // typed unless the small + had been pressed, so leave silently never reached the database.
+  const pendingAddRef = useRef(null);
 
-  const openMenu = () => {
+  const place = useCallback(() => {
+    if (!btnRef.current) return;
     const r = btnRef.current.getBoundingClientRect();
     let left = r.right - MENU_WIDTH;
     if (left < 8) left = 8;
     let top = r.bottom + 4;
     if (top + EST_MENU_HEIGHT > window.innerHeight - 8) top = Math.max(8, r.top - EST_MENU_HEIGHT - 4);
     setPos({ top, left });
-    setOpen(true);
-  };
+  }, []);
+  const openMenu = () => { place(); setOpen(true); };
 
-  const dismiss = useCallback(() => setOpen(false), []);
-  const menuRef = useDismissable(dismiss, { extraRef: btnRef, onReposition: dismiss });
+  // Saves a pending entry, then closes; a failed save keeps the popover open with its error.
+  const finish = useCallback(async () => {
+    const save = pendingAddRef.current;
+    if (save && !(await save())) return;
+    setOpen(false);
+  }, []);
+  // Scrolling repositions instead of closing (closing on scroll also lost a typed entry).
+  const menuRef = useDismissable(finish, { extraRef: btnRef, onReposition: place });
 
   // Keyboard users land on the first field when the popover opens (and again once the
   // entries finish loading, if focus is still on the Done button).
@@ -69,8 +80,8 @@ export function LeaveEditor({ person, hours, typed }) {
           ref={menuRef} className="pg-menu pg-leave-popover" role="dialog" aria-label={`Leave for ${person.name}`}
           style={{ position: "fixed", top: pos.top, left: pos.left, right: "auto", margin: 0, minWidth: MENU_WIDTH, maxWidth: MENU_WIDTH, zIndex: 1000 }}
         >
-          <TypedLeaveBody person={person} hours={hours} dailyHrs={dailyHrs} typed={typed} />
-          <button className="pg-btn" style={{ marginTop: 10, width: "100%", justifyContent: "center" }} onClick={() => { setOpen(false); btnRef.current?.focus(); }}>Done</button>
+          <TypedLeaveBody person={person} hours={hours} dailyHrs={dailyHrs} typed={typed} pendingAddRef={pendingAddRef} />
+          <button className="pg-btn" style={{ marginTop: 10, width: "100%", justifyContent: "center" }} onClick={async () => { await finish(); btnRef.current?.focus(); }}>Done</button>
         </div>,
         document.body
       )}
@@ -93,7 +104,7 @@ function DailyHoursNote({ person, dailyHrs }) {
 // `typed`: { status: 'loading'|'ready'|'error', error, entries (this person + month),
 //            onAdd(fields), onUpdate(id, patch), onDelete(id), onDeleteLegacy(), onSyncTotal(total) }
 // Each handler returns a promise; a rejection is shown inline here.
-function TypedLeaveBody({ person, hours, dailyHrs, typed }) {
+function TypedLeaveBody({ person, hours, dailyHrs, typed, pendingAddRef }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -182,7 +193,7 @@ function TypedLeaveBody({ person, hours, dailyHrs, typed }) {
         </p>
       )}
 
-      <AddLeaveRow person={person} dailyHrs={dailyHrs} disabled={busy || hasLegacy} onAdd={(fields) => run(() => typed.onAdd(fields))} />
+      <AddLeaveRow person={person} dailyHrs={dailyHrs} disabled={busy || hasLegacy} onAdd={(fields) => run(() => typed.onAdd(fields))} pendingAddRef={pendingAddRef} />
       {hasLegacy && (
         <p className="pg-footnote pg-leave-text" style={{ marginTop: 2 }}>Type the untyped hours above before adding more leave.</p>
       )}
@@ -300,7 +311,7 @@ function LeaveEntryRow({ row, person, dailyHrs, disabled, onCommit, onDelete }) 
   );
 }
 
-function AddLeaveRow({ person, dailyHrs, disabled, onAdd }) {
+function AddLeaveRow({ person, dailyHrs, disabled, onAdd, pendingAddRef }) {
   const [type, setType] = useState("annual");
   const [daysStr, setDaysStr] = useState("");
   const [hrsStr, setHrsStr] = useState("");
@@ -323,13 +334,20 @@ function AddLeaveRow({ person, dailyHrs, disabled, onAdd }) {
   const canAdd = !disabled && hrsStr !== "" && !Number.isNaN(hrs) && hrs > 0;
 
   const submit = async () => {
-    if (!canAdd) return;
+    if (!canAdd) return false;
     const ok = await onAdd({ leave_type: type, hours: round2(hrs), days: enteredDays ? Number(daysStr) : null });
-    if (!ok) return; // keep what they typed so they can retry
+    if (!ok) return false; // keep what they typed so they can retry
     setDaysStr("");
     setHrsStr("");
     setEnteredDays(false);
+    return true;
   };
+  // Let the popover save this row when it's closed (Done / click away) with it filled in.
+  useEffect(() => {
+    if (!pendingAddRef) return undefined;
+    pendingAddRef.current = canAdd ? submit : null;
+    return () => { pendingAddRef.current = null; };
+  });
   const onKeyDown = (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } };
 
   return (
