@@ -226,7 +226,7 @@ describe("moduleScopeProps", () => {
     const a = { ...rpcAccess("consultant", { overview: "assigned", invoicing: "assigned", timesheet: "own", wages: "own" }),
       personId: "p1", clients: ["Apex"], clickupUserNames: ["Holly Fraser"] };
     const shape = { personId: "p1", userNames: ["Holly Fraser"], clients: ["Apex"] };
-    expect(moduleScopeProps(a)).toEqual({ overview: { ...shape, activityClients: [] }, invoicing: shape, timesheet: shape, wages: shape });
+    expect(moduleScopeProps(a)).toEqual({ overview: { ...shape, activityClients: [] }, invoicing: { ...shape, viewNames: [] }, timesheet: shape, wages: shape });
     const { clickupUserNames: _drop, ...old } = a;
     expect(moduleScopeProps(old).timesheet.userNames).toBeNull();
   });
@@ -238,6 +238,16 @@ describe("moduleScopeProps", () => {
     expect(props.overview.activityClients).toEqual(activityClients);
     for (const k of ["invoicing", "timesheet", "wages"]) expect(props[k]).not.toHaveProperty("activityClients");
     expect(props.invoicing.clients).toEqual(["HTSA"]); // never widened by activity
+  });
+  it("viewablePeople's ClickUp names reach Client Accruals only, never widening own names or clients", () => {
+    const viewablePeople = [{ personId: "p12", name: "Julia", clickupUserNames: ["Julia Pham"] }, { personId: "p9", name: "Ariani", clickupUserNames: ["Ariani Santos"] }];
+    const a = { ...rpcAccess("consultant", { overview: "assigned", invoicing: "assigned", timesheet: "own", wages: "own" }),
+      personId: "p16", clients: [], clickupUserNames: ["Simone Davis"], viewablePeople };
+    const props = moduleScopeProps(a);
+    expect(props.invoicing.viewNames).toEqual(["Julia Pham", "Ariani Santos"]);
+    expect(props.invoicing.userNames).toEqual(["Simone Davis"]);
+    expect(props.invoicing.clients).toEqual([]);
+    for (const k of ["overview", "timesheet", "wages"]) expect(props[k]).not.toHaveProperty("viewNames");
   });
   it("a non-admin granted all / none gets null", () => {
     const a = rpcAccess("consultant", { overview: "all", invoicing: "none" });

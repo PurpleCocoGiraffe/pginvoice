@@ -13,9 +13,9 @@ export function isClickupNameValid(role, name, clickupNames) {
   return !!trimmed && clickupNames.some((n) => n.toLowerCase() === trimmed);
 }
 
-// Search-and-pick for extra clients: picked ones show as removable chips. `exclude` = clients
-// they already have another way (not offered again).
-export function ClientPicker({ id, label, options, selected, onChange, exclude = [], disabled }) {
+// Search-and-pick for extra clients (or, with its own placeholder/label, roster people): picked
+// ones show as removable chips. `exclude` = ones they already have another way (not offered again).
+export function ClientPicker({ id, label, options, selected, onChange, exclude = [], disabled, placeholder = "Search clients…", ariaLabel = "Additional clients" }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -34,7 +34,7 @@ export function ClientPicker({ id, label, options, selected, onChange, exclude =
       <label className="pg-field__label" htmlFor={id}>{label}</label>
       <div className="pg-client-picker" ref={ref}>
         <span className="pg-client-picker__icon" aria-hidden="true"><Search size={14} /></span>
-        <input id={id} className="pg-input pg-client-picker__input" placeholder="Search clients…" autoComplete="off" disabled={disabled}
+        <input id={id} className="pg-input pg-client-picker__input" placeholder={placeholder} autoComplete="off" disabled={disabled}
           role="combobox" aria-expanded={open && matches.length > 0} aria-controls={listId} aria-autocomplete="list"
           aria-activedescendant={open && matches[active] ? `${listId}-${active}` : undefined}
           value={query} onChange={(e) => { setQuery(e.target.value); setOpen(true); setActive(0); }}
@@ -50,7 +50,7 @@ export function ClientPicker({ id, label, options, selected, onChange, exclude =
         )}
       </div>
       {selected.length > 0 && (
-        <div className="pg-chip-list" aria-label="Additional clients">
+        <div className="pg-chip-list" aria-label={ariaLabel}>
           {selected.map((c) => (
             <span key={c} className="pg-pick-chip">
               {c}

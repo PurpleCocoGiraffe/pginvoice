@@ -244,6 +244,13 @@ Deno.serve(async (req: Request) => {
       } catch (e) {
         if (!isMissingSchemaError(e)) throw e;
       }
+      // Client Accruals "can also see client hours of" (20261029_viewable_people.sql); none until it's applied.
+      const viewableByUser = new Map<string, string[]>();
+      {
+        const { data, error } = await admin.from("pginvoice_user_viewable_people").select("user_id, person_id").order("person_id");
+        if (error && !isMissingSchemaError(error)) throw error;
+        for (const v of data || []) viewableByUser.set(v.user_id, [...(viewableByUser.get(v.user_id) || []), v.person_id]);
+      }
       const overridesByUser = new Map<string, Record<string, string>>();
       for (const o of overrideRows || []) {
         const m = overridesByUser.get(o.user_id) || {};
@@ -272,6 +279,7 @@ Deno.serve(async (req: Request) => {
             clickupUserName: p?.clickup_user_name || "",
             personId: p?.person_id || null,
             moduleOverrides: overridesByUser.get(u.id) || {},
+            viewablePersonIds: viewableByUser.get(u.id) || [],
             clients: clientDetails.map((c) => c.client),
             clientDetails,
             createdAt: u.created_at,
@@ -507,7 +515,27 @@ Deno.serve(async (req: Request) => {
       });
       if ("error" in resolved) return bad(resolved.error);
 
-      const diff = accessDiff(before, resolved);
+      const diff: Record<string, unknown> = accessDiff(before, resolved);
+
+      // viewablePersonIds (optional, the full new list): roster people whose client hours this
+      // user may also see in Client Accruals (20261029_viewable_people.sql; the entries policy
+      // enforces it). Undefined = unchanged. Never their own person; every id must be on the roster.
+      let viewable: { from: string[]; to: string[] } | null = null;
+      if (body.viewablePersonIds !== undefined) {
+        if (!Array.isArray(body.viewablePersonIds) || body.viewablePersonIds.some((id: unknown) => typeof id !== "string" || !id.trim())) {
+          return bad("Invalid viewablePersonIds.");
+        }
+        const to = [...new Set<string>(body.viewablePersonIds.map((id: string) => id.trim()))].sort();
+        if (resolved.personId && to.includes(resolved.personId)) return bad("They already see their own client hours.");
+        for (const id of to) {
+          if (!(await rosterHasPerson(admin, id))) return bad(`"${id}" isn't on the Consultants roster.`);
+        }
+        const { data: currentRows, error: currentErr } = await admin.from("pginvoice_user_viewable_people").select("person_id").eq("user_id", targetUserId);
+        if (currentErr) throw currentErr;
+        const from = (currentRows || []).map((r: any) => r.person_id).sort();
+        if (from.join("\u0000") !== to.join("\u0000")) viewable = { from, to };
+      }
+      if (viewable) diff.viewablePeople = viewable;
       if (!Object.keys(diff).length) {
         return new Response(JSON.stringify({ ok: true, personId: resolved.personId, moduleOverrides: resolved.overrides }), { headers: JSON_HEADERS });
       }
@@ -542,6 +570,20 @@ Deno.serve(async (req: Request) => {
               { onConflict: "user_id,module_key" });
           if (setErr) throw setErr;
           applied.modules = pick([...toClear, ...toSet]);
+        }
+        if (viewable) {
+          const removed = viewable.from.filter((id) => !viewable!.to.includes(id));
+          const added = viewable.to.filter((id) => !viewable!.from.includes(id));
+          if (removed.length) {
+            const { error: delErr } = await admin.from("pginvoice_user_viewable_people").delete().eq("user_id", targetUserId).in("person_id", removed);
+            if (delErr) throw delErr;
+          }
+          if (added.length) {
+            const { error: insErr } = await admin.from("pginvoice_user_viewable_people")
+              .insert(added.map((person_id) => ({ user_id: targetUserId, person_id, created_by: callerUser.user.id })));
+            if (insErr) throw insErr;
+          }
+          applied.viewablePeople = viewable;
         }
       } catch (writeErr) {
         if (Object.keys(applied).length) {
