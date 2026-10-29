@@ -70,9 +70,12 @@ export function moduleScopeProps(access) {
   // Overview alone also counts clients they logged time on this month that aren't theirs
   // (pginvoice_my_access().activityClients: { client, status, type }, no figures).
   const overview = scoped("overview", ["own", "assigned"]);
+  const invoicing = scoped("invoicing", ["assigned"]);
   return {
     overview: overview && { ...overview, activityClients: Array.isArray(access.activityClients) ? access.activityClients : [] },
-    invoicing: scoped("invoicing", ["assigned"]),
+    // Client Accruals also lists the clients these teammates logged time on (viewNames: their
+    // exact ClickUp names, from pginvoice_my_access().viewablePeople -- 20261029_viewable_people.sql).
+    invoicing: invoicing && { ...invoicing, viewNames: (Array.isArray(access.viewablePeople) ? access.viewablePeople : []).flatMap((v) => v.clickupUserNames || []) },
     timesheet: scoped("timesheet", ["own"]),
     wages: scoped("wages", ["own"]),
   };

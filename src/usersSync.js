@@ -89,8 +89,10 @@ export async function createUser({ email, password, role, clients, clickupUserNa
 // null = unlink. moduleChanges: { module_key: scope | null } for just the modules being
 // changed (see permissions.js overrideChanges), null = back to the role default. The
 // server refuses self-edits and admin-tier targets.
-export async function setUserAccess({ userId, personId, moduleChanges }) {
-  return callManageUsers({ action: "set_access", userId, personId, moduleChanges });
+// viewablePersonIds: the full list of roster people whose client hours they may also see
+// (undefined = unchanged).
+export async function setUserAccess({ userId, personId, moduleChanges, viewablePersonIds }) {
+  return callManageUsers({ action: "set_access", userId, personId, moduleChanges, viewablePersonIds });
 }
 
 export async function updateUserRoleAndClients({ userId, role, clients, clickupUserName }) {

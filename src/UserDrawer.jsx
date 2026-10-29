@@ -2,7 +2,7 @@ import React, { useCallback, useId, useRef, useState } from "react";
 import { Trash2, Loader2, X, KeyRound } from "lucide-react";
 import { createUser, updateUserRoleAndClients, deleteUser, setUserAccess, resetUserPassword } from "./usersSync.js";
 import { ROLES, ROLE_LABELS, CLIENT_SCOPED_ROLES, CLICKUP_REQUIRED_ROLES, CLIENT_SOURCE_LABELS, ADMIN_TIER_ROLES } from "./roles.js";
-import { overrideChanges, hasAccessConfig } from "./permissions.js";
+import { overrideChanges, hasAccessConfig, resolveModuleScope } from "./permissions.js";
 import { useEscape, useFocusTrap } from "./useDismissable.js";
 import { ClientAvatar } from "./avatar.jsx";
 import {
@@ -43,6 +43,7 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
   const [draft, setDraft] = useState(() => (isNew ? newDraft() : {
     role: user.role, clickupUserName: user.clickupUserName || "", clients: manualClients,
     personId: user.personId || "", overrides: { ...(user.moduleOverrides || {}) },
+    viewable: [...(user.viewablePersonIds || [])],
   }));
   // Only a Super Admin may reset a Super Admin's password (checked server-side too).
   const canResetPassword = !isNew && (user.role !== "super_admin" || ownRole === "super_admin");
@@ -59,7 +60,7 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
   const dialogRef = useFocusTrap({ initialFocusRef: isNew ? emailRef : tempPassword !== null ? passwordRef : closeRef });
   const busy = saving || deleting || resetting;
   useEscape(useCallback(() => { if (!busy) onClose(); }, [busy, onClose]));
-  const ids = { role: useId(), name: useId(), email: useId(), password: useId(), clickup: useId(), person: useId(), access: useId(), clients: useId(), reset: useId(), title: useId() };
+  const ids = { role: useId(), name: useId(), email: useId(), password: useId(), clickup: useId(), person: useId(), access: useId(), clients: useId(), viewable: useId(), reset: useId(), title: useId() };
 
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const isAdminRole = ADMIN_TIER_ROLES.has(draft.role);
@@ -74,7 +75,15 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
   const moduleChanges = isNew ? {} : overrideChanges(user.moduleOverrides || {}, draft.overrides);
   const personChanged = !isNew && (draft.personId || null) !== (user.personId || null);
   // set_access refuses admin-tier targets: access fields only apply to non-admin roles.
-  const accessChanged = accessEditable && (personChanged || Object.keys(moduleChanges).length > 0);
+  // "Can also see client hours of" (manage-users set_access viewablePersonIds): only while their
+  // Client Accruals is on (the entries policy needs it), and only once `list` reports the lists.
+  const viewableSupported = !isNew && Array.isArray(user.viewablePersonIds);
+  const accrualsOn = resolveModuleScope({ role: draft.role, overrides: draft.overrides, presets }, "invoicing").scope !== "none";
+  const viewableEditable = accessEditable && viewableSupported && accrualsOn;
+  const viewableChanged = viewableEditable && !sameSet(draft.viewable, user.viewablePersonIds || []);
+  const accessChanged = accessEditable && (personChanged || Object.keys(moduleChanges).length > 0 || viewableChanged);
+  const rosterNameOf = (id) => roster.find((p) => p.id === id)?.name || id;
+  const viewableOptions = roster.filter((p) => p.id !== draft.personId);
   const canSave = isNew
     ? draft.email.trim().includes("@") && draft.password.length >= 8 && clickupValid
     : clickupValid && (accountChanged || accessChanged);
@@ -110,6 +119,7 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
           userId: user.id,
           personId: personChanged ? (draft.personId || null) : undefined,
           moduleChanges,
+          viewablePersonIds: viewableChanged ? draft.viewable : undefined,
         });
       }
       await onChanged(`${user.email} updated.`);
@@ -231,6 +241,15 @@ export default function UserDrawer({ user, ownRole, presets, moduleScopes, allCl
             <ModuleAccessEditor role={draft.role} overrides={draft.overrides} onChange={(overrides) => set({ overrides })}
               presets={presets} moduleScopes={moduleScopes} disabled={busy} idBase={ids.access} />
           ) : <p className="pg-footnote">Their role default applies. Per-user module access isn't available yet.</p>}
+          {viewableEditable && (
+            <>
+              <ClientPicker id={ids.viewable} label="Can also see client hours of (optional)"
+                options={viewableOptions.map((p) => p.name)} selected={draft.viewable.map(rosterNameOf)} disabled={busy}
+                onChange={(names) => set({ viewable: names.map((n) => viewableOptions.find((p) => p.name === n)?.id || draft.viewable.find((id) => rosterNameOf(id) === n)).filter(Boolean) })}
+                placeholder="Search people…" ariaLabel="People whose client hours they can see" />
+              <p className="pg-footnote">Client Accruals also lists the clients these people logged time on, with their hours and tasks. Package figures stay hidden unless the client is theirs; no billability or wages.</p>
+            </>
+          )}
           {accessEditable && !isNew && <p className="pg-footnote">Takes effect the next time they switch back to the app — no sign-out needed.</p>}
         </DrawerSection>
 

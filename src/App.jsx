@@ -89,7 +89,9 @@ const TYPE_LABELS = {
 // excluded-internal list and all-client exports are admin only.
 export default function PGReconciliation({ onNavigateClients, scope = null, directory = null }) {
   const scoped = !!scope;
-  const scopeUserNames = useMemo(() => scope?.userNames || [], [scope]);
+  // Cards are kept for clients the user logged time on, or (scope.viewNames, set per user in
+  // Settings) one of the teammates whose client hours they may see -- figures still withheld.
+  const scopeUserNames = useMemo(() => [...(scope?.userNames || []), ...(scope?.viewNames || [])], [scope]);
   const [clickup, setClickup] = useState(null);
   const [accrued, setAccrued] = useState(null);
   const [invoiceMonth, setInvoiceMonth] = useState("");
