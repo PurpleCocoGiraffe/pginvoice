@@ -16,6 +16,10 @@ export const PG_ACCRUALS_KEY = "pg_accruals";
 // pginvoice_leave_entries (typed leave per person per month, see leaveSync.js). The
 // per-person monthly total is still mirrored into CAP_LEAVES_KEY for Capacity Planning.
 export const LEAVE_ENTRIES_KEY = "leave_entries";
+// Window event a "Sync now" outside Client Invoicing fires with { live, meta } (Timesheets),
+// so App.jsx -- the one writer of CLICKUP_DB_KEY -- adopts the fresh data and re-caches it
+// for every other module.
+export const CLICKUP_SYNCED_EVENT = "pg-clickup-synced";
 
 // ----- localStorage keys -----
 // Device prefs, kept across users (Shell.jsx).

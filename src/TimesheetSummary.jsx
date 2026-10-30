@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Search, ChevronLeft, ChevronRight, Download, Copy, Check } from "lucide-react";
+import { Search, ChevronLeft, ChevronRight, Download, Copy, Check, RefreshCw } from "lucide-react";
 import { idbGet, PG_DATA_EVENT } from "./idbStore.js";
 import { findPersonMatch } from "./nameMatch.js";
 import { SEED_PEOPLE, loadKey } from "./capacityData.js";
@@ -7,8 +7,10 @@ import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
 import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { SearchBox } from "./SearchBox.jsx";
 import { buildXeroTimesheetText, copyText } from "./timesheetCopy.js";
-import { CLICKUP_DB_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js";
-import { fetchClickupFromSupabase } from "./clickupSync.js";
+import { CLICKUP_DB_KEY, CAP_PEOPLE_KEY, CLICKUP_SYNCED_EVENT } from "./storageKeys.js";
+import { fetchClickupFromSupabase, fetchSyncMeta, triggerManualSync } from "./clickupSync.js";
+import { runManualSync } from "./manualSync.js";
+import { timeAgo } from "./format.js";
 import { loadMyRoster } from "./capacityStore.js";
 import { filterOwnRows } from "./ownTime.js";
 
@@ -179,6 +181,43 @@ function TimesheetInner({ own = null }) {
   const [weekIdx, setWeekIdx] = useState(0);
   // Feedback for the Copy-for-Xero button: null, { ok: true, days } or { ok: false, msg }.
   const [copyState, setCopyState] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncErr, setSyncErr] = useState(null);
+  const [syncMeta, setSyncMeta] = useState(null);
+
+  useEffect(() => { fetchSyncMeta().then(setSyncMeta).catch(() => {}); }, []);
+
+  // Own mode: just this user's rows (the query already filters by user_name; belt and braces).
+  const fetchOwn = async () => {
+    const live = await fetchClickupFromSupabase(undefined, { userNames: own.userNames });
+    return live ? { ...live, rows: filterOwnRows(live.rows, own.userNames) } : null;
+  };
+
+  // "Sync now". Admin tier: the same ClickUp pull as Client Invoicing's button, then handed to
+  // App.jsx (CLICKUP_SYNCED_EVENT), which re-caches it for every module. Own mode can't run
+  // clickup-sync (admin tier only), so it re-reads the user's own rows from the last sync.
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncErr(null);
+    try {
+      if (own) {
+        const [live, meta] = await Promise.all([fetchOwn(), fetchSyncMeta().catch(() => null)]);
+        setClickup(live);
+        if (meta) setSyncMeta(meta);
+        setLoadError(null);
+      } else {
+        const { live, meta, error } = await runManualSync({ trigger: triggerManualSync, fetchLive: fetchClickupFromSupabase, fetchMeta: fetchSyncMeta });
+        if (live) setClickup(live);
+        if (meta) setSyncMeta(meta);
+        if (live || meta) window.dispatchEvent(new CustomEvent(CLICKUP_SYNCED_EVENT, { detail: { live, meta } }));
+        if (error) setSyncErr(error.message || String(error));
+      }
+    } catch (e) {
+      setSyncErr(e?.message || String(e));
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // `own` is memoized by Shell (permissions.js moduleScopeProps): a stable dependency.
   useEffect(() => {
@@ -194,10 +233,9 @@ function TimesheetInner({ own = null }) {
       }
       if (own.personId && own.userNames) {
         try {
-          const live = await fetchClickupFromSupabase(undefined, { userNames: own.userNames });
+          const live = await fetchOwn();
           if (cancelled) return;
-          // Belt and braces: the query already filtered by user_name.
-          setClickup(live ? { ...live, rows: filterOwnRows(live.rows, own.userNames) } : null);
+          setClickup(live);
         } catch (e) {
           if (cancelled) return;
           setLoadError(e?.message || String(e));
@@ -374,6 +412,7 @@ function TimesheetInner({ own = null }) {
     <div className="pg-cap-container">
       {header}
       {loadError && <div className="pg-banner-warn">Couldn't load your ClickUp time: {loadError}. Reload to try again.</div>}
+      {syncErr && <div className="pg-banner-warn">{own ? "Refresh" : "Sync"} failed: {syncErr}</div>}
       {own && !loadError && !hasData && (
         <div className="pg-banner-warn">No ClickUp time logged under your ClickUp name{(own.userNames || []).length > 1 ? "s" : ""} yet.</div>
       )}
@@ -403,6 +442,17 @@ function TimesheetInner({ own = null }) {
         <button
           className="pg-btn-ghost"
           style={{ marginLeft: "auto", gap: 6 }}
+          onClick={handleSync}
+          disabled={syncing}
+          title={(own ? "Reload your hours from the latest ClickUp sync (it runs every 20 minutes)" : "Pull the latest time from ClickUp now")
+            + (syncMeta?.last_synced_at ? ` · last synced ${timeAgo(syncMeta.last_synced_at)}` : "")}
+        >
+          <RefreshCw size={14} style={syncing ? { animation: "pg-spin 1s linear infinite" } : undefined} />
+          {syncing ? "Syncing…" : own ? "Refresh" : "Sync now"}
+        </button>
+        <button
+          className="pg-btn-ghost"
+          style={{ gap: 6 }}
           disabled={!selectedConsultant || !monthKeyState}
           onClick={copyForXero}
           title="Copies every day with time this month, one per line (e.g. 20 Oct-6.53), for the Xero extension"

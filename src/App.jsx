@@ -27,7 +27,7 @@ import {
   parseAccruedWorkbook, findHeader, SKIP_FOLDERS, parseStartTextMonth, dateKeyStr, parseClickupCsv,
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
-import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY } from "./storageKeys.js";
+import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY, CLICKUP_SYNCED_EVENT } from "./storageKeys.js";
 import { filterClientList, searchMatchesInOtherTypes, hasWorkedHours, scopedCardLists } from "./clientListFilter.js";
 import { sumCarry, lastMonthAccruedClients, isLifetimeBudgetType } from "./reconcile.js";
 import {
@@ -393,6 +393,20 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     window.addEventListener(PG_DATA_EVENT, onUpdate);
     return () => window.removeEventListener(PG_DATA_EVENT, onUpdate);
   }, [refetchAccrued, scoped]);
+
+  // "Sync now" from Timesheets: same meaning as this module's own button (give me live data),
+  // and adopting it here re-caches it for Capacity/Performance/Timesheets via the IDB effect.
+  useEffect(() => {
+    if (scoped) return;
+    const onSynced = (e) => {
+      const { live, meta } = e.detail || {};
+      manualOverrideRef.current = false;
+      if (live) { setClickup(live); setClickupSource("supabase"); }
+      if (meta) setSyncMeta(meta);
+    };
+    window.addEventListener(CLICKUP_SYNCED_EVENT, onSynced);
+    return () => window.removeEventListener(CLICKUP_SYNCED_EVENT, onSynced);
+  }, [scoped]);
 
   const handleManualSync = async () => {
     setSyncing(true);
