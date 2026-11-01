@@ -27,6 +27,7 @@ import {
   parseAccruedWorkbook, findHeader, SKIP_FOLDERS, parseStartTextMonth, dateKeyStr, parseClickupCsv,
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
+import { buildClientPdfZip } from "./pdfZip.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY } from "./storageKeys.js";
 import { filterClientList, searchMatchesInOtherTypes, hasWorkedHours, scopedCardLists } from "./clientListFilter.js";
 import { sumCarry, lastMonthAccruedClients, isLifetimeBudgetType } from "./reconcile.js";
@@ -104,6 +105,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
   const [drawerClientName, setDrawerClientName] = useState(null);
   const [copied, setCopied] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [pdfZipProgress, setPdfZipProgress] = useState(null); // null, or { done, total }
   const [clickupErr, setClickupErr] = useState(null);
   const [accruedErr, setAccruedErr] = useState(null);
   const [clientTypeFilter, setClientTypeFilter] = useState("package");
@@ -1040,6 +1042,28 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
     printClientPdf(c, monthText, priorMonthPretty);
   };
+  // Export menu "Generate PDF": every client's own PDF for the month, zipped. (It used to
+  // print only the open drawer's client, but an open drawer covers the Export menu, so the
+  // item was permanently disabled.)
+  const downloadAllPdfsZip = async () => {
+    setExportOpen(false);
+    if (pdfZipProgress || clients.length === 0) return;
+    const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
+    setPdfZipProgress({ done: 0, total: clients.length });
+    try {
+      const { blob, failed } = await buildClientPdfZip(clients, {
+        monthText, priorMonthText: priorMonthPretty,
+        onProgress: (done, total) => setPdfZipProgress({ done, total }),
+      });
+      download(blob, `PG-client-pdfs-${fileMonthTag}.zip`);
+      if (failed.length) window.alert(`The ZIP was downloaded, but these PDFs could not be generated:\n${failed.join("\n")}`);
+    } catch (e) {
+      console.error(e);
+      window.alert(`Could not generate the PDFs: ${e?.message || e}`);
+    } finally {
+      setPdfZipProgress(null);
+    }
+  };
   const downloadLineItemPdf = (c, lineItem) => {
     const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
     printLineItemPdf(c, lineItem, monthText, consultantFilter);
@@ -1079,11 +1103,11 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
             {ready && !scoped && (
               <div style={{ position: "relative" }}>
                 <button onClick={() => setExportOpen((x) => !x)} className="pg-btn-ghost" title="Export">
-                  <Download size={12} /> <span className="pg-btn-label">Export</span> <ChevronDown size={12} />
+                  <Download size={12} /> <span className="pg-btn-label">{pdfZipProgress ? `PDFs ${pdfZipProgress.done}/${pdfZipProgress.total}…` : "Export"}</span> <ChevronDown size={12} />
                 </button>
                 {exportOpen && (
                   <div className="pg-menu">
-                    <ExportItem icon={<Printer size={14} />} label="Generate PDF" onClick={() => { setExportOpen(false); drawerClient && downloadPdf(drawerClient); }} disabled={!drawerClient} title={drawerClient ? undefined : "Select a client first"} />
+                    <ExportItem icon={<Printer size={14} />} label="Generate PDFs — all clients (ZIP)" onClick={downloadAllPdfsZip} disabled={!!pdfZipProgress || clients.length === 0} title="One PDF per client for this month, bundled into a single ZIP" />
                     <div className="pg-menu-sep" />
                     <ExportItem icon={<FileText size={14} />} label="Pending hours (CSV)" onClick={() => doExport("pending", "csv")} />
                     <ExportItem icon={<FileSpreadsheet size={14} />} label="Pending hours (Excel)" onClick={() => doExport("pending", "xlsx")} />
