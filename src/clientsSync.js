@@ -25,7 +25,7 @@ function notifyCostCentresChanged() {
 // across transitions, consultant updates, folder edits, cost-centre changes, and
 // notes -- rather than each kind of change living in its own untracked place (as
 // folder edits and cost-centre add/remove did before this table existed).
-async function logClientHistory(client, action, summary, detail) {
+export async function logClientHistory(client, action, summary, detail) {
   const { data: userData } = await supabase.auth.getUser();
   const { error } = await supabase.from("pginvoice_client_history").insert({
     client, action, actor_email: userData?.user?.email || null, actor_user_id: userData?.user?.id || null,

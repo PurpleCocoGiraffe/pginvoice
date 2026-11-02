@@ -5,7 +5,8 @@ import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient.js";
 import { fetchClickupFromSupabase } from "./clickupSync.js";
 import { findMatch, multiFolderAccrualMatchesFor, isInternalFolder } from "./nameMatch.js";
-import { fetchClients, fetchClientEvents, typeForMonth, statusForMonth, lifecycleTimeline } from "./clientsSync.js";
+import { fetchClients, fetchClientEvents, typeForMonth, statusForMonth, lifecycleTimeline, addClientNote, logClientHistory } from "./clientsSync.js";
+import { adelaideMonthKey, adelaideDateKey } from "./dateMath.js";
 import { monthLabel } from "./parsers.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { PG_ACCRUALS_KEY } from "./storageKeys.js";
@@ -45,9 +46,10 @@ export function parseAgreedHours(raw) {
 }
 
 export function monthKeyOf(year, month) { return `${year}-${String(month + 1).padStart(2, "0")}`; }
+// The current month in Adelaide (the business's month boundary, same as clickup-sync and
+// Client Accruals) -- the browser's own clock put a near-midnight load in the wrong month.
 export function currentMonthKey() {
-  const d = new Date();
-  return monthKeyOf(d.getFullYear(), d.getMonth());
+  return adelaideMonthKey();
 }
 export function monthLabelOf(key) {
   const [y, m] = key.split("-").map(Number);
@@ -202,6 +204,87 @@ export async function upsertAccrualCell(client, monthKey, patch, extra = {}) {
   const { error } = await supabase.from("pginvoice_accruals").upsert(row, { onConflict: "client,month_key" });
   if (error) throw error;
   notifyAccrualsChanged();
+}
+
+// ------------------------------ ledger actions (Client Accruals Management) ------------------------------
+// Admin tier only (pginvoice_accruals writes are admin-only under RLS). Each one updates the
+// listed columns only -- never an upsert of the whole row -- writes a dated line onto the
+// month's comment, a pginvoice_client_history row and (write-off / not-invoiced) a client
+// note, so nobody has to guess later why a balance moved. The caller recomputes afterwards.
+
+const fmtH = (n) => `${Math.round(Number(n) * 100) / 100} h`;
+function stampLine(text) {
+  return `${text} (recorded ${adelaideDateKey()})`;
+}
+function withLine(existing, line) {
+  const prev = (existing || "").trim();
+  return prev ? `${prev}\n${line}` : line;
+}
+async function updateAccrualRow(client, monthKey, patch) {
+  const { data, error } = await supabase.from("pginvoice_accruals").update(patch)
+    .eq("client", client).eq("month_key", monthKey).select("client");
+  if (error) throw error;
+  if (!data || !data.length) throw new Error(`No ledger row for ${client} ${monthKey} -- recompute first.`);
+  notifyAccrualsChanged();
+}
+
+// Clears a "worked hours changed after close" flag once someone has checked it. The next
+// recompute compares against the hours now stored, so the flag stays cleared until the hours
+// move again.
+export async function acknowledgeHoursFlag(client, monthKey, cell, note) {
+  const from = cell?.flaggedFromHours, to = cell?.workedHours;
+  const line = stampLine(`Hours change acknowledged${from != null && to != null ? ` (${fmtH(from)} -> ${fmtH(to)})` : ""}${note ? `: ${note}` : ""}`);
+  const comment = withLine(cell?.comment, line);
+  await updateAccrualRow(client, monthKey, { hours_flagged: false, flagged_from_hours: null, comment });
+  logClientHistory(client, "accrual_flag_ack", `Acknowledged a worked-hours change for ${monthKey}`, { monthKey, fromHours: from ?? null, toHours: to ?? null, note: note || null });
+  return comment;
+}
+
+// Records a write-off: `value` is the agreed closing balance for `monthKey` (same sign as
+// accrual_value, 0 = nothing carried into next month); `reason` is required (the table's
+// check constraint refuses a reset without a note outside the macro-sheet month).
+export async function recordWriteOff(client, monthKey, cell, { value, reason }) {
+  if (!reason || !reason.trim()) throw new Error("A reason is required for a write-off.");
+  const v = Math.round(Number(value) * 100) / 100;
+  if (!Number.isFinite(v)) throw new Error("Enter the closing balance as a number (0 = nothing carried).");
+  const before = carryOutOf(cell);
+  const note = `Write-off: ${reason.trim()} (${monthKey} closing balance ${before != null ? fmtH(before) : "n/a"} set to ${fmtH(v)}; recorded ${adelaideDateKey()}).`;
+  const comment = withLine(cell?.comment, stampLine(`Balance written off${before != null ? ` from ${fmtH(before)}` : ""} to ${fmtH(v)}: ${reason.trim()}`));
+  await updateAccrualRow(client, monthKey, { reset_value: v, reset_note: note, reset_at: new Date().toISOString(), comment });
+  logClientHistory(client, "accrual_write_off", `Wrote off the ${monthKey} accrual balance${before != null ? ` (${fmtH(before)})` : ""} to ${fmtH(v)}`, { monthKey, from: before, to: v, reason: reason.trim() });
+  try { await addClientNote(client, note); } catch (e) { console.error("Couldn't add the write-off client note:", e); }
+  return comment;
+}
+
+export async function removeWriteOff(client, monthKey, cell, reason) {
+  const comment = withLine(cell?.comment, stampLine(`Write-off removed${reason ? `: ${reason}` : ""}`));
+  await updateAccrualRow(client, monthKey, { reset_value: null, reset_note: null, reset_at: null, comment });
+  logClientHistory(client, "accrual_write_off_removed", `Removed the ${monthKey} write-off`, { monthKey, previous: cell?.resetValue ?? null, previousNote: cell?.resetNote ?? null, reason: reason || null });
+  return comment;
+}
+
+// Marks a package month as not invoiced: a human override (is_override) with
+// NOT_INVOICED_NOTE, agreed 0 and accrual_value = worked hours + the carry into it, so the
+// recompute keeps it and Client Accruals shows the working on the next month's invoice.
+export async function markNotInvoiced(client, monthKey, cell, { balance, reason }) {
+  if (!reason || !reason.trim()) throw new Error("A reason is required.");
+  const comment = withLine(cell?.comment, stampLine(`Marked not invoiced (package hours not billed; closing balance ${fmtH(balance)}): ${reason.trim()}`));
+  await updateAccrualRow(client, monthKey, {
+    is_override: true, accrual_note: NOT_INVOICED_NOTE, agreed_hpm: "0", accrual_value: balance, pct_over_under: null,
+    hours_flagged: false, flagged_from_hours: null, comment,
+  });
+  logClientHistory(client, "accrual_not_invoiced", `Marked ${monthKey} as not invoiced (closing balance ${fmtH(balance)})`, { monthKey, previous: cell?.accrualValue ?? null, balance, reason: reason.trim() });
+  try { await addClientNote(client, `${monthKey} package not invoiced: ${reason.trim()} (closing balance ${fmtH(balance)}; recorded ${adelaideDateKey()}).`); } catch (e) { console.error("Couldn't add the not-invoiced client note:", e); }
+  return comment;
+}
+
+// Back to a normal computed month; the recompute that follows rewrites its figures and
+// agreed hours from ClickUp.
+export async function undoNotInvoiced(client, monthKey, cell, reason) {
+  const comment = withLine(cell?.comment, stampLine(`Not-invoiced mark removed${reason ? `: ${reason}` : ""}`));
+  await updateAccrualRow(client, monthKey, { is_override: false, accrual_note: null, comment });
+  logClientHistory(client, "accrual_not_invoiced_removed", `Removed the not-invoiced mark on ${monthKey}`, { monthKey, previous: cell?.accrualValue ?? null, reason: reason || null });
+  return comment;
 }
 
 export async function upsertAccrualRows(rows) {
@@ -705,39 +788,12 @@ export function mergeLatestComments(next, prev) {
   });
 }
 
-// -------------------------- export, same layout as the source sheet --------------------------
-export function exportAccrualsWorkbook(clients, monthKeys, fileLabel) {
-  // A "Reset" sub-column only for months where at least one exported client carries a
-  // macro-sheet reset -- every other month keeps the source sheet's exact layout.
-  const resetMonths = new Set(monthKeys.filter((mk) => clients.some((c) => c.months[mk]?.resetValue != null)));
-  const header = ["Client", "Agreed h.p.m"];
-  for (const mk of monthKeys) {
-    header.push(`Worked hrs (${monthLabelOf(mk)})`, monthLabelOf(mk) + " Accrued");
-    if (resetMonths.has(mk)) header.push(monthLabelOf(mk) + " Reset (macro sheet)");
-    header.push("% over/under hours", `Comments (${monthLabelOf(mk)})`);
-  }
-  const aoa = [["PG Weekly Hours Summary (Accumulative Total)"], [], header];
-  for (const c of clients) {
-    // Prefer the most recent in-range month's own agreed_hpm over the client-level
-    // scalar, which is a stale snapshot from whenever it was first written and can be
-    // wrong for a client whose package hours changed mid-range (same class of bug as
-    // the ARAS/Amorim Cork/Warrina Homes stale-scalar issues fixed elsewhere).
-    let agreedForRange = c.agreedHpm ?? "";
-    for (let i = monthKeys.length - 1; i >= 0; i--) {
-      const cell = c.months[monthKeys[i]];
-      if (cell && cell.agreedHpm !== null && cell.agreedHpm !== undefined) { agreedForRange = cell.agreedHpm; break; }
-    }
-    const row = [c.client, agreedForRange];
-    for (const mk of monthKeys) {
-      const cell = c.months[mk] || {};
-      row.push(cell.workedHours ?? "", cell.accrualValue ?? cell.accrualNote ?? "");
-      if (resetMonths.has(mk)) row.push(cell.resetValue ?? "");
-      row.push(cell.pct ?? "", cell.comment ?? "");
-    }
-    aoa.push(row);
-  }
+// -------------------------- export --------------------------
+// `aoa` / `cols` come from accrualsWorkbookRows (accrualsView.js, pure and tested); this only
+// writes the file.
+export function downloadAccrualsWorkbook({ aoa, cols }, fileLabel) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = [{ wch: 28 }, { wch: 12 }, ...monthKeys.flatMap((mk) => (resetMonths.has(mk) ? [{ wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 40 }] : [{ wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 40 }]))];
+  ws["!cols"] = cols;
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Accrued Hours");
   const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });

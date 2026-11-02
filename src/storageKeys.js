@@ -23,6 +23,8 @@ export const THEME_KEY = "pg-theme";
 export const COLLAPSE_KEY = "pg-sidebar-collapsed";
 // Wages review module: filters + cards/table view, persisted per browser (localStorage).
 export const WAGES_PREFS_KEY = "pg-wages-prefs";
+// Client Accruals Management: filters / range / sort, persisted per browser (localStorage).
+export const ACCRUALS_PREFS_KEY = "pg-accruals-prefs";
 // Client Invoicing: LEGACY per-browser manual name matches -- now shared in
 // pginvoice_name_matches; App.jsx only reads this once to move it into the table (or uses it
 // while the table isn't deployed), then clears it. Still in USER_DATA_LOCAL_KEYS until then.
@@ -36,4 +38,4 @@ export const CACHE_OWNER_KEY = "pg-cache-owner";
 // localStorage keys holding a signed-in user's data (or filters over it), cleared when a
 // different user signs in or on sign-out. Deliberately NOT listed (kept per device):
 // THEME_KEY, COLLAPSE_KEY, and supabase-js's own "sb-*" auth session keys. Any new data-bearing key must be added here.
-export const USER_DATA_LOCAL_KEYS = [NAMEMAP_KEY, VIEWSTATE_KEY, PERF_NOTES_KEY, WAGES_PREFS_KEY];
+export const USER_DATA_LOCAL_KEYS = [NAMEMAP_KEY, VIEWSTATE_KEY, PERF_NOTES_KEY, WAGES_PREFS_KEY, ACCRUALS_PREFS_KEY];
