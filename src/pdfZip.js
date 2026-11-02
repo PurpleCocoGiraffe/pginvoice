@@ -18,7 +18,11 @@ const PAGE_W_MM = 210;
 const PAGE_H_MM = 297;
 const MARGIN_MM = 15;
 const CONTENT_W_MM = PAGE_W_MM - 2 * MARGIN_MM;
-const FOOTER_H_MM = 15; // the .letterhead-footer-cell height
+// Letterhead footer strip: full page width (edge to edge, no side margins), at the same
+// height on every page, its bottom FOOTER_BOTTOM_MM (1 cm) above the bottom edge of the page.
+// Content stops FOOTER_GAP_MM above the strip; anything longer flows to the next page.
+const FOOTER_BOTTOM_MM = 10;
+const FOOTER_GAP_MM = 5;
 const CONTENT_W_PX = Math.round((CONTENT_W_MM / 25.4) * 96);
 const SCALE = 2;
 
@@ -199,7 +203,7 @@ async function ensureHostFonts() {
   await loadTemplateFonts(document);
 }
 
-async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
+async function renderClientPdf(c, monthText, priorMonthText, libs, footer, footerBottomMm = FOOTER_BOTTOM_MM) {
   const { jsPDF, html2canvas } = libs;
   const html = buildPrintHtml(c, monthText, priorMonthText)
     .replace(/<script>[\s\S]*?<\/script>/g, "") // no auto window.print()
@@ -224,7 +228,9 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
     });
 
     const pxPerMm = CONTENT_W_PX / CONTENT_W_MM;
-    const pageHpx = Math.floor((PAGE_H_MM - 2 * MARGIN_MM - FOOTER_H_MM) * pxPerMm);
+    const footerH = PAGE_W_MM * (footer.height / footer.width);
+    const footerTop = PAGE_H_MM - footerBottomMm - footerH;
+    const pageHpx = Math.floor((footerTop - FOOTER_GAP_MM - MARGIN_MM) * pxPerMm);
     const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait", compress: true });
     pdf.setProperties({ title: `${c.displayName || c.name} ${monthText}`, creator: "Purple Giraffe" });
 
@@ -239,13 +245,7 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
       ctx.fillRect(0, 0, page.width, page.height);
       ctx.drawImage(canvas, 0, Math.round(from * SCALE), canvas.width, page.height, 0, 0, page.width, page.height);
       pdf.addImage(page.toDataURL("image/jpeg", 0.95), "JPEG", MARGIN_MM, MARGIN_MM, CONTENT_W_MM, (to - from) / pxPerMm);
-      // Letterhead footer, full content width at the bottom of its 15mm band -- like the
-      // print version's repeating <tfoot>: at the foot of a full page, and straight after
-      // the content on the last page.
-      const fh = CONTENT_W_MM * (footer.height / footer.width);
-      const last = i === slices.length - 1;
-      const bandTop = last ? MARGIN_MM + (to - from) / pxPerMm : PAGE_H_MM - MARGIN_MM - FOOTER_H_MM;
-      pdf.addImage(footer.dataUrl, "PNG", MARGIN_MM, bandTop + FOOTER_H_MM - fh, CONTENT_W_MM, fh);
+      pdf.addImage(footer.dataUrl, "PNG", 0, footerTop, PAGE_W_MM, footerH);
     });
     return pdf.output("blob");
   } finally {
@@ -255,7 +255,7 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
 
 // Builds every planned PDF (planClientPdfs) and returns the ZIP blob plus any that failed.
 // onProgress(done, total) after each PDF.
-export async function buildClientPdfZip(entries, { monthText, priorMonthText, onProgress } = {}) {
+export async function buildClientPdfZip(entries, { monthText, priorMonthText, onProgress, footerBottomMm } = {}) {
   const [{ jsPDF }, { default: html2canvas }, { default: JSZip }] = await Promise.all([
     import("jspdf"), import("html2canvas"), import("jszip"),
   ]);
@@ -269,7 +269,7 @@ export async function buildClientPdfZip(entries, { monthText, priorMonthText, on
   for (let i = 0; i < entries.length; i++) {
     const { path, client } = entries[i];
     try {
-      zip.file(path, await renderClientPdf(client, monthText, priorMonthText, { jsPDF, html2canvas }, footer));
+      zip.file(path, await renderClientPdf(client, monthText, priorMonthText, { jsPDF, html2canvas }, footer, footerBottomMm));
     } catch (e) {
       console.error("PDF failed for", path, e);
       failed.push(path);
