@@ -246,7 +246,10 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                 value={c.priorBalance != null ? `${fmt(Math.abs(c.priorBalance))} h` : "—"}
                 tone={c.priorBalance != null && c.priorBalance > 0 ? "var(--status-over)" : c.priorBalance != null && c.priorBalance < 0 ? "var(--status-ok)" : undefined}
                 sub={priorMonthPretty ? `from ${priorMonthPretty}` : null}
-                flag={c.priorBalanceEstimated ? {
+                flag={c.priorNotInvoiced ? {
+                  text: "not invoiced",
+                  title: `${priorMonthPretty || "The prior month"} was not invoiced: no package hours were billed for it, so this carry is its time tracked (${fmt(c.priorNotInvoiced.workedH ?? 0)} h) against the balance carried into it (${fmt(c.priorNotInvoiced.carriedIn ?? 0)} h, signed).`,
+                } : c.priorBalanceEstimated ? {
                   text: "estimated",
                   title: `The accrued sheet has no column for ${priorMonthPretty || "the prior month"} — this figure is estimated from ClickUp hours worked that month instead of the sheet's own recorded balance. Re-upload the accrued sheet with that month's column once it's available for the verified number.`,
                 } : c.priorRebaseline ? {

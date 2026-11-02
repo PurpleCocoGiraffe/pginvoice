@@ -126,7 +126,10 @@ export function buildReconciliationClients(rows) {
     // `resets` flags exactly which months were re-baselined.
     const computedBalances = {};
     const resets = {};
+    // Months a human marked as not invoiced (see NOT_INVOICED_NOTE).
+    const notInvoiced = {};
     for (const [mk, cell] of Object.entries(c.months)) {
+      if (cell.isOverride && cell.accrualNote === NOT_INVOICED_NOTE) notInvoiced[mk] = true;
       monthSet.add(mk);
       const carry = carryOutOf(cell);
       if (carry !== null) balances[mk] = carry;
@@ -134,7 +137,7 @@ export function buildReconciliationClients(rows) {
       if (cell.resetValue != null) resets[mk] = cell.resetValue;
       agreedByMonth[mk] = cell.agreedHpm !== null ? parseAgreedHours(cell.agreedHpm) : null;
     }
-    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets };
+    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets, notInvoiced };
   });
   const balanceCols = [...monthSet].sort().map((mk) => {
     const [y, m] = mk.split("-").map(Number); // m is 1-12
@@ -288,6 +291,11 @@ export function accrualFolderMinutesFor(clientName, clickupFolder, workedByFolde
 // accrual_note on a month where an offboarded client's owed balance is being drawn down
 // by wrap-up work (see the ended-period branch of replayClientAccruals).
 export const WRAP_UP_NOTE = "Offboarded — wrap-up work deducted from owed hours";
+// accrual_note on a human-set (is_override) month that was NOT invoiced: its package hours
+// were never billed, so its closing balance is just its worked hours against the balance
+// carried into it (agreed_hpm 0). The following month's reconciliation shows that working
+// on its PDF / copy summary (reconcileClientMonth's priorNotInvoiced). Comunet, Sept 2026.
+export const NOT_INVOICED_NOTE = "Not invoiced";
 
 export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, workedMinutesFor, endPeriods = [] }) {
   const rows = [];

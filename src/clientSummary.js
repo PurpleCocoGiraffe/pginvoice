@@ -5,6 +5,29 @@ import { typeLabelShort } from "./clientTypeLabels.js";
 import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
 import { WITHHELD_NOTE } from "./clientListFilter.js";
 import { costCentreInvoicesFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
+import { monthLabel } from "./parsers.js";
+
+const labelOfKey = (key) => {
+  const [y, m] = String(key).split("-").map(Number);
+  return monthLabel(y, m - 1);
+};
+
+// The working for a carry-in from a month that was not invoiced (reconcileClientMonth's
+// priorNotInvoiced): that month's time tracked, then the balance carried into it, which
+// together give the carry shown next. -> { rows: [[label, hours]], note } or null.
+export function notInvoicedLines(info) {
+  if (!info) return null;
+  const month = labelOfKey(info.monthKey);
+  const from = labelOfKey(info.carriedInKey);
+  const rows = [[`${month} (not invoiced): time tracked`, info.workedH ?? 0]];
+  const ci = info.carriedIn ?? 0;
+  if (ci < 0) rows.push([`Less hours owed carried in from ${from}`, Math.abs(ci)]);
+  else if (ci > 0) rows.push([`Plus over-use carried in from ${from}`, ci]);
+  return {
+    rows,
+    note: `${month} was not invoiced, so no package hours were billed for it: its time tracked is counted against the balance carried in from ${from}, and the result is carried into this month.`,
+  };
+}
 
 export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}) {
   // Always the whole client's tasks/hours, never one consultant's slice (see unfilteredForExport).
@@ -41,6 +64,8 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
     lines.push(`Package: ${fmt(c.pkg)} h`);
     const p = c.priorBalance ?? 0;
     const rebased = c.priorRebaseline ? " (re-baselined)" : "";
+    const notInv = notInvoicedLines(c.priorNotInvoiced);
+    if (notInv) for (const [label, h] of notInv.rows) lines.push(`${label}: ${fmt(h)} h`);
     if (p < 0) lines.push(`Carried in from ${priorMonthPretty}${rebased}: ${fmt(Math.abs(p))} h`);
     else if (p > 0) lines.push(`Over-used in ${priorMonthPretty}${rebased}: ${fmt(p)} h`);
     else lines.push(`Prior balance${rebased}: 0 h`);

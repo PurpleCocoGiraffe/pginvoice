@@ -3,6 +3,7 @@ import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { fmt, esc, filenameSafe, isPackageLikeType } from "./format.js";
 import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
 import { WITHHELD_NOTE } from "./clientListFilter.js";
+import { notInvoicedLines } from "./clientSummary.js";
 import { costCentreInvoicesFor, costCentreInvoice, invoiceCapRuleFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
 
 // "Invoices by cost centre" rows for a client with a per-cost-centre invoice cap
@@ -61,6 +62,13 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
   const billableRow = Math.abs(billableRounded - workedRounded) > 0.005
     ? `<tr class="datarow"><td class="label">Billable time counted toward the package</td><td class="right">${fmt(billableRounded)} h</td></tr>` : "";
 
+  // The prior month wasn't invoiced: show how its carry-out was worked out (worked hours
+  // against the balance carried into it, no package billed) above the carry row.
+  const notInv = !c.isLineItemExport ? notInvoicedLines(c.priorNotInvoiced) : null;
+  const notInvoicedRows = notInv ? notInv.rows.map(([label, h]) => `
+    <tr class="datarow"><td class="label">${esc(label)}</td><td class="right">${fmt(h)} h</td></tr>`).join("") : "";
+  const notInvoicedNote = notInv ? ` ${esc(notInv.note)}` : "";
+
   const isWrapUp = c.status === "wrap_up" && !c.isLineItemExport;
   const feeOnly = isQuoted && c.quotedAmount == null && !!c.fixedFee;
   // One invoice of a capped cost centre split across several (pdfZip.js invoicePartClient).
@@ -92,19 +100,21 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
     <tr class="noborder"><td colspan="2" class="note-cell">No package on file for this client this month, so no balance is calculated.</td></tr>` : isPkg && onHold ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Package</td><td class="right">${fmt(c.pkg)} h / month</td></tr>
+    ${notInvoicedRows}
     <tr class="datarow"><td class="label">${priorLabel}${priorMonthText ? ` (${esc(priorMonthText)})` : ""}${priorRebased}</td><td class="right">${fmt(priorAbs)} h</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="datarow"><td class="label">Balance carried forward</td><td class="right">${fmt(balanceForward)} h ${balanceForward > 0 ? "over" : balanceForward < 0 ? "credit" : ""}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">On hold this month: the package is paused, so no package hours are consumed and the balance carries forward unchanged.</td></tr>` : isPkg ? `
+    <tr class="noborder"><td colspan="2" class="note-cell">On hold this month: the package is paused, so no package hours are consumed and the balance carries forward unchanged.${notInvoicedNote}</td></tr>` : isPkg ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Package</td><td class="right">${fmt(c.pkg)} h / month</td></tr>
+    ${notInvoicedRows}
     <tr class="datarow"><td class="label">${priorLabel}${priorMonthText ? ` (${esc(priorMonthText)})` : ""}${priorRebased}</td><td class="right">${fmt(priorAbs)} h</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     ${billableRow}
     <tr class="total"><td>Total accrued time</td><td class="right">${fmt(totalAccrued)} h</td></tr>
     <tr class="datarow"><td class="label">New balance going forward</td><td class="right">${fmt(balanceForward)} h ${balanceForward > 0 ? "over" : balanceForward < 0 ? "credit" : ""}</td></tr>
     <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${remainingShown >= 0 ? fmt(remainingShown) + " h left" : fmt(Math.abs(remainingShown)) + " h over"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = billable time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are re-baselined to the accrual sheet's closing figure." : ""}</td></tr>` : isQuoted ? `
+    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = billable time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are re-baselined to the accrual sheet's closing figure." : ""}${notInvoicedNote}</td></tr>` : isQuoted ? `
     <tr class="noborder"><td colspan="2" class="section-heading">${isMap ? "MAP summary" : "Quoted project summary"}</td></tr>
     <tr class="datarow"><td class="label">${isMap ? "MAP hours" : "Quoted amount"}</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
