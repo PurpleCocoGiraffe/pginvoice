@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Link2, MoreVertical, ChevronDown, Copy, Printer, Users } from "lucide-react";
+import { Link2, MoreVertical, ChevronDown, Copy, Printer, Users, FileText } from "lucide-react";
 import { fmt, isPackageLikeType } from "./format.js";
 import { isLifetimeBudgetType } from "./reconcile.js";
 import { typeLabelShort, typeTone } from "./clientTypeLabels.js";
@@ -83,7 +83,7 @@ function CostCentreBreakdown({ client: c, divider, showReset }) {
 // `showReset`: the viewed month has at least one balance reset (macro sheet / write-off) somewhere in the list,
 // so every row (and the header) gets the extra "Remaining Reset" track -- blank for a
 // client without one -- keeping all columns aligned.
-export function ClientRow({ index, client: c, active, onOpen, nested, parentName, onCopy, onPdf, tileRow, hasMoreBelow, subIndex, avatarOf, showReset }) {
+export function ClientRow({ index, client: c, active, onOpen, nested, parentName, onCopy, onPdf, onExportSummary, tileRow, hasMoreBelow, subIndex, avatarOf, showReset }) {
   const [inlineOpen, setInlineOpen] = useState(false);
   // Cost-centre breakdown starts collapsed, same as every other row's expand affordance
   // (the reconciliation breakdown below, the drawer) -- the list should read as a plain
@@ -326,6 +326,8 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
               <div className="pg-menu-sep" />
               <ExportItem icon={<Copy size={14} />} label="Copy summary" onClick={() => { setMenuOpen(false); onCopy?.(c); }} />
               <ExportItem icon={<Printer size={14} />} label="Generate PDF" onClick={() => { setMenuOpen(false); onPdf?.(c); }} />
+              {/* Only on a group's parent row (sub-projects and/or a cost-centre roll-up). */}
+              {onExportSummary && <ExportItem icon={<FileText size={14} />} label="Export summary (no line items)" onClick={() => { setMenuOpen(false); onExportSummary(c); }} />}
             </div>
           )}
         </span>

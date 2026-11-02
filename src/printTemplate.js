@@ -3,6 +3,7 @@ import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { fmt, esc, filenameSafe, isPackageLikeType } from "./format.js";
 import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
 import { WITHHELD_NOTE } from "./clientListFilter.js";
+import { typeLabelShort } from "./clientTypeLabels.js";
 import { costCentreInvoicesFor, costCentreInvoice, invoiceCapRuleFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
 
 // "Invoices by cost centre" rows for a client with a per-cost-centre invoice cap
@@ -22,11 +23,9 @@ function invoiceRowsHtml(invoices) {
 // ------------------------------- PDF (print) --------------------------------
 const PRINT = { ink: "#000000", inkSoft: "#000000", brand: "#3F008E", line: "#E7E1F0", brandSoft: "#F1EAFB" };
 
-export function buildPrintHtml(client, monthText, priorMonthText) {
-  // The whole client's tasks/hours, never one consultant's slice -- the reconciliation below
-  // is the whole client's balance, so a consultant-filtered task total next to it produced a
-  // document whose figures didn't add up. A line-item export is already its own slice.
-  const c = client.isLineItemExport ? client : unfilteredForExport(client);
+// The figures block for one client (Reconciliation / Quoted summary / Summary), shared by
+// the full per-client PDF and the summary-only group PDF. `c` is already unfiltered.
+function reconciliationHtml(c, priorMonthText) {
   const type = c.type;
   const isPkg = isPackageLikeType(type) && !c.isLineItemExport;
   const hasPkg = c.pkg != null && c.pkg > 0;
@@ -34,10 +33,6 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
   const isQuoted = isLifetimeBudgetType(type) && !c.isLineItemExport;
   const isMap = type === "map";
   const budgetWord = isMap ? "MAP" : "quoted";
-  // A line-item export carries its own one-cost-centre invoices (see printLineItemPdf).
-  const invoices = c.isLineItemExport ? (c.invoices || null) : costCentreInvoicesFor(c);
-  const taskRows = [...c.tasksFiltered.entries()].sort((a, b) => b[1] - a[1])
-    .map(([task, min]) => `<tr class="datarow"><td>${esc(task)}</td><td class="right">${fmt(min / 60)}</td></tr>`).join("");
   const workedRounded = Math.round(c.workedFiltered * 100) / 100;
   // The package math always runs on billable hours (the Billable-only toggle is display-only).
   const billableRounded = Math.round((c.billableWorked ?? c.workedFiltered) * 100) / 100;
@@ -103,10 +98,70 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
     <tr class="noborder"><td colspan="2" class="section-heading">Summary</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only -- part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package/reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "digital" ? "Digital Package: fixed monthly price. Hours are shown for reference only." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;
+  return reconciliation;
+}
 
+export function buildPrintHtml(client, monthText, priorMonthText) {
+  // The whole client's tasks/hours, never one consultant's slice -- the reconciliation below
+  // is the whole client's balance, so a consultant-filtered task total next to it produced a
+  // document whose figures didn't add up. A line-item export is already its own slice.
+  const c = client.isLineItemExport ? client : unfilteredForExport(client);
+  // A line-item export carries its own one-cost-centre invoices (see printLineItemPdf).
+  const invoices = c.isLineItemExport ? (c.invoices || null) : costCentreInvoicesFor(c);
+  const taskRows = [...c.tasksFiltered.entries()].sort((a, b) => b[1] - a[1])
+    .map(([task, min]) => `<tr class="datarow"><td>${esc(task)}</td><td class="right">${fmt(min / 60)}</td></tr>`).join("");
+  const workedRounded = Math.round(c.workedFiltered * 100) / 100;
+  return docHtml({
+    title: `${filenameSafe(c.displayName)} ${filenameSafe(monthText)}`,
+    brandLine: "Purple Giraffe · client hours report",
+    heading: c.displayName, monthText,
+    body: `
+      <tr class="noborder"><td colspan="2" class="section-heading">Tasks worked this month</td></tr>
+      ${taskRows || `<tr class="datarow"><td colspan="2" class="label">No tasks in this filter.</td></tr>`}
+      <tr class="total"><td>Total</td><td class="right">${fmt(workedRounded)} h</td></tr>
+
+      ${reconciliationHtml(c, priorMonthText)}
+      ${invoiceRowsHtml(invoices)}`,
+  });
+}
+
+// Summary-only export for a client with sub-projects and/or a cost-centre roll-up: every
+// nested row's own totals and figures (hours, package/carry/remaining, quoted budget,
+// invoices, cost-centre hours) on one document, without the task line items. `parent` and
+// `subProjects` are App.jsx's cards (parent first, then each nested sub-project row).
+export function buildGroupSummaryHtml(parent, subProjects, monthText, priorMonthText) {
+  const cards = [parent, ...(subProjects || [])].map((x) => unfilteredForExport(x));
+  const totalWorked = cards.reduce((sum, x) => sum + (x.worked || 0), 0);
+  const sections = cards.map((x, i) => {
+    const cc = x.costCentre?.lineItems?.length ? `
+      <tr class="noborder"><td colspan="2" class="section-heading">Hours by cost centre</td></tr>
+      ${x.costCentre.lineItems.map((item) => `<tr class="datarow"><td>${esc(item.name)}</td><td class="right">${fmt(item.hours)} h</td></tr>`).join("")}` : "";
+    return `
+      <tr class="noborder"><td colspan="2" class="client-heading">${esc(x.displayName)} <span class="client-tag">${esc(i === 0 ? typeLabelShort(x.type) : `Sub project · ${typeLabelShort(x.type)}`)}</span></td></tr>
+      ${cc}
+      ${reconciliationHtml(x, priorMonthText)}
+      ${invoiceRowsHtml(costCentreInvoicesFor(x))}`;
+  }).join("");
+  return docHtml({
+    title: `${filenameSafe(parent.displayName)} summary ${filenameSafe(monthText)}`,
+    brandLine: "Purple Giraffe · client summary",
+    heading: parent.displayName, monthText,
+    body: `${sections}
+      <tr class="noborder"><td colspan="2" class="client-heading">All projects</td></tr>
+      ${cards.map((x) => `<tr class="datarow"><td>${esc(x.displayName)}</td><td class="right">${fmt(Math.round((x.worked || 0) * 100) / 100)} h</td></tr>`).join("")}
+      <tr class="total"><td>Total time tracked this month</td><td class="right">${fmt(Math.round(totalWorked * 100) / 100)} h</td></tr>
+      <tr class="noborder"><td colspan="2" class="note-cell">Summary only: task-level line items are left out. Each project's own figures are shown above; use Generate PDF on a project for its task breakdown.</td></tr>`,
+  });
+}
+
+export function printGroupSummaryPdf(parent, subProjects, monthText, priorMonthText) {
+  openPrintWindow(buildGroupSummaryHtml(parent, subProjects, monthText, priorMonthText));
+}
+
+function docHtml({ title, brandLine, heading, monthText, body }) {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<title>${esc(filenameSafe(c.displayName))} ${esc(filenameSafe(monthText))}</title>
+<title>${esc(title)}</title>
 <style>
   ${NORDIQUE_FONT_FACE_CSS}
   @page { margin: 15mm; size: A4; }
@@ -133,6 +188,8 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
   .right { text-align: right; font-variant-numeric: tabular-nums; font-family: Arial, "Segoe UI", sans-serif; }
   .total td { font-weight: 700; border-top: 2px solid ${PRINT.ink}; border-bottom: none; padding-top: 12px; }
   .label { color: ${PRINT.inkSoft}; }
+  .client-heading { font-family: 'Nordique Pro', sans-serif; font-weight: 700; font-size: 17px; padding-top: 28px; border-bottom: 1px solid ${PRINT.ink}; }
+  .client-tag { font-size: 10px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: ${PRINT.brand}; margin-left: 6px; }
   .note-cell { font-size: 11px; color: ${PRINT.inkSoft}; font-style: italic; padding-top: 4px; }
   .generated-note-cell { font-size: 9px; color: ${PRINT.inkSoft}; text-align: right; font-style: italic; padding-top: 24px; }
   .letterhead-footer-cell {
@@ -155,17 +212,11 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
     </tfoot>
     <tbody>
       <tr class="noborder"><td colspan="2" class="header-cell">
-        <div class="brand">Purple Giraffe · client hours report</div>
-        <h1>${esc(c.displayName)}</h1>
+        <div class="brand">${esc(brandLine)}</div>
+        <h1>${esc(heading)}</h1>
         <div class="subtitle">${esc(monthText)}</div>
       </td></tr>
-
-      <tr class="noborder"><td colspan="2" class="section-heading">Tasks worked this month</td></tr>
-      ${taskRows || `<tr class="datarow"><td colspan="2" class="label">No tasks in this filter.</td></tr>`}
-      <tr class="total"><td>Total</td><td class="right">${fmt(workedRounded)} h</td></tr>
-
-      ${reconciliation}
-      ${invoiceRowsHtml(invoices)}
+${body}
 
       <tr class="noborder"><td colspan="2" class="generated-note-cell">Generated ${esc(new Date().toLocaleString())}</td></tr>
     </tbody>
@@ -212,7 +263,10 @@ export function printLineItemPdf(parent, lineItem, monthText, consultantFilter) 
 }
 
 export function printClientPdf(c, monthText, priorMonthText) {
-  const html = buildPrintHtml(c, monthText, priorMonthText);
+  openPrintWindow(buildPrintHtml(c, monthText, priorMonthText));
+}
+
+function openPrintWindow(html) {
   const w = window.open("", "_blank", "width=900,height=1100");
   if (!w) {
     // popup blocked — fall back to blob URL in the current tab
