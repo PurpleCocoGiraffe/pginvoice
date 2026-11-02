@@ -236,6 +236,18 @@ export function reconcileClientMonth({
     }
   }
 
+  // The prior month was not invoiced (NOT_INVOICED_NOTE override): no package was billed,
+  // so its carry-out is just its worked hours against the balance carried into it. Kept so
+  // this month's PDF / copy summary can show that working.
+  let priorNotInvoiced = null;
+  if (a && priorKey && a.notInvoiced?.[priorKey] && hasPkg && !monthOffPackage) {
+    const carriedKey = prevMonthKeyStr(priorKey);
+    priorNotInvoiced = {
+      monthKey: priorKey, workedH: priorWorkedH,
+      carriedInKey: carriedKey, carriedIn: a.balances?.[carriedKey] ?? 0,
+    };
+  }
+
   // A month not on a package has no carry at all -- showing the old package's balance on
   // an hourly row (and summing it into the Carry KPI) was a real bug.
   if (monthOffPackage) {
@@ -247,7 +259,7 @@ export function reconcileClientMonth({
 
   return {
     pkg, priorBalance, priorBalanceEstimated, newBalance, remaining, kpiPct, status, priorMismatch,
-    priorRebaseline,
+    priorRebaseline, priorNotInvoiced,
     resetValue: monthReset,
     // Remaining convention (positive = hours left): the negated signed reset.
     remainingReset: monthReset !== null ? 0 - monthReset : null, // 0 - x, not -x: a reset of 0 must not become -0
@@ -259,7 +271,7 @@ export function reconcileClientMonth({
 
 const NO_PACKAGE_RESULT = {
   pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, kpiPct: null,
-  status: "no-pkg", priorMismatch: null, priorRebaseline: null, resetValue: null, remainingReset: null,
+  status: "no-pkg", priorMismatch: null, priorRebaseline: null, priorNotInvoiced: null, resetValue: null, remainingReset: null,
   balanceForward: null, remainingShown: null,
 };
 
