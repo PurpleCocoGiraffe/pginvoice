@@ -127,7 +127,8 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
 
 // Summary-only export for a client with sub-projects and/or a cost-centre roll-up: every
 // nested row's own totals and figures (hours, package/carry/remaining, quoted budget,
-// invoices, cost-centre hours) on one document, without the task line items. `parent` and
+// invoices, cost-centre hours) on one document, without the task line items. App.jsx
+// leaves quoted sub-projects out of `subProjects` (billed separately). `parent` and
 // `subProjects` are App.jsx's cards (parent first, then each nested sub-project row).
 export function buildGroupSummaryHtml(parent, subProjects, monthText, priorMonthText) {
   const cards = [parent, ...(subProjects || [])].map((x) => unfilteredForExport(x));
@@ -150,7 +151,7 @@ export function buildGroupSummaryHtml(parent, subProjects, monthText, priorMonth
       <tr class="noborder"><td colspan="2" class="client-heading">All projects</td></tr>
       ${cards.map((x) => `<tr class="datarow"><td>${esc(x.displayName)}</td><td class="right">${fmt(Math.round((x.worked || 0) * 100) / 100)} h</td></tr>`).join("")}
       <tr class="total"><td>Total time tracked this month</td><td class="right">${fmt(Math.round(totalWorked * 100) / 100)} h</td></tr>
-      <tr class="noborder"><td colspan="2" class="note-cell">Summary only: task-level line items are left out. Each project's own figures are shown above; use Generate PDF on a project for its task breakdown.</td></tr>`,
+      <tr class="noborder"><td colspan="2" class="note-cell">Summary only: task-level line items and separately quoted projects are left out. Each project's own figures are shown above; use Generate PDF on a project for its task breakdown.</td></tr>`,
   });
 }
 

@@ -1042,13 +1042,16 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     printClientPdf(c, monthText, priorMonthPretty);
   };
   // Summary-only PDF for a client with sub-projects and/or a cost-centre roll-up: the
-  // parent's and every nested sub-project's own figures, no task line items. Uses every
-  // nested row (not just the "worked only" ones) -- a quoted sub-project with no hours this
-  // month still has a budget/remaining worth reporting.
-  const hasGroup = (c) => !!c && (!!c.costCentre || allSiblingsUnfiltered(c.name).length > 0);
+  // parent's (with its cost-centre hours, e.g. Majestic Plumbing + Commercial Leak Tech) and
+  // each nested sub-project's own figures, no task line items. Quoted sub-projects are left
+  // out (Kelly, Nov 2026: e.g. Majestic Plumbing's Quoted Web Project is billed separately
+  // and doesn't belong in this summary). Uses every other nested row, not just the "worked
+  // only" ones.
+  const summarySubProjects = (c) => allSiblingsUnfiltered(c.name).filter((s) => s.type !== "quoted");
+  const hasGroup = (c) => !!c && (!!c.costCentre || summarySubProjects(c).length > 0);
   const exportGroupSummary = (c) => {
     const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
-    printGroupSummaryPdf(c, allSiblingsUnfiltered(c.name), monthText, priorMonthPretty);
+    printGroupSummaryPdf(c, summarySubProjects(c), monthText, priorMonthPretty);
   };
   const downloadLineItemPdf = (c, lineItem) => {
     const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
