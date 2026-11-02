@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   agreedAt, computeMonthlyAvailability, resignationStatus,
   demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys, reconcileCapClients, ownersFor,
@@ -133,6 +133,10 @@ describe("demandForGroup", () => {
 
 describe("computeDynamicAverages", () => {
   const clients = [{ group: "Aus3C" }, { group: "Solo Client" }];
+  // Only the last 6 months count, so pin "now" -- the fixtures are May/June 2026 and the
+  // multi-folder case started failing once May fell out of the real window (Nov 2026).
+  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date(2026, 6, 15)); });
+  afterEach(() => { vi.useRealTimers(); });
 
   it("returns an empty map when there's no ClickUp data", () => {
     expect(computeDynamicAverages(null, clients).size).toBe(0);
