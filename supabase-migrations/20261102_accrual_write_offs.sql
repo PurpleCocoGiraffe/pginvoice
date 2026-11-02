@@ -8,9 +8,9 @@
 -- reset_value ?? accrual_value (carryOutOf in format.js), recomputeAccruals never writes
 -- reset_value, and the month's own computed accrual_value still shows as-is.
 --
--- First use (applied live 2026-11-02): Coonawarra 2026-10 reset_value = 0 -- the 27.16 h
--- accrual (Sep 2026 closing balance) was written off at Lynda's request, so November 2026
--- carries nothing in (October's computed 28.31 h close is not carried forward).
+-- First use (applied live 2026-11-02): Coonawarra 2026-09 reset_value = 0 -- the 27.16 h
+-- Sep 2026 closing balance was written off at Lynda's request, so October 2026 carries
+-- nothing in (Oct closes at 1.15 h, Nov starts from that).
 
 alter table public.pginvoice_accruals drop constraint if exists pginvoice_accruals_reset_scope_chk;
 alter table public.pginvoice_accruals add constraint pginvoice_accruals_reset_scope_chk
@@ -19,8 +19,8 @@ alter table public.pginvoice_accruals add constraint pginvoice_accruals_reset_sc
 -- The write-off itself (data, idempotent).
 update public.pginvoice_accruals
    set reset_value = 0,
-       reset_note = 'Write-off: 27.16 h accrual (Sep 2026 closing balance) written off at Lynda''s request on 2 Nov 2026. November 2026 starts with 0 carry (October''s computed 28.31 h is not carried forward).',
+       reset_note = 'Write-off: the 27.16 h Sep 2026 closing balance was written off at Lynda''s request (recorded 2 Nov 2026). October 2026 starts with 0 carried in.',
        reset_at = now(),
-       comment = coalesce(nullif(comment, '') || E'\n', '') || '27.16 h accrual written off at Lynda''s request (2 Nov 2026) -- November carry set to 0.'
- where client = 'Coonawarra' and month_key = '2026-10'
+       comment = coalesce(nullif(comment, '') || E'\n', '') || '27.16 h accrual written off at Lynda''s request (recorded 2 Nov 2026) -- October carry set to 0.'
+ where client = 'Coonawarra' and month_key = '2026-09'
    and reset_value is distinct from 0;
