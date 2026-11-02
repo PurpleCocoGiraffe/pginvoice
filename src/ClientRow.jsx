@@ -63,6 +63,15 @@ function CostCentreBreakdown({ client: c, divider, showReset }) {
   );
 }
 
+// One sentence explaining a package -> hourly settlement (see settleHourly in format.js).
+function settlementText(s, worked) {
+  const base = s.prior < 0
+    ? `${fmt(Math.abs(s.prior))} h of unused package hours owed to the client: ${fmt(Math.abs(s.applied))} h deducted from this month's ${fmt(worked)} h`
+    : `${fmt(s.prior)} h of package over-use added to this month's ${fmt(worked)} h`;
+  return `${base}, so invoice ${fmt(s.hoursToInvoice)} h.${s.remaining < 0 ? ` ${fmt(Math.abs(s.remaining))} h still owed, carried to next month.` : ""}`;
+}
+const worked0 = (c) => c.billableWorked ?? c.worked ?? 0;
+
 // Compact numbered row — the list's default state. Clicking anywhere on it opens
 // the full client detail in the right-side drawer (see ClientDrawer.jsx).
 //
@@ -114,6 +123,9 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // down from them (reconcileClientMonth's wrap-up branch). Carry = the owed balance,
   // Remaining = hours still owed.
   const isWrapUp = c.status === "wrap_up";
+  // An hourly month settling a package balance (reconcileClientMonth's hourlySettlement):
+  // Carry shows the balance brought in, Remaining becomes the hours to invoice.
+  const settle = c.hourlySettlement || null;
   const statusTone = isWrapUp ? "var(--status-ok)"
     : isPackage
     ? (c.status === "over" ? "var(--status-over)" : c.status === "under" ? "var(--status-warn)" : "var(--status-ok)")
@@ -132,6 +144,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
     : isQuoted && c.quotedRemaining != null
       ? (c.quotedRemaining < 0 ? `${fmt(Math.abs(c.quotedRemaining))} h over the ${budgetWord} amount` : `${fmt(c.quotedRemaining)} h left of the ${budgetWord} amount`)
     : isDigital ? "Digital Package: fixed monthly price, hours shown for reference only"
+    : settle ? settlementText(settle, worked0(c))
       : null;
 
   // worked is always THIS MONTH's hours, same meaning for every type -- quoted's lifetime
@@ -268,10 +281,17 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
           )}
         </span>
         <span className="pg-tag pg-tag--pill" style={{ color: typeTone(c.type) }}>{typeLabelShort(c.type)}</span>
+        {settle ? (
+          <span className="pg-row__num" style={{ color: settle.prior < 0 ? "var(--status-ok)" : "var(--status-over)" }} title={settlementText(settle, worked0(c))}>
+            <span className="pg-row__num-label">{settle.prior < 0 ? "Owed from package" : "Over-used package"}</span>
+            {fmt(Math.abs(settle.prior))} h
+          </span>
+        ) : (
         <span className="pg-row__num" style={carryTone ? { color: carryTone } : undefined} title={isQuoted ? `Total billed against this ${isMap ? "MAP" : "quote"} so far, from its start month through this one.` : carryTitle}>
           <span className="pg-row__num-label">{isQuoted ? "Total worked" : carryLabel}</span>
           {isQuoted ? `${fmt(lifetimeWorked)} h` : priorBalance != null ? `${fmt(carry)} h` : isPackage ? "—" : ""}
         </span>
+        )}
         <span className="pg-row__num">
           <span className="pg-row__num-label">{isQuoted ? (isMap ? "MAP" : "Quoted") : "Package"}</span>
           {isQuoted ? (c.quotedAmount != null ? `${fmt(c.quotedAmount)} h` : feeOnly ? fmtMoney(c.fixedFee.fee).replace(/\.00$/, "") : "—") : c.pkg != null ? `${fmt(c.pkg)} h` : isPackage || isWrapUp ? "—" : ""}
@@ -280,9 +300,9 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
           <span className="pg-row__num-label">Worked</span>{fmt(worked)} h
         </span>
         <span className="pg-row__num" style={remainingTone ? { color: remainingTone } : undefined}
-          title={feeOnly ? "Effective rate: the fixed fee divided by every billable hour logged against it so far." : isWrapUp ? "Unutilised hours still owed to the client after this month's wrap-up work." : undefined}>
-          <span className="pg-row__num-label">{feeOnly ? "Effective rate" : isWrapUp ? "Owed" : "Remaining"}</span>
-          {feeOnly
+          title={feeOnly ? "Effective rate: the fixed fee divided by every billable hour logged against it so far." : isWrapUp ? "Unutilised hours still owed to the client after this month's wrap-up work." : settle ? settlementText(settle, worked0(c)) : undefined}>
+          <span className="pg-row__num-label">{feeOnly ? "Effective rate" : isWrapUp ? "Owed" : settle ? "To invoice" : "Remaining"}</span>
+          {settle ? `${fmt(settle.hoursToInvoice)} h` : feeOnly
             ? (c.fixedFee.effectiveRate != null ? `${fmtMoney(c.fixedFee.effectiveRate).replace(/\.\d\d$/, "")}/h` : "—")
             : isQuoted
             ? (c.quotedRemaining != null ? `${c.quotedRemaining < 0 ? "−" : ""}${fmt(Math.abs(c.quotedRemaining))} h` : "—")

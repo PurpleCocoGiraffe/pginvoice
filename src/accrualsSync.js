@@ -9,7 +9,7 @@ import { fetchClients, fetchClientEvents, typeForMonth, statusForMonth, lifecycl
 import { monthLabel } from "./parsers.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { PG_ACCRUALS_KEY } from "./storageKeys.js";
-import { carryOutOf } from "./format.js";
+import { carryOutOf, HOURLY_SETTLEMENT_FROM, HOURLY_SETTLEMENT_NOTE, settleHourly } from "./format.js";
 
 export { carryOutOf };
 
@@ -129,8 +129,11 @@ export function buildReconciliationClients(rows) {
     // Months a human marked as not invoiced (see NOT_INVOICED_NOTE).
     const notInvoiced = {};
     const resetNotes = {};
+    // Hourly months that settled a package balance (HOURLY_SETTLEMENT_NOTE rows).
+    const settledHourly = {};
     for (const [mk, cell] of Object.entries(c.months)) {
       if (cell.isOverride && cell.accrualNote === NOT_INVOICED_NOTE) notInvoiced[mk] = true;
+      if (!cell.isOverride && cell.accrualNote === HOURLY_SETTLEMENT_NOTE) settledHourly[mk] = true;
       monthSet.add(mk);
       const carry = carryOutOf(cell);
       if (carry !== null) balances[mk] = carry;
@@ -138,7 +141,7 @@ export function buildReconciliationClients(rows) {
       if (cell.resetValue != null) { resets[mk] = cell.resetValue; resetNotes[mk] = cell.resetNote ?? null; }
       agreedByMonth[mk] = cell.agreedHpm !== null ? parseAgreedHours(cell.agreedHpm) : null;
     }
-    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets, notInvoiced, resetNotes };
+    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets, notInvoiced, resetNotes, settledHourly };
   });
   const balanceCols = [...monthSet].sort().map((mk) => {
     const [y, m] = mk.split("-").map(Number); // m is 1-12
@@ -409,6 +412,29 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
         });
       }
       if (resetValue !== null) prior = resetValue;
+      mk = shiftMonthKey(mk, 1);
+      continue;
+    }
+    // Package -> hourly settlement (see settleHourly in format.js): from
+    // HOURLY_SETTLEMENT_FROM, an hourly month that inherits a package balance settles it on
+    // its invoice instead of dropping it -- an over-use is added in full, owed hours are
+    // deducted from the month's hours and any rest carries into the next hourly month. The
+    // row records what's still owed (0 once settled). A human override is left alone.
+    if (seg.type === "hourly" && mk >= HOURLY_SETTLEMENT_FROM && prior !== 0 && !existing?.isOverride) {
+      const worked = workedMinutesFor(mk) / 60;
+      const workedHours = Math.round(worked * 100) / 100;
+      const { remaining } = settleHourly(prior, worked);
+      const cell = { accrualValue: remaining, accrualNote: HOURLY_SETTLEMENT_NOTE, agreedHpm: null, pct: null, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
+      const changed = !existing || existing.accrualValue !== remaining || existing.workedHours !== workedHours || existing.accrualNote !== HOURLY_SETTLEMENT_NOTE || existing.agreedHpm != null;
+      c.months[mk] = cell;
+      if (changed) {
+        rows.push({
+          client: c.client, account_manager: c.manager || null, agreed_hpm: null,
+          month_key: mk, accrual_value: remaining, accrual_note: HOURLY_SETTLEMENT_NOTE, pct_over_under: null,
+          worked_hours: workedHours, is_override: false, hours_flagged: false, flagged_from_hours: null,
+        });
+      }
+      prior = resetValue ?? remaining;
       mk = shiftMonthKey(mk, 1);
       continue;
     }

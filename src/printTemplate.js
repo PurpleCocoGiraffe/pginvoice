@@ -67,6 +67,8 @@ function reconciliationHtml(c, priorMonthText) {
 
   const isWrapUp = c.status === "wrap_up" && !c.isLineItemExport;
   const feeOnly = isQuoted && c.quotedAmount == null && !!c.fixedFee;
+  // Package -> hourly settlement (format.js settleHourly).
+  const settle = !c.isLineItemExport && !c.withheld ? c.hourlySettlement : null;
   // One invoice of a capped cost centre split across several (pdfZip.js invoicePartClient).
   const part = c.invoicePart;
   // Scoped view, not one of the user's clients (withholdRedactedFigures): hours only.
@@ -90,7 +92,14 @@ function reconciliationHtml(c, priorMonthText) {
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="datarow"><td class="label">Total time tracked on this ${isMap ? "MAP" : "quote"}</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
     <tr class="total"><td>Effective rate so far</td><td class="right">${c.fixedFee.effectiveRate != null ? esc(fmtMoney(c.fixedFee.effectiveRate)) + "/h" : "n/a"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">A one-off fixed fee rather than an hour budget: the effective rate is the fee divided by every billable hour logged against it so far.</td></tr>` : isPkg && !hasPkg ? `
+    <tr class="noborder"><td colspan="2" class="note-cell">A one-off fixed fee rather than an hour budget: the effective rate is the fee divided by every billable hour logged against it so far.</td></tr>` : settle ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">Hourly invoice</td></tr>
+    <tr class="datarow"><td class="label">Billable time tracked this month</td><td class="right">${fmt(billableRounded)} h</td></tr>
+    <tr class="datarow"><td class="label">${settle.prior < 0 ? "Unused package hours owed to you" : "Package hours over-used"}${priorMonthText ? ` (carried in from ${esc(priorMonthText)})` : ""}</td><td class="right">${fmt(Math.abs(settle.prior))} h</td></tr>
+    <tr class="datarow"><td class="label">${settle.prior < 0 ? "Deducted this month" : "Added this month"}</td><td class="right">${settle.applied < 0 ? "-" : "+"}${fmt(Math.abs(settle.applied))} h</td></tr>
+    <tr class="total"><td>Hours to invoice</td><td class="right">${fmt(settle.hoursToInvoice)} h</td></tr>${settle.remaining < 0 ? `
+    <tr class="datarow"><td class="label">Still owed, carried to next month</td><td class="right">${fmt(Math.abs(settle.remaining))} h</td></tr>` : ""}
+    <tr class="noborder"><td colspan="2" class="note-cell">This client has moved from a package to hourly billing. The balance left on the package is settled on the hourly invoice: unused hours are deducted, over-used hours are added.</td></tr>` : isPkg && !hasPkg ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">No package on file for this client this month, so no balance is calculated.</td></tr>` : isPkg && onHold ? `
