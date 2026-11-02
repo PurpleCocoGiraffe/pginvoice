@@ -6,9 +6,11 @@
 // boundaries (so a row is never split across pages), and written with jsPDF -- the
 // letterhead footer is drawn on every page, as the print version's repeating <tfoot> does.
 // The heavy libraries are loaded on demand so they never weigh down the main bundle.
-import { buildPrintHtml } from "./printTemplate.js";
+import { buildPrintHtml, lineItemClient } from "./printTemplate.js";
 import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
 import { filenameSafe } from "./format.js";
+import { unfilteredForExport } from "./reconcile.js";
+import { costCentreInvoice, invoiceCapRuleFor } from "./invoiceSplit.js";
 
 // A4 with the print template's 15mm margins.
 const PAGE_W_MM = 210;
@@ -38,15 +40,126 @@ export function pageBreaks(totalH, pageH, rowBottoms) {
   return slices;
 }
 
-// Pure: unique "<client> - <month>.pdf" names (a repeated display name gets " (2)", ...).
-export function pdfFileNames(clients, monthText) {
-  const seen = new Map();
-  return clients.map((c) => {
-    const base = `${filenameSafe(c.displayName || c.name) || "Client"} - ${filenameSafe(monthText)}`;
-    const n = (seen.get(base.toLowerCase()) || 0) + 1;
-    seen.set(base.toLowerCase(), n);
-    return `${base}${n > 1 ? ` (${n})` : ""}.pdf`;
-  });
+// Pure: shares a task -> minutes map out across invoices of `hoursList` hours each,
+// largest task first. Task time is scaled so the parts add up to the invoice hours even
+// when some tracked time wasn't billable (the invoice hours are billable hours); a task
+// that straddles two invoices is split and marked "(part)". -> [{ tasks, minutes, split }]
+export function allocateTasks(tasks, hoursList) {
+  const entries = [...tasks.entries()].filter(([, m]) => m > 0).sort((a, b) => b[1] - a[1]);
+  const trackedMin = entries.reduce((a, [, m]) => a + m, 0);
+  const invoiceMin = hoursList.reduce((a, h) => a + h * 60, 0);
+  const scale = trackedMin > 0 && invoiceMin > 0 ? trackedMin / invoiceMin : 1;
+  const parts = hoursList.map(() => ({ tasks: new Map(), minutes: 0, split: false }));
+  let p = 0;
+  let room = hoursList.length ? hoursList[0] * 60 * scale : 0;
+  for (const [task, min] of entries) {
+    let left = min;
+    let pieces = 0;
+    while (left > 1e-6) {
+      if (room <= 1e-6 && p < parts.length - 1) { p++; room = hoursList[p] * 60 * scale; }
+      const take = p === parts.length - 1 ? left : Math.min(left, room);
+      if (take <= 1e-6) break;
+      pieces++;
+      parts[p].tasks.set(task, (parts[p].tasks.get(task) || 0) + take);
+      parts[p].minutes += take;
+      left -= take;
+      room -= take;
+    }
+    if (pieces > 1) {
+      // label the split task "(part)" on every invoice it appears on
+      for (const part of parts) {
+        if (part.tasks.has(task)) { const m = part.tasks.get(task); part.tasks.delete(task); part.tasks.set(`${task} (part)`, m); part.split = true; }
+      }
+    }
+  }
+  return parts;
+}
+
+// One invoice of a capped cost centre that had to be split, as a printable client.
+function invoicePartClient(base, centre, part, index) {
+  return {
+    ...base, isLineItemExport: true, invoices: null,
+    tasksFiltered: part.tasks, workedFiltered: part.minutes / 60,
+    invoicePart: {
+      index: index + 1, count: centre.lines.length, line: centre.lines[index], rule: centre.rule,
+      centreName: centre.name, totalHours: centre.hours, totalAmount: centre.amount, splitTasks: part.split,
+    },
+  };
+}
+
+// "<dir>/<label> - <month> - Invoice i of N.pdf" for each invoice of a split cost centre.
+function invoicePartPdfs(base, centre, tasks, dir, label, month) {
+  const parts = allocateTasks(tasks, centre.lines.map((l) => l.hours));
+  return parts.map((part, i) => ({
+    path: `${dir}/${label} - ${month} - Invoice ${i + 1} of ${parts.length}.pdf`,
+    client: invoicePartClient(base, centre, part, i),
+  }));
+}
+
+const tasksOfLineItem = (item) => {
+  const tasks = new Map();
+  for (const [, tm] of item?.tasksByUser || []) for (const [t, m] of tm) tasks.set(t, (tasks.get(t) || 0) + m);
+  return tasks;
+};
+
+// The PDFs for one client row, under `dir`:
+// - the client's own report;
+// - a rolled-up client's other cost centres each in their own sub-folder (that cost
+//   centre's own hours, as the drawer's per-cost-centre PDF);
+// - for a client with a per-invoice cap (Clarke Energy (CEA)), a cost centre over the cap
+//   gets one PDF per invoice (the client's own centre next to its report, any other
+//   centre's in its sub-folder).
+function pdfsForClient(c, dir, monthText, uniqueDir) {
+  const name = filenameSafe(c.displayName || c.name) || "Client";
+  const month = filenameSafe(monthText);
+  const out = [{ path: `${dir}/${name} - ${month}.pdf`, client: c }];
+  const rule = invoiceCapRuleFor(c);
+  const items = c.costCentre?.lineItems || [];
+  if (items.length > 1) {
+    const key = (x) => String(x ?? "").trim().toLowerCase();
+    items.forEach((item) => {
+      // The client's own folder (labelled with the client's name) is already the report
+      // above; every other cost centre -- including a busiest sibling standing in as the
+      // roll-up's primary when the client has no umbrella folder -- is its own folder.
+      const own = key(item.name) === key(c.displayName) || key(item.name) === key(c.name);
+      const centreDir = own ? dir : uniqueDir(`${dir}/${filenameSafe(item.name) || "Cost centre"}`);
+      const label = own ? name : filenameSafe(item.name) || "Cost centre";
+      const li = lineItemClient(c, item, null);
+      const centre = rule ? costCentreInvoice(item.name, item.billableHours ?? item.hours, rule) : null;
+      if (centre && centre.lines.length > 1) {
+        out.push(...invoicePartPdfs(own ? { ...li, displayName: c.displayName } : li, centre, tasksOfLineItem(item), centreDir, label, month));
+      } else if (!own) {
+        out.push({ path: `${centreDir}/${label} - ${month}.pdf`, client: li });
+      }
+    });
+  } else if (rule) {
+    const centre = costCentreInvoice(c.displayName ?? c.name, c.billableWorked ?? c.worked ?? 0, rule);
+    if (centre.lines.length > 1) out.push(...invoicePartPdfs(c, centre, unfilteredForExport(c).tasksFiltered, dir, name, month));
+  }
+  return out;
+}
+
+// Pure: the ZIP's layout. One folder per top-level client holding its PDF(s); each nested
+// row (sub-project / grouped sibling) and each extra cost centre gets its own folder
+// inside its parent's. tops: top-level client rows; nestedOf(name) -> its nested rows.
+export function planClientPdfs(tops, nestedOf, monthText) {
+  const used = new Set();
+  const uniqueDir = (dir) => {
+    let d = dir; let n = 1;
+    while (used.has(d.toLowerCase())) d = `${dir} (${++n})`;
+    used.add(d.toLowerCase());
+    return d;
+  };
+  const out = [];
+  for (const c of tops) {
+    const dir = uniqueDir(filenameSafe(c.displayName || c.name) || "Client");
+    out.push(...pdfsForClient(c, dir, monthText, uniqueDir));
+    for (const s of nestedOf(c.name) || []) {
+      const sub = uniqueDir(`${dir}/${filenameSafe(s.displayName || s.name) || "Sub-project"}`);
+      out.push(...pdfsForClient(s, sub, monthText, uniqueDir));
+    }
+  }
+  return out;
 }
 
 function loadImage(src) {
@@ -107,9 +220,9 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
   }
 }
 
-// Builds every client's PDF and returns the ZIP blob plus any clients that failed.
-// onProgress(done, total) after each client.
-export async function buildClientPdfZip(clients, { monthText, priorMonthText, onProgress } = {}) {
+// Builds every planned PDF (planClientPdfs) and returns the ZIP blob plus any that failed.
+// onProgress(done, total) after each PDF.
+export async function buildClientPdfZip(entries, { monthText, priorMonthText, onProgress } = {}) {
   const [{ jsPDF }, { default: html2canvas }, { default: JSZip }] = await Promise.all([
     import("jspdf"), import("html2canvas"), import("jszip"),
   ]);
@@ -118,18 +231,17 @@ export async function buildClientPdfZip(clients, { monthText, priorMonthText, on
   const footer = { dataUrl, width: img.naturalWidth, height: img.naturalHeight };
 
   const zip = new JSZip();
-  const names = pdfFileNames(clients, monthText);
   const failed = [];
-  for (let i = 0; i < clients.length; i++) {
+  for (let i = 0; i < entries.length; i++) {
+    const { path, client } = entries[i];
     try {
-      const blob = await renderClientPdf(clients[i], monthText, priorMonthText, { jsPDF, html2canvas }, footer);
-      zip.file(names[i], blob);
+      zip.file(path, await renderClientPdf(client, monthText, priorMonthText, { jsPDF, html2canvas }, footer));
     } catch (e) {
-      console.error("PDF failed for", clients[i]?.name, e);
-      failed.push(clients[i]?.displayName || clients[i]?.name);
+      console.error("PDF failed for", path, e);
+      failed.push(path);
     }
-    onProgress?.(i + 1, clients.length);
+    onProgress?.(i + 1, entries.length);
   }
   const blob = await zip.generateAsync({ type: "blob" });
-  return { blob, count: clients.length - failed.length, failed };
+  return { blob, count: entries.length - failed.length, failed };
 }

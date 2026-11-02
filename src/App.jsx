@@ -27,7 +27,7 @@ import {
   parseAccruedWorkbook, findHeader, SKIP_FOLDERS, parseStartTextMonth, dateKeyStr, parseClickupCsv,
 } from "./parsers.js";
 import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
-import { buildClientPdfZip } from "./pdfZip.js";
+import { buildClientPdfZip, planClientPdfs } from "./pdfZip.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY } from "./storageKeys.js";
 import { filterClientList, searchMatchesInOtherTypes, hasWorkedHours, scopedCardLists } from "./clientListFilter.js";
 import { sumCarry, lastMonthAccruedClients, isLifetimeBudgetType } from "./reconcile.js";
@@ -1049,9 +1049,12 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     setExportOpen(false);
     if (pdfZipProgress || clients.length === 0) return;
     const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
-    setPdfZipProgress({ done: 0, total: clients.length });
+    // Every top-level row (whatever the list's filters), each nested row in a folder under it.
+    const tops = filterClientList(clients, { clientTypeFilter: "all", consultantFilter: "", search: "", primaryNameByGroup, workedOnly: false });
+    const entries = planClientPdfs(tops, allSiblingsUnfiltered, monthText);
+    setPdfZipProgress({ done: 0, total: entries.length });
     try {
-      const { blob, failed } = await buildClientPdfZip(clients, {
+      const { blob, failed } = await buildClientPdfZip(entries, {
         monthText, priorMonthText: priorMonthPretty,
         onProgress: (done, total) => setPdfZipProgress({ done, total }),
       });

@@ -35,7 +35,7 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
   const isMap = type === "map";
   const budgetWord = isMap ? "MAP" : "quoted";
   // A line-item export carries its own one-cost-centre invoices (see printLineItemPdf).
-  const invoices = c.isLineItemExport ? (c.invoices || null) : costCentreInvoicesFor(c);
+  const invoices = c.invoicePart ? null : c.isLineItemExport ? (c.invoices || null) : costCentreInvoicesFor(c);
   const taskRows = [...c.tasksFiltered.entries()].sort((a, b) => b[1] - a[1])
     .map(([task, min]) => `<tr class="datarow"><td>${esc(task)}</td><td class="right">${fmt(min / 60)}</td></tr>`).join("");
   const workedRounded = Math.round(c.workedFiltered * 100) / 100;
@@ -59,8 +59,15 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
 
   const isWrapUp = c.status === "wrap_up" && !c.isLineItemExport;
   const feeOnly = isQuoted && c.quotedAmount == null && !!c.fixedFee;
+  // One invoice of a capped cost centre split across several (pdfZip.js invoicePartClient).
+  const part = c.invoicePart;
   // Scoped view, not one of the user's clients (withholdRedactedFigures): hours only.
-  const reconciliation = c.withheld && !c.isLineItemExport ? `
+  const reconciliation = part ? `
+    <tr class="noborder"><td colspan="2" class="section-heading">Invoice ${part.index} of ${part.count}</td></tr>
+    <tr class="datarow"><td class="label">Billable hours on this invoice</td><td class="right">${fmt(part.line.hours)} h</td></tr>
+    <tr class="datarow"><td class="label">Rate</td><td class="right">${esc(fmtMoney(part.rule.rate))}/h</td></tr>
+    <tr class="total"><td>Invoice amount</td><td class="right">${esc(fmtMoney(part.line.amount))}</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">${esc(part.centreName)} logged ${fmt(part.totalHours)} billable hours this month (${esc(fmtMoney(part.totalAmount))}). No invoice may exceed ${esc(fmtMoney(part.rule.cap))}, so the month is split across ${part.count} invoices; the tasks above are this invoice's share${part.splitTasks ? " (a task marked \"part\" continues on the neighbouring invoice)" : ""}.</td></tr>` : c.withheld && !c.isLineItemExport ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">${esc(WITHHELD_NOTE)}</td></tr>` : isWrapUp ? `
@@ -157,7 +164,7 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
       <tr class="noborder"><td colspan="2" class="header-cell">
         <div class="brand">Purple Giraffe · client hours report</div>
         <h1>${esc(c.displayName)}</h1>
-        <div class="subtitle">${esc(monthText)}</div>
+        <div class="subtitle">${esc(monthText)}${c.invoicePart ? ` · Invoice ${c.invoicePart.index} of ${c.invoicePart.count}` : ""}</div>
       </td></tr>
 
       <tr class="noborder"><td colspan="2" class="section-heading">Tasks worked this month</td></tr>
@@ -190,7 +197,7 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
 // from the line item's own (pre-merge) tasksByUser snapshot (see App.jsx's cost-centre
 // merge) rather than the parent's already-merged totals, so this genuinely reports only
 // that one folder's work, not the whole rolled-up package.
-export function printLineItemPdf(parent, lineItem, monthText, consultantFilter) {
+export function lineItemClient(parent, lineItem, consultantFilter) {
   let tasks;
   if (consultantFilter) {
     tasks = lineItem.tasksByUser.get(consultantFilter) || new Map();
@@ -203,12 +210,15 @@ export function printLineItemPdf(parent, lineItem, monthText, consultantFilter) 
   // (always from the whole cost centre's billable hours, whatever the consultant filter).
   const rule = invoiceCapRuleFor(parent);
   const invoices = rule ? [costCentreInvoice(lineItem.name, lineItem.billableHours ?? lineItem.hours, rule)] : null;
-  const synthetic = {
+  return {
     displayName: `${parent.displayName} — ${lineItem.name}`,
     type: "project", tasksFiltered: tasks, workedFiltered,
     isLineItemExport: true, rolledUpParentName: parent.displayName, invoices,
   };
-  printClientPdf(synthetic, monthText, null);
+}
+
+export function printLineItemPdf(parent, lineItem, monthText, consultantFilter) {
+  printClientPdf(lineItemClient(parent, lineItem, consultantFilter), monthText, null);
 }
 
 export function printClientPdf(c, monthText, priorMonthText) {
