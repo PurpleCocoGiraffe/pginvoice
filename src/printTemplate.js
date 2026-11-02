@@ -89,7 +89,7 @@ function reconciliationHtml(c, priorMonthText) {
     <tr class="datarow"><td class="label">Fixed fee</td><td class="right">${esc(fmtMoney(c.fixedFee.fee))}</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="datarow"><td class="label">Total time tracked on this ${isMap ? "MAP" : "quote"}</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
-    <tr class="total"><td>Effective rate so far</td><td class="right">${c.fixedFee.effectiveRate != null ? esc(fmtMoney(c.fixedFee.effectiveRate)) + "/h" : "—"}</td></tr>
+    <tr class="total"><td>Effective rate so far</td><td class="right">${c.fixedFee.effectiveRate != null ? esc(fmtMoney(c.fixedFee.effectiveRate)) + "/h" : "n/a"}</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">A one-off fixed fee rather than an hour budget: the effective rate is the fee divided by every billable hour logged against it so far.</td></tr>` : isPkg && !hasPkg ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
@@ -112,14 +112,14 @@ function reconciliationHtml(c, priorMonthText) {
     <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${remainingShown >= 0 ? fmt(remainingShown) + " h left" : fmt(Math.abs(remainingShown)) + " h over"}</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = billable time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are reset to the agreed closing balance." : ""}${notInvoicedNote}</td></tr>` : isQuoted ? `
     <tr class="noborder"><td colspan="2" class="section-heading">${isMap ? "MAP summary" : "Quoted project summary"}</td></tr>
-    <tr class="datarow"><td class="label">${isMap ? "MAP hours" : "Quoted amount"}</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
+    <tr class="datarow"><td class="label">${isMap ? "MAP hours" : "Quoted amount"}</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "n/a"}</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="datarow"><td class="label">Total time tracked on this ${isMap ? "MAP" : "quote"}</td><td class="right">${fmt(c.lifetimeWorked ?? 0)} h</td></tr>
-    <tr class="total"><td>${c.quotedRemaining != null && c.quotedRemaining < 0 ? `Over the ${budgetWord} amount by` : `Remaining of ${budgetWord} amount`}</td><td class="right">${c.quotedRemaining != null ? fmt(Math.abs(c.quotedRemaining)) + " h" : "—"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">${isMap ? "A MAP" : "Quoted"} is a single fixed budget for the whole ${isMap ? "plan" : "project"}, not a monthly one -- the total/remaining figures are cumulative across every month of it, not just this one.</td></tr>` : `
+    <tr class="total"><td>${c.quotedRemaining != null && c.quotedRemaining < 0 ? `Over the ${budgetWord} amount by` : `Remaining of ${budgetWord} amount`}</td><td class="right">${c.quotedRemaining != null ? fmt(Math.abs(c.quotedRemaining)) + " h" : "n/a"}</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">${isMap ? "A MAP" : "Quoted"} is a single fixed budget for the whole ${isMap ? "plan" : "project"}, not a monthly one. The total and remaining figures are cumulative across every month of it, not just this one.</td></tr>` : `
     <tr class="noborder"><td colspan="2" class="section-heading">Summary</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only -- part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package/reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "digital" ? "Digital Package: fixed monthly price. Hours are shown for reference only." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;
+    <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only. It is part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package and reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "digital" ? "Digital Package: fixed monthly price. Hours are shown for reference only." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;
   return reconciliation;
 }
 
@@ -258,6 +258,28 @@ ${body}
 </body></html>`;
 }
 
+// Heading for one cost centre's own PDF. A ClickUp folder often already starts with the
+// client's name ("Vegetation Solutions - Firewood Solutions"), which used to give
+// "Vegetation Solutions — Vegetation Solutions - Firewood Solutions". Such a folder name is
+// used as-is; a folder prefixed with the client's initials ("MP - Commercial Leak Tech
+// (WA)" under Majestic Plumbing) has them swapped for the name; anything else is
+// "Client - Folder". Plain hyphens only, never an em dash.
+export function lineItemTitle(parentName, itemName) {
+  const parent = String(parentName ?? "").trim();
+  const item = String(itemName ?? "").trim();
+  if (!parent) return item;
+  if (!item) return parent;
+  const lp = parent.toLowerCase(), li = item.toLowerCase();
+  // Starts with the client's name at a word boundary ("Zest WA ...", "Vegetation Solutions - MVS").
+  if (li === lp || (li.startsWith(lp) && !/[a-z0-9]/i.test(item[parent.length]))) return item;
+  const initials = parent.split(/[^A-Za-z0-9]+/).filter(Boolean).map((w) => w[0]).join("");
+  if (initials.length >= 2) {
+    const m = item.match(/^([A-Za-z0-9]+)\s*[-–—:]\s*(.+)$/);
+    if (m && m[1].toLowerCase() === initials.toLowerCase()) return `${parent} - ${m[2]}`;
+  }
+  return `${parent} - ${item}`;
+}
+
 // A single folder's own slice of a rolled-up (cost-centre) client, e.g. exporting just
 // BAMSS Childcare's hours out of Brisbane Alarm Monitoring's combined report -- built
 // from the line item's own (pre-merge) tasksByUser snapshot (see App.jsx's cost-centre
@@ -277,7 +299,7 @@ export function lineItemClient(parent, lineItem, consultantFilter) {
   const rule = invoiceCapRuleFor(parent);
   const invoices = rule ? [costCentreInvoice(lineItem.name, lineItem.billableHours ?? lineItem.hours, rule)] : null;
   return {
-    displayName: `${parent.displayName} — ${lineItem.name}`,
+    displayName: lineItemTitle(parent.displayName, lineItem.name),
     type: "project", tasksFiltered: tasks, workedFiltered,
     isLineItemExport: true, rolledUpParentName: parent.displayName, invoices,
   };

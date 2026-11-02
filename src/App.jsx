@@ -959,7 +959,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
         "Quoted remaining (h)": isLifetimeBudgetType(c.type) && c.quotedRemaining != null ? Math.round(c.quotedRemaining * 100) / 100 : "",
         "Fixed fee (AUD)": c.fixedFee ? c.fixedFee.fee : "",
         "Effective rate (AUD/h)": c.fixedFee?.effectiveRate != null ? Math.round(c.fixedFee.effectiveRate * 100) / 100 : "",
-        "Consultants": [...c.userMinutes.entries()].map(([u, m]) => `${u || "—"} (${fmt(m / 60)}h)`).join("; "),
+        "Consultants": [...c.userMinutes.entries()].map(([u, m]) => `${u || "Unknown"} (${fmt(m / 60)}h)`).join("; "),
       };
     });
   };

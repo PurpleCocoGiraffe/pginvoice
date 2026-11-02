@@ -46,7 +46,7 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
   if (c.userMinutes.size > 0) {
     lines.push("Consultants involved:");
     for (const [u, min] of [...c.userMinutes.entries()].sort((a, b) => b[1] - a[1]))
-      lines.push(`  ${fmt(min / 60)} h  ${u || "—"}`);
+      lines.push(`  ${fmt(min / 60)} h  ${u || "Unknown"}`);
     lines.push("");
   }
   lines.push(`Time tracked this month: ${fmt(c.workedFiltered)} h`);
