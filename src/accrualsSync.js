@@ -126,15 +126,16 @@ export function buildReconciliationClients(rows) {
     // `resets` flags exactly which months were re-baselined.
     const computedBalances = {};
     const resets = {};
+    const resetNotes = {};
     for (const [mk, cell] of Object.entries(c.months)) {
       monthSet.add(mk);
       const carry = carryOutOf(cell);
       if (carry !== null) balances[mk] = carry;
       if (cell.accrualValue !== null) computedBalances[mk] = cell.accrualValue;
-      if (cell.resetValue != null) resets[mk] = cell.resetValue;
+      if (cell.resetValue != null) { resets[mk] = cell.resetValue; resetNotes[mk] = cell.resetNote ?? null; }
       agreedByMonth[mk] = cell.agreedHpm !== null ? parseAgreedHours(cell.agreedHpm) : null;
     }
-    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets };
+    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets, resetNotes };
   });
   const balanceCols = [...monthSet].sort().map((mk) => {
     const [y, m] = mk.split("-").map(Number); // m is 1-12

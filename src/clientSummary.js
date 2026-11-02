@@ -52,7 +52,7 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
       // A month re-baselined from the macro sheet reports the reset as its Remaining figure.
       const rem = c.remainingShown;
       lines.push(rem >= 0 ? `Remaining this month: ${fmt(rem)} h` : `Over by ${fmt(Math.abs(rem))} h`);
-      if (c.resetValue != null) lines.push("(Remaining re-baselined to the accrual sheet's closing figure for this month.)");
+      if (c.resetValue != null) lines.push("(Remaining reset to the agreed closing balance for this month.)");
       if (c.status === "over") lines.push(`⚠ Over the +10% KPI (${fmt(c.kpiPct, 1)}% of package)`);
       if (c.status === "under") lines.push(`⚠ Under the −10% KPI (${fmt(c.kpiPct, 1)}% of package), accruing`);
     }

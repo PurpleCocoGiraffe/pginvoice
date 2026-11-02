@@ -93,7 +93,7 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
     <tr class="total"><td>Total accrued time</td><td class="right">${fmt(totalAccrued)} h</td></tr>
     <tr class="datarow"><td class="label">New balance going forward</td><td class="right">${fmt(balanceForward)} h ${balanceForward > 0 ? "over" : balanceForward < 0 ? "credit" : ""}</td></tr>
     <tr class="datarow"><td class="label">Remaining this month</td><td class="right">${remainingShown >= 0 ? fmt(remainingShown) + " h left" : fmt(Math.abs(remainingShown)) + " h over"}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = billable time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are re-baselined to the accrual sheet's closing figure." : ""}</td></tr>` : isQuoted ? `
+    <tr class="noborder"><td colspan="2" class="note-cell">Total accrued time = billable time tracked this month + prior balance (signed). Negative prior = client credit carried in; positive prior = over-served last month.${c.resetValue != null ? " This month's closing balance and remaining figure are reset to the agreed closing balance." : ""}</td></tr>` : isQuoted ? `
     <tr class="noborder"><td colspan="2" class="section-heading">${isMap ? "MAP summary" : "Quoted project summary"}</td></tr>
     <tr class="datarow"><td class="label">${isMap ? "MAP hours" : "Quoted amount"}</td><td class="right">${c.quotedAmount != null ? fmt(c.quotedAmount) + " h" : "—"}</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>

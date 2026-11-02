@@ -80,7 +80,7 @@ function CostCentreBreakdown({ client: c, divider, showReset }) {
 // "26s", a second one "26s2", ...). `avatarOf` carries the parent's {name, logo} so the
 // sub-project's avatar reads as the same client's picture, not a distinct one of its own.
 //
-// `showReset`: the viewed month has at least one macro-sheet reset somewhere in the list,
+// `showReset`: the viewed month has at least one balance reset (macro sheet / write-off) somewhere in the list,
 // so every row (and the header) gets the extra "Remaining Reset" track -- blank for a
 // client without one -- keeping all columns aligned.
 export function ClientRow({ index, client: c, active, onOpen, nested, parentName, onCopy, onPdf, tileRow, hasMoreBelow, subIndex, avatarOf, showReset }) {
@@ -294,7 +294,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
           <span
             className="pg-row__num"
             style={remainingResetTone ? { color: remainingResetTone } : undefined}
-            title={c.resetValue != null ? `Macro sheet: ${fmt(c.resetValue)} h` : undefined}
+            title={c.resetValue != null ? `Balance reset to ${fmt(c.resetValue)} h${c.resetNote ? ` -- ${c.resetNote}` : ""}` : undefined}
           >
             {c.remainingReset != null && <span className="pg-row__num-label">Remaining Reset</span>}
             {c.remainingReset != null ? `${c.remainingReset < 0 ? "−" : ""}${fmt(Math.abs(c.remainingReset))} h` : ""}
