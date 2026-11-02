@@ -98,6 +98,30 @@ async function fetchClickupPages(sinceMonthKey, columns, userNames) {
   };
 }
 
+// Distinct ClickUp folder names logged in `sinceMonthKey` ("YYYY-MM") onward, straight
+// from pginvoice_clickup_entries -- for the Clients module's folder picker, which used to
+// read only the IndexedDB copy Client Invoicing writes after its own live load. A folder
+// created since that load (CapPru, Nov 2026) never showed up there, so a new client
+// couldn't be mapped from the list. Folder column only, paginated past the 1000-row cap.
+export async function fetchRecentClickupFolders(sinceMonthKey) {
+  const names = new Set();
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("pginvoice_clickup_entries")
+      .select("folder")
+      .gte("month_key", sinceMonthKey)
+      .order("entry_id", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    if (!data || !data.length) break;
+    for (const r of data) if (r.folder) names.add(r.folder);
+    if (data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return names;
+}
+
 export async function fetchSyncMeta() {
   const { data, error } = await supabase.from("pginvoice_sync_meta").select("*").eq("id", 1).maybeSingle();
   if (error) return null;

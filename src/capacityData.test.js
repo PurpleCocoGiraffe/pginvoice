@@ -3,7 +3,7 @@ import {
   agreedAt, computeMonthlyAvailability, resignationStatus,
   demandFor, demandForGroup, computeDynamicAverages, last6MonthKeys, reconcileCapClients, ownersFor,
 } from "./capacityData.js";
-import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor, wagesReviewMonthKey, adelaideDateKey } from "./dateMath.js";
+import { adelaideLocalMidnightUtcMs, adelaideMonthKey, adelaideDayOfMonth, monthOffsetFor, wagesReviewMonthKey, adelaideDateKey, adelaideMonthKeyBack } from "./dateMath.js";
 
 describe("agreedAt", () => {
   it("returns the base agreed hours when there is no history", () => {
@@ -317,5 +317,15 @@ describe("adelaideDateKey -- date-only keys are Adelaide's date, not UTC's", () 
   it("matches adelaideMonthKey for the same instant", () => {
     const at = new Date("2026-03-31T14:00:00Z");
     expect(adelaideDateKey(at).slice(0, 7)).toBe(adelaideMonthKey(at));
+  });
+});
+
+describe("adelaideMonthKeyBack", () => {
+  it("steps back across a year boundary in Adelaide time", () => {
+    // 2026-01-31T15:00Z is already 1 Feb in Adelaide.
+    const now = new Date("2026-01-31T15:00:00Z");
+    expect(adelaideMonthKeyBack(0, now)).toBe("2026-02");
+    expect(adelaideMonthKeyBack(2, now)).toBe("2025-12");
+    expect(adelaideMonthKeyBack(14, now)).toBe("2024-12");
   });
 });

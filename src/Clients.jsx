@@ -15,7 +15,8 @@ import { CLICKUP_DB_KEY, PG_CLIENTS_KEY, CAP_PEOPLE_KEY } from "./storageKeys.js
 import { SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
 import { ClientAvatar, PersonAvatar, resizePhotoFile } from "./avatar.jsx";
 import { useDismissable, useEscape } from "./useDismissable.js";
-import { adelaideDateKey } from "./dateMath.js";
+import { adelaideDateKey, adelaideMonthKeyBack } from "./dateMath.js";
+import { fetchRecentClickupFolders } from "./clickupSync.js";
 
 // Popover for a client's logo -- upload an image directly, or type in the
 // client's website and let a favicon service supply the logo automatically.
@@ -1138,6 +1139,9 @@ function HistorySection({ client }) {
 // Inline "Add client" panel -- writes a brand-new pginvoice_clients row via the same
 // createClient Capacity Planning's add form uses. Validation lives in the pure
 // validateNewClient (clientsSync.js) so it's testable without rendering this.
+// How many months back (plus the current one) the folder picker reads live folder names.
+const RECENT_FOLDER_MONTHS = 2;
+
 const EMPTY_NEW_CLIENT = { name: "", type: "package", hours: "", consultant: "", clickupFolder: "", startDate: "" };
 function AddClientPanel({ clients, folderList, onCreated, onCancel, initial = null }) {
   const [form, setForm] = useState(() => ({ ...EMPTY_NEW_CLIENT, ...initial }));
@@ -1337,9 +1341,21 @@ export default function Clients({ canWrite = false, costCentres: costCentreSourc
     }
   }
 
+  // The IndexedDB copy (written by Client Invoicing's live load; also carries task-prefix
+  // synthetic folders) merged with the last few months' folder names read live from
+  // pginvoice_clickup_entries -- the cache alone missed any folder created since Client
+  // Invoicing last loaded, so a brand-new client's folder couldn't be picked (CapPru).
+  // A failed live read just leaves the cached list.
   async function loadFolders() {
     const cu = await idbGet(CLICKUP_DB_KEY);
-    setFolderSet(new Set((cu?.rows || []).map((r) => r.folder).filter(Boolean)));
+    const cached = (cu?.rows || []).map((r) => r.folder).filter(Boolean);
+    setFolderSet(new Set(cached));
+    try {
+      const live = await fetchRecentClickupFolders(adelaideMonthKeyBack(RECENT_FOLDER_MONTHS));
+      setFolderSet(new Set([...cached, ...live]));
+    } catch (e) {
+      console.error("Couldn't read recent ClickUp folders:", e);
+    }
   }
 
   // After this page's own cost-centre edit: awaits Shell's refresh (which re-applies the

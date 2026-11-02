@@ -60,6 +60,13 @@ export function monthOffsetFor(monthKey, now = new Date()) {
   return (cy * 12 + cm) - (y * 12 + m);
 }
 
+// The TIMEZONE month `monthsBack` months before the current one, as "YYYY-MM".
+export function adelaideMonthKeyBack(monthsBack, now = new Date()) {
+  const [y, m] = adelaideMonthKey(now).split("-").map(Number);
+  const idx = y * 12 + (m - 1) - monthsBack;
+  return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, "0")}`;
+}
+
 // The payroll month being reviewed (Wages review and the Wages self view): Kelly reconciles
 // last month in the first half of the month; after the 15th the current month is the more
 // likely one being looked at.
