@@ -20,6 +20,10 @@ function invoiceRowsHtml(invoices) {
 }
 
 // ------------------------------- PDF (print) --------------------------------
+// Pixel size of the letterhead footer image (LETTERHEAD_FOOTER_B64), for its height at
+// full page width.
+const FOOTER_IMG_W = 2843;
+const FOOTER_IMG_H = 202;
 const PRINT = { ink: "#000000", inkSoft: "#000000", brand: "#3F008E", line: "#E7E1F0", brandSoft: "#F1EAFB" };
 
 export function buildPrintHtml(client, monthText, priorMonthText) {
@@ -116,18 +120,26 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
 <title>${esc(filenameSafe(c.displayName))} ${esc(filenameSafe(monthText))}</title>
 <style>
   ${NORDIQUE_FONT_FACE_CSS}
-  @page { margin: 15mm; size: A4; }
+  /* Page layout (matches the bulk ZIP export, pdfZip.js): 15mm top and side margins for the
+     content, and the letterhead footer strip at full page width, edge to edge, its bottom
+     1cm above the bottom of every page. The @page side/bottom margins are 0 so a fixed
+     footer can reach the page edges; the side margins live on body instead. */
+  @page { margin: 15mm 0 0 0; size: A4; }
   * { box-sizing: border-box; }
-  body { font-family: 'Nordique Pro', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-weight: 600; color: ${PRINT.ink}; margin: 0; }
-  /* The letterhead footer repeats on every printed page via a <tfoot> with
-     display:table-footer-group — the one CSS mechanism Chromium actually
-     reserves per-page space for correctly. A position:fixed footer (the
-     previous approach) hits a longstanding Chromium print bug: the last
-     row before a page break bleeds a few mm into a fixed element regardless
-     of how much @page margin is reserved for it — reproduces even in a
-     bare table with zero custom CSS, so it isn't a tuning problem. Hence
-     the whole page being one table: everything that needs to flow across
-     pages safely (header, tasks, reconciliation) lives in its tbody. */
+  body { font-family: 'Nordique Pro', -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-weight: 600; color: ${PRINT.ink}; margin: 0 15mm; }
+  /* The footer strip: position:fixed repeats it on every printed page. Content is kept clear
+     of it by the empty repeating <tfoot> row below (display:table-footer-group is the one
+     mechanism Chromium reserves per-page space for correctly), which is taller than the
+     strip plus its 1cm offset and a 5mm gap -- a fixed element alone doesn't reserve space,
+     and the last row before a page break used to bleed into it. Hence the whole page being
+     one table: everything that flows across pages (header, tasks, reconciliation) lives in
+     its tbody. */
+  .letterhead-footer {
+    position: fixed; left: 0; right: 0; bottom: 10mm; margin: 0; line-height: 0;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .letterhead-footer img { display: block; width: 100%; height: auto; }
+  .letterhead-footer-cell { height: calc(10mm + ${(210 * FOOTER_IMG_H / FOOTER_IMG_W).toFixed(2)}mm + 5mm); padding: 0; border: none; }
   table.doc { width: 100%; border-collapse: collapse; font-size: 13px; }
   td { padding: 8px 10px; text-align: left; }
   .header-cell { border-bottom: 2px solid ${PRINT.ink}; padding-bottom: 14px; }
@@ -142,20 +154,10 @@ export function buildPrintHtml(client, monthText, priorMonthText) {
   .label { color: ${PRINT.inkSoft}; }
   .note-cell { font-size: 11px; color: ${PRINT.inkSoft}; font-style: italic; padding-top: 4px; }
   .generated-note-cell { font-size: 9px; color: ${PRINT.inkSoft}; text-align: right; font-style: italic; padding-top: 24px; }
-  .letterhead-footer-cell {
-    height: 15mm; /* the footer image is cropped to fit exactly within a 15mm margin at full page width */
-    padding: 0;
-    border: none;
-    background-image: url('data:image/png;base64,${LETTERHEAD_FOOTER_B64}');
-    background-repeat: no-repeat;
-    background-position: bottom center;
-    background-size: 100% auto;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
   @media print { .noprint { display: none; } }
 </style>
 </head><body>
+  <div class="letterhead-footer"><img alt="" src="data:image/png;base64,${LETTERHEAD_FOOTER_B64}"></div>
   <table class="doc">
     <tfoot>
       <tr><td colspan="2" class="letterhead-footer-cell"></td></tr>

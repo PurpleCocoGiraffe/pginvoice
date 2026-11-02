@@ -207,7 +207,9 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer, foote
   const { jsPDF, html2canvas } = libs;
   const html = buildPrintHtml(c, monthText, priorMonthText)
     .replace(/<script>[\s\S]*?<\/script>/g, "") // no auto window.print()
-    .replace("</style>", "  tfoot { display: none; }\n  body { background: #fff; }\n</style>");
+    // Our own footer and side margins replace the print version's: hide its fixed strip and
+    // spacer row, and lay the content out at the iframe's full (content) width.
+    .replace("</style>", "  tfoot, .letterhead-footer { display: none !important; }\n  body { background: #fff; margin: 0 !important; }\n</style>");
 
   const iframe = document.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");
