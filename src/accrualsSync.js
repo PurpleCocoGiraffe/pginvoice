@@ -128,16 +128,17 @@ export function buildReconciliationClients(rows) {
     const resets = {};
     // Months a human marked as not invoiced (see NOT_INVOICED_NOTE).
     const notInvoiced = {};
+    const resetNotes = {};
     for (const [mk, cell] of Object.entries(c.months)) {
       if (cell.isOverride && cell.accrualNote === NOT_INVOICED_NOTE) notInvoiced[mk] = true;
       monthSet.add(mk);
       const carry = carryOutOf(cell);
       if (carry !== null) balances[mk] = carry;
       if (cell.accrualValue !== null) computedBalances[mk] = cell.accrualValue;
-      if (cell.resetValue != null) resets[mk] = cell.resetValue;
+      if (cell.resetValue != null) { resets[mk] = cell.resetValue; resetNotes[mk] = cell.resetNote ?? null; }
       agreedByMonth[mk] = cell.agreedHpm !== null ? parseAgreedHours(cell.agreedHpm) : null;
     }
-    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets, notInvoiced };
+    return { name: c.client, package: parseAgreedHours(c.agreedHpm), agreedByMonth, balances, computedBalances, resets, notInvoiced, resetNotes };
   });
   const balanceCols = [...monthSet].sort().map((mk) => {
     const [y, m] = mk.split("-").map(Number); // m is 1-12

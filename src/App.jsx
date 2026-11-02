@@ -620,7 +620,8 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
   // what the "prior balance from" auto-chain effect does when you step the month picker.
   const prevMonthDataKey = dataMonthKey ? prevMonthKeyStr(dataMonthKey) : "";
   // Data-driven, not tied to any specific month: the "Remaining Reset" column only appears
-  // for a viewed month where at least one client carries a macro-sheet reset.
+  // for a viewed month where at least one client carries a balance reset (the Aug 2026
+  // macro-sheet re-baseline, or a write-off such as Coonawarra Oct 2026 -- see reset_note).
   const showResetCol = useMemo(() => clients.some((c) => c.resetValue != null), [clients]);
   // A scoped user's "vs last month" covers the same cards as this month (keepNames), not
   // whichever cards happened to carry their minutes last month.
@@ -943,7 +944,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
         "Billable worked (h)": Math.round(c.billableWorked * 100) / 100,
         "Remaining (h)": c.remainingShown != null ? Math.round(c.remainingShown * 100) / 100 : "",
         ...(showResetCol ? {
-          "Macro sheet reset": c.resetValue != null ? "Yes" : "",
+          "Balance reset": c.resetValue != null ? (c.resetNote || "Yes") : "",
           "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
         } : {}),
         "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
@@ -1000,7 +1001,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
         // the reset.
         [colLabel]: c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
         "Estimated (no sheet data for this month yet)": c.priorBalanceEstimated ? "Yes" : "",
-        "Macro sheet reset": c.resetValue != null ? "Yes" : "",
+        "Balance reset": c.resetValue != null ? (c.resetNote || "Yes") : "",
       })),
       lastMonthKey, colLabel,
     };
@@ -1355,7 +1356,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
               <span>Package</span>
               <span>Worked</span>
               <span>Remaining</span>
-              {showResetCol && <span title="Closing figure from the legacy macro sheet -- carried into next month in place of our computed balance">Remaining Reset</span>}
+              {showResetCol && <span title="An agreed closing balance (macro-sheet re-baseline or a write-off) -- carried into next month in place of our computed balance; hover a row for its note">Remaining Reset</span>}
               <span>Status</span>
               <span />
             </div>

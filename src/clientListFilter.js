@@ -170,7 +170,7 @@ export function scopeClientList(list, { clients = [], userNames = [] } = {}, pri
 // invoicingScope.test.js, so a renamed card field can't silently stop being withheld.
 export const WITHHELD_FIELDS = {
   pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, kpiPct: null,
-  status: "no-pkg", priorMismatch: null, priorRebaseline: null, resetValue: null, remainingReset: null,
+  status: "no-pkg", priorMismatch: null, priorRebaseline: null, resetValue: null, resetNote: null, remainingReset: null,
   balanceForward: null, remainingShown: null, quotedAmount: null, quotedRemaining: null, lifetimeWorked: null,
   fixedFee: null,
 };
