@@ -8,6 +8,7 @@
 // The heavy libraries are loaded on demand so they never weigh down the main bundle.
 import { buildPrintHtml, lineItemClient } from "./printTemplate.js";
 import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
+import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
 import { filenameSafe } from "./format.js";
 import { unfilteredForExport } from "./reconcile.js";
 import { costCentreInvoice, invoiceCapRuleFor } from "./invoiceSplit.js";
@@ -171,11 +172,38 @@ function loadImage(src) {
   });
 }
 
+// Load every Nordique Pro weight the template uses before capturing. A freshly written
+// document only starts loading a face when layout first needs it, so fonts.ready could
+// resolve with just Light (300) loaded -- the title, headings, labels and totals (600/700)
+// then rendered in the fallback sans-serif instead of matching the single-client PDF.
+// Runs on our iframe and again on html2canvas's own clone of it.
+const FONT_WEIGHTS = ["300", "600", "700"];
+async function loadTemplateFonts(doc) {
+  if (!doc?.fonts?.load) return;
+  const loads = Promise.all(FONT_WEIGHTS.map((w) => doc.fonts.load(`${w} 16px 'Nordique Pro'`)))
+    .then(() => doc.fonts.ready);
+  await Promise.race([loads.catch(() => {}), new Promise((r) => setTimeout(r, 5000))]);
+}
+
+// html2canvas draws the text onto a canvas owned by THIS (the app's) document, and canvas
+// text can only use fonts registered here -- the iframe's own @font-face rules don't
+// count. So register the template's faces on the app document too (once).
+const FONT_STYLE_ID = "pg-pdfzip-nordique";
+async function ensureHostFonts() {
+  if (!document.getElementById(FONT_STYLE_ID)) {
+    const style = document.createElement("style");
+    style.id = FONT_STYLE_ID;
+    style.textContent = NORDIQUE_FONT_FACE_CSS;
+    document.head.appendChild(style);
+  }
+  await loadTemplateFonts(document);
+}
+
 async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
   const { jsPDF, html2canvas } = libs;
   const html = buildPrintHtml(c, monthText, priorMonthText)
     .replace(/<script>[\s\S]*?<\/script>/g, "") // no auto window.print()
-    .replace("</style>", "  tfoot { display: none; }\n  body { background: #fff; }\n  * { font-variant-ligatures: none; font-kerning: none; letter-spacing: 0.01px; }\n</style>");
+    .replace("</style>", "  tfoot { display: none; }\n  body { background: #fff; }\n</style>");
 
   const iframe = document.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");
@@ -184,7 +212,7 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
   try {
     const doc = iframe.contentDocument;
     doc.open(); doc.write(html); doc.close();
-    await Promise.race([doc.fonts?.ready ?? Promise.resolve(), new Promise((r) => setTimeout(r, 2000))]);
+    await loadTemplateFonts(doc);
 
     const body = doc.body;
     const totalH = Math.ceil(body.scrollHeight);
@@ -192,6 +220,7 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
     const canvas = await html2canvas(body, {
       scale: SCALE, backgroundColor: "#ffffff", width: CONTENT_W_PX, height: totalH,
       windowWidth: CONTENT_W_PX, windowHeight: totalH, logging: false,
+      onclone: (cloned) => loadTemplateFonts(cloned),
     });
 
     const pxPerMm = CONTENT_W_PX / CONTENT_W_MM;
@@ -210,9 +239,13 @@ async function renderClientPdf(c, monthText, priorMonthText, libs, footer) {
       ctx.fillRect(0, 0, page.width, page.height);
       ctx.drawImage(canvas, 0, Math.round(from * SCALE), canvas.width, page.height, 0, 0, page.width, page.height);
       pdf.addImage(page.toDataURL("image/jpeg", 0.95), "JPEG", MARGIN_MM, MARGIN_MM, CONTENT_W_MM, (to - from) / pxPerMm);
-      // Letterhead footer: full content width, sitting on the bottom of the 15mm footer band.
+      // Letterhead footer, full content width at the bottom of its 15mm band -- like the
+      // print version's repeating <tfoot>: at the foot of a full page, and straight after
+      // the content on the last page.
       const fh = CONTENT_W_MM * (footer.height / footer.width);
-      pdf.addImage(footer.dataUrl, "PNG", MARGIN_MM, PAGE_H_MM - MARGIN_MM - fh, CONTENT_W_MM, fh);
+      const last = i === slices.length - 1;
+      const bandTop = last ? MARGIN_MM + (to - from) / pxPerMm : PAGE_H_MM - MARGIN_MM - FOOTER_H_MM;
+      pdf.addImage(footer.dataUrl, "PNG", MARGIN_MM, bandTop + FOOTER_H_MM - fh, CONTENT_W_MM, fh);
     });
     return pdf.output("blob");
   } finally {
@@ -226,6 +259,7 @@ export async function buildClientPdfZip(entries, { monthText, priorMonthText, on
   const [{ jsPDF }, { default: html2canvas }, { default: JSZip }] = await Promise.all([
     import("jspdf"), import("html2canvas"), import("jszip"),
   ]);
+  await ensureHostFonts();
   const dataUrl = `data:image/png;base64,${LETTERHEAD_FOOTER_B64}`;
   const img = await loadImage(dataUrl);
   const footer = { dataUrl, width: img.naturalWidth, height: img.naturalHeight };
