@@ -5,20 +5,21 @@ import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
 import { WITHHELD_NOTE } from "./clientListFilter.js";
 import { notInvoicedLines } from "./clientSummary.js";
 import { typeLabelShort } from "./clientTypeLabels.js";
-import { costCentreInvoicesFor, costCentreInvoice, invoiceCapRuleFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
+import { costCentreInvoicesFor, costCentreInvoice, invoiceCapRuleFor, fmtMoney } from "./invoiceSplit.js";
 
 // "Invoices by cost centre" rows for a client with a per-cost-centre invoice cap
-// (invoiceSplit.js): each cost centre's billable hours/amount, then one row per invoice
-// when it has to be split to stay under the cap. "" for any other client.
+// (invoiceSplit.js): each cost centre's billable hours, then one row per invoice when it
+// has to be split to stay under the cap. "" for any other client. Hours only: the PDFs
+// never show the hourly rate, invoice amounts or the dollar cap (Clarke Energy, Nov 2026)
+// -- those stay in the app (row, drawer, Copy summary) for internal use.
 function invoiceRowsHtml(invoices) {
   if (!invoices || !invoices.length) return "";
-  const { rate, cap } = invoices[0].rule;
   const rows = invoices.map((inv) => `
-    <tr class="datarow"><td>${esc(inv.name)} <span class="label">(${fmt(inv.hours)} h)</span></td><td class="right">${esc(fmtMoney(inv.amount))}</td></tr>${inv.lines.length > 1 ? inv.lines.map((line, i) => `
-    <tr class="datarow"><td class="label" style="padding-left:24px">${esc(invoiceLineLabel(line, i, inv.lines.length))}</td><td class="right">${esc(fmtMoney(line.amount))}</td></tr>`).join("") : ""}`).join("");
+    <tr class="datarow"><td>${esc(inv.name)}</td><td class="right">${fmt(inv.hours)} h</td></tr>${inv.lines.length > 1 ? inv.lines.map((line, i) => `
+    <tr class="datarow"><td class="label" style="padding-left:24px">Invoice ${i + 1} of ${inv.lines.length}</td><td class="right">${fmt(line.hours)} h</td></tr>`).join("") : ""}`).join("");
   return `
     <tr class="noborder"><td colspan="2" class="section-heading">Invoices by cost centre</td></tr>${rows}
-    <tr class="noborder"><td colspan="2" class="note-cell">Billable hours at ${esc(fmtMoney(rate))}/h. No invoice may exceed ${esc(fmtMoney(cap))} per cost centre, so a cost centre over that is split across several invoices.</td></tr>`;
+    <tr class="noborder"><td colspan="2" class="note-cell">Billable hours per cost centre. A cost centre with more hours than one invoice allows is split across several invoices.</td></tr>`;
 }
 
 // ------------------------------- PDF (print) --------------------------------
@@ -74,10 +75,8 @@ function reconciliationHtml(c, priorMonthText) {
   // Scoped view, not one of the user's clients (withholdRedactedFigures): hours only.
   const reconciliation = part ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Invoice ${part.index} of ${part.count}</td></tr>
-    <tr class="datarow"><td class="label">Billable hours on this invoice</td><td class="right">${fmt(part.line.hours)} h</td></tr>
-    <tr class="datarow"><td class="label">Rate</td><td class="right">${esc(fmtMoney(part.rule.rate))}/h</td></tr>
-    <tr class="total"><td>Invoice amount</td><td class="right">${esc(fmtMoney(part.line.amount))}</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">${esc(part.centreName)} logged ${fmt(part.totalHours)} billable hours this month (${esc(fmtMoney(part.totalAmount))}). No invoice may exceed ${esc(fmtMoney(part.rule.cap))}, so the month is split across ${part.count} invoices; the tasks above are this invoice's share${part.splitTasks ? " (a task marked \"part\" continues on the neighbouring invoice)" : ""}.</td></tr>` : c.withheld && !c.isLineItemExport ? `
+    <tr class="total"><td>Billable hours on this invoice</td><td class="right">${fmt(part.line.hours)} h</td></tr>
+    <tr class="noborder"><td colspan="2" class="note-cell">${esc(part.centreName)} logged ${fmt(part.totalHours)} billable hours this month, more than one invoice allows, so the month is split across ${part.count} invoices; the tasks above are this invoice's share${part.splitTasks ? " (a task marked \"part\" continues on the neighbouring invoice)" : ""}.</td></tr>` : c.withheld && !c.isLineItemExport ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">${esc(WITHHELD_NOTE)}</td></tr>` : isWrapUp ? `

@@ -104,8 +104,10 @@ describe("Clarke Energy: per-cost-centre invoices", () => {
   it("the PDF lists the cost centres and the split", () => {
     const html = buildPrintHtml(clarke(), "September 2026", "August 2026");
     expect(html).toContain("Invoices by cost centre");
-    expect(html).toContain("Invoice 2 of 3: 52.63 h · $10,000.00");
-    expect(html).toContain("$2,052.00");
+    expect(html).toMatch(/Invoice 2 of 3<\/td><td class="right">52\.63 h/);
+    // Hours only: no hourly rate, invoice amount or dollar cap on a PDF (Nov 2026).
+    const body = html.split("<body>")[1].replace(/<script>[\s\S]*?<\/script>/, "");
+    expect(body).not.toMatch(/\$\d/);
   });
   it("a non-capped client's PDF has no invoice section", () => {
     const html = buildPrintHtml(clarke({ name: "Apex Energy", displayName: "Apex Energy" }), "September 2026", "");

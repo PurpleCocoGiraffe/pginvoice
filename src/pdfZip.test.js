@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { pageBreaks, allocateTasks, planClientPdfs } from "./pdfZip.js";
+import { buildPrintHtml } from "./printTemplate.js";
 
 describe("pageBreaks", () => {
   it("keeps a short document on one page", () => {
@@ -49,7 +50,11 @@ describe("planClientPdfs", () => {
     ]);
     expect(plan[1].client.invoicePart.line.amount).toBe(10000);
     expect(plan[2].client.invoicePart.line.amount).toBe(5200);
-    expect(plan[1].client.workedFiltered + plan[2].client.workedFiltered).toBeCloseTo(80);
+    expect(plan[1].client.workedFiltered + plan[2].client.workedFiltered).toBeCloseTo(80);    // Each invoice's own PDF shows hours only: no rate, amount or dollar cap (Nov 2026).
+    for (const e of plan) {
+      const body = buildPrintHtml(e.client, "October 2026", null).split("<body>")[1].replace(/<script>[\s\S]*?<\/script>/, "");
+      expect(body).not.toMatch(/\$\d/);
+    }
   });
   it("leaves Clarke Energy (CEA) as one PDF under the cap", () => {
     expect(planClientPdfs([task("Clarke Energy (CEA)", 600)], () => [], "October 2026")).toHaveLength(1);
