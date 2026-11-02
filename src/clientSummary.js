@@ -59,6 +59,14 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
     lines.push(`Offboarded: unutilised hours owed carried in: ${fmt(Math.abs(c.priorBalance))} h`);
     if (Math.abs(billable - c.worked) > 0.005) lines.push(`Billable wrap-up time deducted: ${fmt(billable)} h`);
     lines.push(c.remainingShown > 0 ? `Still owed after this month: ${fmt(c.remainingShown)} h` : `Owed hours used up (over by ${fmt(Math.abs(c.remainingShown))} h)`);
+  } else if (c.hourlySettlement) {
+    // Moved off a package onto hourly: the package balance is settled on this invoice.
+    const s = c.hourlySettlement;
+    lines.push(`Billable time this month: ${fmt(billable)} h`);
+    if (s.prior < 0) lines.push(`Unused package hours owed to the client${priorMonthPretty ? ` (from ${priorMonthPretty})` : ""}: ${fmt(Math.abs(s.prior))} h, ${fmt(Math.abs(s.applied))} h deducted`);
+    else lines.push(`Package hours over-used${priorMonthPretty ? ` (from ${priorMonthPretty})` : ""}: ${fmt(s.prior)} h, added`);
+    lines.push(`Hours to invoice: ${fmt(s.hoursToInvoice)} h`);
+    if (s.remaining < 0) lines.push(`Still owed, carried to next month: ${fmt(Math.abs(s.remaining))} h`);
   } else if (isPackageLikeType(c.type) && c.pkg != null && c.pkg > 0) {
     if (Math.abs(billable - c.worked) > 0.005) lines.push(`Billable time counted toward the package: ${fmt(billable)} h`);
     lines.push(`Package: ${fmt(c.pkg)} h`);

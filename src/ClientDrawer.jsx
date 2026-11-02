@@ -287,6 +287,21 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
               <span className="pg-drawer__overunder-tag">balance carried forward unchanged</span>
             </div>
           )}
+          {c.hourlySettlement && (() => {
+            const s = c.hourlySettlement;
+            const billable = c.billableWorked ?? c.worked;
+            return (
+              <div className="pg-drawer__overunder" title="Moved off a package onto hourly: the package balance is settled on the hourly invoice instead of being dropped.">
+                <span className="pg-drawer__overunder-label">Hours to invoice</span>
+                <span className="pg-drawer__overunder-value">{fmt(s.hoursToInvoice)} h</span>
+                <span className="pg-drawer__overunder-tag">
+                  {s.prior < 0
+                    ? `${fmt(billable)} h worked less ${fmt(Math.abs(s.applied))} h of unused package hours owed${priorMonthPretty ? ` from ${priorMonthPretty}` : ""}${s.remaining < 0 ? `; ${fmt(Math.abs(s.remaining))} h still owed, carried to next month` : ""}`
+                    : `${fmt(billable)} h worked plus ${fmt(s.prior)} h of package over-use${priorMonthPretty ? ` from ${priorMonthPretty}` : ""}`}
+                </span>
+              </div>
+            );
+          })()}
           {isWrapUp && (
             <div className="pg-drawer__overunder" title="We owe an offboarded client its unutilised hours, so any work after the end date is deducted from them.">
               <span className="pg-drawer__overunder-label">{c.remaining > 0 ? "Still owed after wrap-up" : "Owed hours used up by"}</span>

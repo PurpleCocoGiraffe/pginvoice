@@ -947,6 +947,10 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
           "Balance reset": c.resetValue != null ? (c.resetNote || "Yes") : "",
           "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
         } : {}),
+        // Package -> hourly settlement (settleHourly): the package balance settled on this
+        // hourly invoice, and the hours to bill after it.
+        "Package balance settled (h)": c.hourlySettlement ? c.hourlySettlement.applied : "",
+        "Hours to invoice (h)": c.hourlySettlement ? c.hourlySettlement.hoursToInvoice : "",
         "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
         "KPI variance (%)": c.kpiPct != null ? Math.round(c.kpiPct * 10) / 10 : "",
         "Status": { over: "OVER (+10%)", under: "UNDER (−10%)", ok: "on track", on_hold: "on hold (accrual paused)", "no-pkg": "no package", fixed_price: "fixed price", wrap_up: "wrap-up (owed hours drawn down)" }[c.status],

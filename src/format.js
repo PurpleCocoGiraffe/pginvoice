@@ -59,3 +59,31 @@ export const isPackageLikeType = (t) => t === "package" || t === "strategy";
 // is a real figure, hence `??` and never `||`. Lives here (not accrualsSync.js) because
 // overviewData.js is deliberately free of any Supabase import.
 export const carryOutOf = (cell) => (cell ? (cell.resetValue ?? cell.accrualValue ?? null) : null);
+
+// ------------------------- package -> hourly settlement -------------------------
+// A client moving off a package onto hourly settles its package balance on its hourly
+// invoices instead of losing it (the old behaviour dropped it to 0):
+//   - balance > 0 (over-used, they owe us): added in full to the first hourly invoice;
+//   - balance < 0 (unused hours, we owe them): deducted from the hourly hours, and any part
+//     the month's hours can't cover carries to the next hourly month until used up.
+// Only from HOURLY_SETTLEMENT_FROM onwards (agreed Nov 2026: earlier transitions stay as
+// they were). First use: Treasure Boxes, -1.70 h from Sep 2026 into its Oct 2026 invoice.
+// The ledger records each settled month as a row with HOURLY_SETTLEMENT_NOTE (agreed null,
+// accrual_value = what's still owed), written by replayClientAccruals; Client Accruals reads
+// the same carry-ins back (hourlySettlementCarryIn in reconcile.js).
+export const HOURLY_SETTLEMENT_FROM = "2026-10";
+export const HOURLY_SETTLEMENT_NOTE = "Hourly: package balance settled on invoice";
+
+// prior: the signed balance carried in (same sign as accrual_value); worked: this month's
+// billable hours. hoursToInvoice = worked + applied; remaining carries to the next month.
+export function settleHourly(prior, worked) {
+  const p = Number(prior) || 0;
+  const w = Math.max(0, Number(worked) || 0);
+  const r2 = (x) => Math.round(x * 100) / 100;
+  if (p > 0) return { prior: r2(p), applied: r2(p), hoursToInvoice: r2(w + p), remaining: 0 };
+  if (p < 0) {
+    const used = Math.min(w, -p);
+    return { prior: r2(p), applied: r2(-used), hoursToInvoice: r2(w - used), remaining: r2(p + used) };
+  }
+  return { prior: 0, applied: 0, hoursToInvoice: r2(w), remaining: 0 };
+}

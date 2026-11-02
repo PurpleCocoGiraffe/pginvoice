@@ -2,7 +2,7 @@
 // Split out of the component closure so every package/prior/estimate/mismatch rule is
 // directly testable -- most of them exist because a silent wrong-number bug shipped once
 // (see reconcile.test.js). No React or Supabase imports.
-import { isPackageLikeType } from "./format.js";
+import { isPackageLikeType, HOURLY_SETTLEMENT_FROM, settleHourly } from "./format.js";
 import { prevMonthKeyStr } from "./parsers.js";
 
 // Below this many hours of disagreement between the ledger's recorded prior-month balance
@@ -136,12 +136,21 @@ export function billableMinutesByFolder(rows, monthKey, hasBillable, coveredMont
 // budget is lifetimeBudgetFor's, computed by the caller.
 // wrapUpPrior   -- the viewed month sits inside an end period and this is the balance carried
 //                  into it (endedCarryIn); when owed (< 0) the month is a wrap-up drawdown.
+// hourlySettlementPrior -- an hourly month's carry-in from a package (hourlySettlementCarryIn);
+//                  non-zero from HOURLY_SETTLEMENT_FROM = settle it on this month's invoice
+//                  (`hourlySettlement`: prior / applied / hoursToInvoice / remaining).
 export function reconcileClientMonth({
   worked, accruedClient: a, monthKey, priorKey, priorWorkedH = null,
   monthType = null, priorType = null, monthStatus = null, priorStatus = null,
   monthSegmentAgreed = null, allowScalarPackage = false, priorEnded = false,
-  wrapUpPrior = null,
+  wrapUpPrior = null, hourlySettlementPrior = null,
 }) {
+  // Package -> hourly settlement (mirrors replayClientAccruals): everything else about an
+  // hourly month stays "no package"; only the invoice hours change.
+  if (monthType === "hourly" && monthKey && monthKey >= HOURLY_SETTLEMENT_FROM
+      && hourlySettlementPrior != null && hourlySettlementPrior !== 0) {
+    return { ...NO_PACKAGE_RESULT, hourlySettlement: settleHourly(hourlySettlementPrior, worked) };
+  }
   // Wrap-up drawdown (mirrors replayClientAccruals' ended-period branch): we still owe an
   // offboarded client its unutilised hours, so work logged after the end is deducted from
   // them -- no new package, balance = owed + worked. An over-serviced client (carry >= 0)
@@ -263,6 +272,7 @@ export function reconcileClientMonth({
   return {
     pkg, priorBalance, priorBalanceEstimated, newBalance, remaining, kpiPct, status, priorMismatch,
     priorRebaseline, priorNotInvoiced,
+    hourlySettlement: null,
     resetValue: monthReset,
     resetNote,
     // Remaining convention (positive = hours left): the negated signed reset.
@@ -275,7 +285,7 @@ export function reconcileClientMonth({
 
 const NO_PACKAGE_RESULT = {
   pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, kpiPct: null,
-  status: "no-pkg", priorMismatch: null, priorRebaseline: null, priorNotInvoiced: null, resetValue: null, resetNote: null, remainingReset: null,
+  status: "no-pkg", priorMismatch: null, priorRebaseline: null, priorNotInvoiced: null, resetValue: null, resetNote: null, remainingReset: null, hourlySettlement: null,
   balanceForward: null, remainingShown: null,
 };
 
@@ -340,6 +350,15 @@ export function seedBlockedBy({ ledgerName, matchedLedgerNames, ownFolder = null
   if (matchedLedgerNames.has(ledgerName)) return true;
   if (ownFolder && monthFolderKeys.has(folderKey(ownFolder))) return true;
   return (clientFolders || []).some((f) => monthFolderKeys.has(folderKey(f)));
+}
+
+// The package balance an hourly month inherits for settlement (see settleHourly): the prior
+// month's carry-out when that month was on a package, or was itself an hourly month still
+// settling owed hours (an HOURLY_SETTLEMENT_NOTE ledger row). null otherwise.
+export function hourlySettlementCarryIn(accruedClient, priorKey, priorType) {
+  if (!accruedClient || !priorKey) return null;
+  if (!isPackageLikeType(priorType) && !accruedClient.settledHourly?.[priorKey]) return null;
+  return accruedClient.balances?.[priorKey] ?? null;
 }
 
 // The balance carried into a month inside an end period, straight from the ledger's

@@ -15,7 +15,7 @@ import {
   folderKey, buildFolderCanonicalizer, newFolderEntry, aggregateMonthRows, billableMinutesByFolder,
   reconcileClientMonth, shouldSeedPackageMonth, lifetimeBudgetFor, isLifetimeBudgetType,
   sumMinutesInRange, seedBlockedBy, monthInEndPeriods, priorFolderKeysFor, subProjectType, resolveClientType,
-  endedCarryIn, fixedFeeSummary,
+  endedCarryIn, fixedFeeSummary, hourlySettlementCarryIn,
 } from "./reconcile.js";
 import { adelaideMonthKey } from "./dateMath.js";
 
@@ -455,6 +455,7 @@ export function buildClientsForMonth(ctx, monthKey, priorKey, { currentMonthKey 
       allowScalarPackage,
       priorEnded,
       wrapUpPrior,
+      hourlySettlementPrior: monthType === "hourly" && !priorEnded ? hourlySettlementCarryIn(accruedClient, priorKey, priorType) : null,
     });
     const clientObj = {
       ...c, worked, billableWorked, accruedClient, matchInfo,
