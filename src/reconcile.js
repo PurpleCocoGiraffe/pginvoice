@@ -148,6 +148,7 @@ export function reconcileClientMonth({
   // isn't drawn down and keeps the plain ended handling below.
   if (wrapUpPrior != null && wrapUpPrior < 0) {
     const monthReset = a && monthKey ? (a.resets?.[monthKey] ?? null) : null;
+    const resetNote = a && monthKey ? (a.resetNotes?.[monthKey] ?? null) : null;
     const newBalance = wrapUpPrior + worked;
     return {
       ...NO_PACKAGE_RESULT,
@@ -156,6 +157,7 @@ export function reconcileClientMonth({
       remaining: 0 - newBalance,
       status: "wrap_up",
       resetValue: monthReset,
+      resetNote,
       remainingReset: monthReset !== null ? 0 - monthReset : null,
       balanceForward: monthReset ?? newBalance,
       remainingShown: monthReset !== null ? 0 - monthReset : 0 - newBalance,
@@ -185,9 +187,10 @@ export function reconcileClientMonth({
   let priorBalance = a && priorKey ? (a.balances?.[priorKey] ?? null) : null;
   const priorReset = a && priorKey ? (a.resets?.[priorKey] ?? null) : null;
   let priorRebaseline = priorReset !== null
-    ? { resetValue: priorReset, computed: a.computedBalances?.[priorKey] ?? null }
+    ? { resetValue: priorReset, computed: a.computedBalances?.[priorKey] ?? null, note: a.resetNotes?.[priorKey] ?? null }
     : null;
   const monthReset = a && monthKey ? (a.resets?.[monthKey] ?? null) : null;
+  const resetNote = a && monthKey ? (a.resetNotes?.[monthKey] ?? null) : null;
   // undefined = no ledger row for the prior month at all; null = a row saying no package.
   const priorAgreed = a && priorKey ? a.agreedByMonth?.[priorKey] : undefined;
   const priorPkg = priorAgreed ?? pkg;
@@ -261,6 +264,7 @@ export function reconcileClientMonth({
     pkg, priorBalance, priorBalanceEstimated, newBalance, remaining, kpiPct, status, priorMismatch,
     priorRebaseline, priorNotInvoiced,
     resetValue: monthReset,
+    resetNote,
     // Remaining convention (positive = hours left): the negated signed reset.
     remainingReset: monthReset !== null ? 0 - monthReset : null, // 0 - x, not -x: a reset of 0 must not become -0
     // The official closing figures every export/copy/PDF path must use.
@@ -271,7 +275,7 @@ export function reconcileClientMonth({
 
 const NO_PACKAGE_RESULT = {
   pkg: null, priorBalance: null, priorBalanceEstimated: false, newBalance: null, remaining: null, kpiPct: null,
-  status: "no-pkg", priorMismatch: null, priorRebaseline: null, priorNotInvoiced: null, resetValue: null, remainingReset: null,
+  status: "no-pkg", priorMismatch: null, priorRebaseline: null, priorNotInvoiced: null, resetValue: null, resetNote: null, remainingReset: null,
   balanceForward: null, remainingShown: null,
 };
 

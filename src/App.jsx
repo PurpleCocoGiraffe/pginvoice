@@ -26,7 +26,7 @@ import {
   parseTimeTextToMinutes, msToMinutes, parseHeaderToMonth, monthLabel, monthKey, prevMonthKeyStr,
   parseAccruedWorkbook, findHeader, SKIP_FOLDERS, parseStartTextMonth, dateKeyStr, parseClickupCsv,
 } from "./parsers.js";
-import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
+import { buildPrintHtml, printClientPdf, printLineItemPdf, printGroupSummaryPdf } from "./printTemplate.js";
 import { buildClientPdfZip, planClientPdfs } from "./pdfZip.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY } from "./storageKeys.js";
 import { filterClientList, searchMatchesInOtherTypes, hasWorkedHours, scopedCardLists } from "./clientListFilter.js";
@@ -620,7 +620,8 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
   // what the "prior balance from" auto-chain effect does when you step the month picker.
   const prevMonthDataKey = dataMonthKey ? prevMonthKeyStr(dataMonthKey) : "";
   // Data-driven, not tied to any specific month: the "Remaining Reset" column only appears
-  // for a viewed month where at least one client carries a macro-sheet reset.
+  // for a viewed month where at least one client carries a balance reset (the Aug 2026
+  // macro-sheet re-baseline, or a write-off such as Coonawarra Oct 2026 -- see reset_note).
   const showResetCol = useMemo(() => clients.some((c) => c.resetValue != null), [clients]);
   // A scoped user's "vs last month" covers the same cards as this month (keepNames), not
   // whichever cards happened to carry their minutes last month.
@@ -943,7 +944,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
         "Billable worked (h)": Math.round(c.billableWorked * 100) / 100,
         "Remaining (h)": c.remainingShown != null ? Math.round(c.remainingShown * 100) / 100 : "",
         ...(showResetCol ? {
-          "Macro sheet reset": c.resetValue != null ? "Yes" : "",
+          "Balance reset": c.resetValue != null ? (c.resetNote || "Yes") : "",
           "System computed remaining (h)": c.resetValue != null && c.remaining != null ? Math.round(c.remaining * 100) / 100 : "",
         } : {}),
         "New balance (signed)": c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
@@ -1000,7 +1001,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
         // the reset.
         [colLabel]: c.balanceForward != null ? Math.round(c.balanceForward * 100) / 100 : "",
         "Estimated (no sheet data for this month yet)": c.priorBalanceEstimated ? "Yes" : "",
-        "Macro sheet reset": c.resetValue != null ? "Yes" : "",
+        "Balance reset": c.resetValue != null ? (c.resetNote || "Yes") : "",
       })),
       lastMonthKey, colLabel,
     };
@@ -1066,6 +1067,18 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
     } finally {
       setPdfZipProgress(null);
     }
+  };
+  // Summary-only PDF for a client with sub-projects and/or a cost-centre roll-up: the
+  // parent's (with its cost-centre hours, e.g. Majestic Plumbing + Commercial Leak Tech) and
+  // each nested sub-project's own figures, no task line items. Quoted sub-projects are left
+  // out (Kelly, Nov 2026: e.g. Majestic Plumbing's Quoted Web Project is billed separately
+  // and doesn't belong in this summary). Uses every other nested row, not just the "worked
+  // only" ones.
+  const summarySubProjects = (c) => allSiblingsUnfiltered(c.name).filter((s) => s.type !== "quoted");
+  const hasGroup = (c) => !!c && (!!c.costCentre || summarySubProjects(c).length > 0);
+  const exportGroupSummary = (c) => {
+    const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
+    printGroupSummaryPdf(c, summarySubProjects(c), monthText, priorMonthPretty);
   };
   const downloadLineItemPdf = (c, lineItem) => {
     const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
@@ -1355,7 +1368,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
               <span>Package</span>
               <span>Worked</span>
               <span>Remaining</span>
-              {showResetCol && <span title="Closing figure from the legacy macro sheet -- carried into next month in place of our computed balance">Remaining Reset</span>}
+              {showResetCol && <span title="An agreed closing balance (macro-sheet re-baseline or a write-off) -- carried into next month in place of our computed balance; hover a row for its note">Remaining Reset</span>}
               <span>Status</span>
               <span />
             </div>
@@ -1372,7 +1385,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
               }
               return (
                 <div className="pg-tile" key={c.name}>
-                  <ClientRow index={i + 1} client={c} showReset={showResetCol} tileRow hasMoreBelow={siblings.length > 0} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} />
+                  <ClientRow index={i + 1} client={c} showReset={showResetCol} tileRow hasMoreBelow={siblings.length > 0} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} onExportSummary={hasGroup(c) ? exportGroupSummary : undefined} />
                   {siblings.map((s, idx) => {
                     const sc = withConsultantFilter(s, consultantFilter);
                     return (
@@ -1442,6 +1455,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
           onSetMatch={scoped ? null : (v) => setManualMatch(drawerClient.name, v)}
           onCopy={() => copySummary(drawerClient)}
           onPdf={() => downloadPdf(drawerClient)}
+          onExportSummary={hasGroup(drawerClient) ? () => exportGroupSummary(drawerClient) : undefined}
           onPdfLineItem={(lineItem) => downloadLineItemPdf(drawerClient, lineItem)}
           onViewProfile={onNavigateClients}
           copied={copied === drawerClient.name}

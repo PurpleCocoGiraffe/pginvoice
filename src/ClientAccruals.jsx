@@ -154,7 +154,7 @@ export default function ClientAccruals({ canWrite = false }) {
     }
   }
 
-  // Months where any client carries a macro-sheet reset get an extra "Reset" sub-column.
+  // Months where any client carries a balance reset (macro sheet / write-off) get an extra "Reset" sub-column.
   const resetMonths = new Set(months.filter((mk) => (clients || []).some((c) => c.months[mk]?.resetValue != null)));
 
   function exportRange() {
@@ -266,7 +266,7 @@ export default function ClientAccruals({ canWrite = false }) {
                 <React.Fragment key={mk}>
                   <th style={{ fontWeight: 400 }}>Worked</th>
                   <th style={{ fontWeight: 400 }}>Accrual</th>
-                  {resetMonths.has(mk) && <th style={{ fontWeight: 400 }} title="Closing figure from the legacy macro sheet -- carried into next month in place of the computed accrual">Reset</th>}
+                  {resetMonths.has(mk) && <th style={{ fontWeight: 400 }} title="An agreed closing balance (macro-sheet re-baseline or a write-off) -- carried into next month in place of the computed accrual; hover a cell for its note">Reset</th>}
                   <th style={{ fontWeight: 400 }}>Accrual %</th>
                   <th style={{ fontWeight: 400 }}>Comments</th>
                 </React.Fragment>
@@ -311,7 +311,7 @@ export default function ClientAccruals({ canWrite = false }) {
                           {cell.accrualValue ?? cell.accrualNote ?? "—"}{cell.isOverride && <span className="pg-tag pg-tag--muted" style={{ marginLeft: 4 }}>sheet</span>}
                         </td>
                         {resetMonths.has(mk) && (
-                          <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }} title={cell.resetValue != null ? `Macro sheet reset${cell.resetNote ? `: ${cell.resetNote}` : ""} -- next month carries this instead of the computed accrual` : undefined}>
+                          <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }} title={cell.resetValue != null ? `Balance reset${cell.resetNote ? `: ${cell.resetNote}` : ""} -- next month carries this instead of the computed accrual` : undefined}>
                             {cell.resetValue != null ? cell.resetValue : ""}
                           </td>
                         )}

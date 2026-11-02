@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { ArrowLeft, MoreVertical, Copy, Printer, X, ChevronDown, Link2, AlertTriangle, Users, Check, BarChart3 } from "lucide-react";
+import { ArrowLeft, MoreVertical, Copy, Printer, X, ChevronDown, Link2, AlertTriangle, Users, Check, BarChart3, FileText } from "lucide-react";
 import { fmt, timeAgo, isPackageLikeType, clickupTaskUrl } from "./format.js";
 import { isLifetimeBudgetType } from "./reconcile.js";
 import { findPersonMatch } from "./nameMatch.js";
@@ -36,7 +36,7 @@ function TaskUsersCell({ userMinutesMap, taskUrl }) {
 // Full client detail — right-side drawer, opened by clicking a row. Reuses exactly
 // the same computed fields ClientRow reads from (client.*), just laid out for
 // a deeper single-client view: reconciliation bar, consultant contributions, tasks.
-export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthProgress, hasUser, consultantFilter, accruedNames, usedAccruedNames, syncMeta, capPeople, onClose, onSetMatch, onCopy, onPdf, onPdfLineItem, onViewProfile, copied }) {
+export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthProgress, hasUser, consultantFilter, accruedNames, usedAccruedNames, syncMeta, capPeople, onClose, onSetMatch, onCopy, onPdf, onExportSummary, onPdfLineItem, onViewProfile, copied }) {
   const isPackage = isPackageLikeType(c.type);
   // Quoted and MAP are both one fixed hour budget for the whole engagement (a MAP is quoted
   // at e.g. 80 h in total) -- same figures, MAP wording.
@@ -134,6 +134,7 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
               <div className="pg-menu" style={{ top: "calc(100% + 4px)" }}>
                 <ExportItem icon={<Copy size={14} />} label="Copy summary" onClick={() => { setMenuOpen(false); onCopy(); }} />
                 <ExportItem icon={<Printer size={14} />} label="Generate PDF" onClick={() => { setMenuOpen(false); onPdf(); }} />
+                {onExportSummary && <ExportItem icon={<FileText size={14} />} label="Export summary (no line items)" onClick={() => { setMenuOpen(false); onExportSummary(); }} />}
               </div>
             )}
             <button className="pg-drawer__icon-btn" onClick={onClose} aria-label="Close" title="Close">
@@ -254,7 +255,7 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                   title: `The accrued sheet has no column for ${priorMonthPretty || "the prior month"} — this figure is estimated from ClickUp hours worked that month instead of the sheet's own recorded balance. Re-upload the accrued sheet with that month's column once it's available for the verified number.`,
                 } : c.priorRebaseline ? {
                   text: "re-baselined",
-                  title: `Carry is ${priorMonthPretty || "the prior month"}'s reset figure from the macro sheet (system computed ${c.priorRebaseline.computed != null ? `${fmt(c.priorRebaseline.computed)} h` : "no figure"}).`,
+                  title: `Carry is ${priorMonthPretty || "the prior month"}'s reset figure${c.priorRebaseline.note ? ` (${c.priorRebaseline.note})` : ""} (system computed ${c.priorRebaseline.computed != null ? `${fmt(c.priorRebaseline.computed)} h` : "no figure"}).`,
                 } : c.priorMismatch ? {
                   text: "mismatch identified",
                   title: `Accrued sheet says ${fmt(c.priorMismatch.sheetValue)} h${priorMonthPretty ? ` for ${priorMonthPretty}` : ""}, but recalculating from the current ClickUp data for that month gives ${fmt(c.priorMismatch.recomputed)} h. Likely a ClickUp entry was edited after the sheet was last updated.`,
@@ -305,8 +306,8 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
             </div>
           )}
           {isPackage && c.remainingReset != null && (
-            <div className="pg-drawer__overunder" title={`Macro sheet: ${fmt(c.resetValue)} h`}>
-              <span className="pg-drawer__overunder-label">Remaining reset (macro sheet)</span>
+            <div className="pg-drawer__overunder" title={`Balance reset to ${fmt(c.resetValue)} h${c.resetNote ? ` -- ${c.resetNote}` : ""}`}>
+              <span className="pg-drawer__overunder-label">Remaining reset</span>
               <span className="pg-drawer__overunder-value" style={{ color: c.remainingReset < 0 ? "var(--status-over)" : c.remainingReset > 0 ? "var(--status-ok)" : undefined }}>
                 {c.remainingReset < 0 ? "−" : ""}{fmt(Math.abs(c.remainingReset))} h
               </span>
