@@ -127,7 +127,9 @@ function reconciliationHtml(c, priorMonthText) {
     <tr class="noborder"><td colspan="2" class="note-cell">${isMap ? "A MAP" : "Quoted"} is a single fixed budget for the whole ${isMap ? "plan" : "project"}, not a monthly one. The total and remaining figures are cumulative across every month of it, not just this one.</td></tr>` : `
     <tr class="noborder"><td colspan="2" class="section-heading">Summary</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
-    <tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only. It is part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package and reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "digital" ? "Digital Package: fixed monthly price. Hours are shown for reference only." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`;
+    ${/* A capped client's cost-centre PDF (Clarke Energy) is an invoice of its own: no
+       "this folder's own hours only" note under it (Nov 2026). */ ""}
+    ${c.isLineItemExport && c.invoices ? "" : `<tr class="noborder"><td colspan="2" class="note-cell">${c.isLineItemExport ? `This folder's own hours only. It is part of ${esc(c.rolledUpParentName)}'s rolled-up package; see that client's own report for the combined package and reconciliation figures.` : type === "hourly" ? "Hourly-rate client: invoice at the agreed hourly rate for these hours." : type === "digital" ? "Digital Package: fixed monthly price. Hours are shown for reference only." : type === "queensland" ? "Queensland (previously) client: no accrued balance on record." : "No accrued balance tracked for this client type."}</td></tr>`}`;
   return reconciliation;
 }
 

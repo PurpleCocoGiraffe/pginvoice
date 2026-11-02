@@ -28,4 +28,13 @@ describe("lineItemTitle", () => {
     const body = buildPrintHtml(li, "October 2026", null).split("<body>")[1].replace(/<script>[\s\S]*?<\/script>/, "");
     expect(body).not.toMatch(/—| -- /);
   });
+  it("a capped client's cost-centre PDF (Clarke Energy) has no 'own hours only' note; others keep it", () => {
+    const item = { name: "Clarke Energy (CEA)", tasksByUser: new Map([["A", new Map([["Task", 600]])]]), hours: 10, billableHours: 10 };
+    const clarke = buildPrintHtml(lineItemClient({ displayName: "Clarke Energy (CEA)", name: "Clarke Energy (CEA)" }, { ...item, name: "CEA Power" }, null), "October 2026", null);
+    expect(clarke).toContain("Time tracked this month");
+    expect(clarke).not.toContain("own hours only");
+    const other = buildPrintHtml(lineItemClient({ displayName: "Vegetation Solutions", name: "Vegetation Solutions" },
+      { ...item, name: "Vegetation Solutions - MVS" }, null), "October 2026", null);
+    expect(other).toContain("own hours only");
+  });
 });
