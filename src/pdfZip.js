@@ -19,9 +19,9 @@ const PAGE_H_MM = 297;
 const MARGIN_MM = 15;
 const CONTENT_W_MM = PAGE_W_MM - 2 * MARGIN_MM;
 // Letterhead footer strip: full page width (edge to edge, no side margins), at the same
-// height on every page, its bottom FOOTER_BOTTOM_MM above the bottom edge of the page.
+// height on every page, its bottom FOOTER_BOTTOM_MM (1 cm) above the bottom edge of the page.
 // Content stops FOOTER_GAP_MM above the strip; anything longer flows to the next page.
-const FOOTER_BOTTOM_MM = 50;
+const FOOTER_BOTTOM_MM = 10;
 const FOOTER_GAP_MM = 5;
 const CONTENT_W_PX = Math.round((CONTENT_W_MM / 25.4) * 96);
 const SCALE = 2;
