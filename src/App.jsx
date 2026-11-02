@@ -26,7 +26,7 @@ import {
   parseTimeTextToMinutes, msToMinutes, parseHeaderToMonth, monthLabel, monthKey, prevMonthKeyStr,
   parseAccruedWorkbook, findHeader, SKIP_FOLDERS, parseStartTextMonth, dateKeyStr, parseClickupCsv,
 } from "./parsers.js";
-import { buildPrintHtml, printClientPdf, printLineItemPdf } from "./printTemplate.js";
+import { buildPrintHtml, printClientPdf, printLineItemPdf, printGroupSummaryPdf } from "./printTemplate.js";
 import { buildClientPdfZip, planClientPdfs } from "./pdfZip.js";
 import { CLICKUP_DB_KEY, ACCRUED_DB_KEY, CAP_CLIENTS_KEY, CAP_PEOPLE_KEY, PG_CLIENTS_KEY, PG_ACCRUALS_KEY, NAMEMAP_KEY, VIEWSTATE_KEY } from "./storageKeys.js";
 import { filterClientList, searchMatchesInOtherTypes, hasWorkedHours, scopedCardLists } from "./clientListFilter.js";
@@ -1068,6 +1068,15 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
       setPdfZipProgress(null);
     }
   };
+  // Summary-only PDF for a client with sub-projects and/or a cost-centre roll-up: the
+  // parent's and every nested sub-project's own figures, no task line items. Uses every
+  // nested row (not just the "worked only" ones) -- a quoted sub-project with no hours this
+  // month still has a budget/remaining worth reporting.
+  const hasGroup = (c) => !!c && (!!c.costCentre || allSiblingsUnfiltered(c.name).length > 0);
+  const exportGroupSummary = (c) => {
+    const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
+    printGroupSummaryPdf(c, allSiblingsUnfiltered(c.name), monthText, priorMonthPretty);
+  };
   const downloadLineItemPdf = (c, lineItem) => {
     const monthText = invoiceMonth || new Date().toLocaleString(undefined, { month: "long", year: "numeric" });
     printLineItemPdf(c, lineItem, monthText, consultantFilter);
@@ -1373,7 +1382,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
               }
               return (
                 <div className="pg-tile" key={c.name}>
-                  <ClientRow index={i + 1} client={c} showReset={showResetCol} tileRow hasMoreBelow={siblings.length > 0} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} />
+                  <ClientRow index={i + 1} client={c} showReset={showResetCol} tileRow hasMoreBelow={siblings.length > 0} active={drawerClientName === c.name} onOpen={() => setDrawerClientName(c.name)} onCopy={copySummary} onPdf={downloadPdf} onExportSummary={hasGroup(c) ? exportGroupSummary : undefined} />
                   {siblings.map((s, idx) => {
                     const sc = withConsultantFilter(s, consultantFilter);
                     return (
@@ -1443,6 +1452,7 @@ export default function PGReconciliation({ onNavigateClients, scope = null, dire
           onSetMatch={scoped ? null : (v) => setManualMatch(drawerClient.name, v)}
           onCopy={() => copySummary(drawerClient)}
           onPdf={() => downloadPdf(drawerClient)}
+          onExportSummary={hasGroup(drawerClient) ? () => exportGroupSummary(drawerClient) : undefined}
           onPdfLineItem={(lineItem) => downloadLineItemPdf(drawerClient, lineItem)}
           onViewProfile={onNavigateClients}
           copied={copied === drawerClient.name}
