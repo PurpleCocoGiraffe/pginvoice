@@ -87,3 +87,40 @@ export function settleHourly(prior, worked) {
   }
   return { prior: 0, applied: 0, hoursToInvoice: r2(w), remaining: 0 };
 }
+
+// Carry hold: a package -> hourly move that settles the package balance in a LATER month
+// instead of the first hourly one (type event carry_settle_month, typeTimelineFor's
+// `carrySettleMonth`). From the segment's first month up to the month before the settle
+// month the balance is held untouched (only that month's own hours are invoiced); the
+// settle month then settles it the normal way (settleHourly). First use: gpex -- Oct 2026
+// closed 54.79 h over, Hourly from 1 Nov 2026 settling Dec 2026: Nov invoices its own hours
+// and holds the 54.79 h, Dec invoices 54.79 h + every Dec hour, Jan 2027 is back on the
+// 70 h package from 0. `seg` is typeForMonth's segment for monthKey; null = no hold.
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Locale-independent "Dec 2026" -- it goes into stored ledger notes.
+export function monthKeyLabel(mk) {
+  const [y, m] = String(mk).split("-").map(Number);
+  return MONTH_ABBR[m - 1] ? `${MONTH_ABBR[m - 1]} ${y}` : String(mk);
+}
+export function carryHoldFor(seg, monthKey) {
+  const settle = seg?.carrySettleMonth;
+  if (!settle || !seg.from || !monthKey || seg.type !== "hourly") return null;
+  // Same boundary typeForMonth uses: dated the 1st applies from that month, else the next.
+  const [y, m] = seg.from.slice(0, 7).split("-").map(Number);
+  const fromMonth = seg.from.slice(8, 10) === "01"
+    ? seg.from.slice(0, 7)
+    : `${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, "0")}`;
+  if (monthKey < fromMonth || monthKey > settle) return null;
+  return { fromMonth, settleMonth: settle, settling: monthKey === settle };
+}
+// Ledger note on a held month (accrual_value = the held balance). rowsToClients treats it
+// like HOURLY_SETTLEMENT_NOTE, so the next month inherits the balance to settle.
+export const CARRY_HELD_PREFIX = "Hourly: package balance held";
+export const carryHeldNote = (settleMonth) => `${CARRY_HELD_PREFIX}, settled ${monthKeyLabel(settleMonth)}`;
+export const isCarryHeldNote = (note) => typeof note === "string" && note.startsWith(CARRY_HELD_PREFIX);
+// A held month in settleHourly's shape: nothing applied, only this month's hours invoiced,
+// the whole balance still to settle in `settleMonth`.
+export function holdHourly(prior, worked, settleMonth) {
+  const r2 = (x) => Math.round(x * 100) / 100;
+  return { prior: r2(Number(prior) || 0), applied: 0, hoursToInvoice: r2(Math.max(0, Number(worked) || 0)), remaining: r2(Number(prior) || 0), held: true, settleMonth };
+}

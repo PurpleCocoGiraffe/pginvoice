@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { ArrowLeft, MoreVertical, Copy, Printer, X, ChevronDown, Link2, AlertTriangle, Users, Check, BarChart3, FileText } from "lucide-react";
-import { fmt, timeAgo, isPackageLikeType, clickupTaskUrl } from "./format.js";
+import { fmt, timeAgo, isPackageLikeType, clickupTaskUrl, monthKeyLabel } from "./format.js";
 import { isLifetimeBudgetType } from "./reconcile.js";
 import { findPersonMatch } from "./nameMatch.js";
 import { typeLabelShort } from "./clientTypeLabels.js";
@@ -295,7 +295,9 @@ export function ClientDrawer({ client: c, invoiceMonth, priorMonthPretty, monthP
                 <span className="pg-drawer__overunder-label">Hours to invoice</span>
                 <span className="pg-drawer__overunder-value">{fmt(s.hoursToInvoice)} h</span>
                 <span className="pg-drawer__overunder-tag">
-                  {s.prior < 0
+                  {s.held
+                    ? `${fmt(billable)} h worked, billed hourly. ${fmt(Math.abs(s.prior))} h of package ${s.prior < 0 ? "hours owed" : "over-use"}${priorMonthPretty ? ` from ${priorMonthPretty}` : ""} is held and settled in ${monthKeyLabel(s.settleMonth)}`
+                    : s.prior < 0
                     ? `${fmt(billable)} h worked less ${fmt(Math.abs(s.applied))} h of unused package hours owed${priorMonthPretty ? ` from ${priorMonthPretty}` : ""}${s.remaining < 0 ? `; ${fmt(Math.abs(s.remaining))} h still owed, carried to next month` : ""}`
                     : `${fmt(billable)} h worked plus ${fmt(s.prior)} h of package over-use${priorMonthPretty ? ` from ${priorMonthPretty}` : ""}`}
                 </span>

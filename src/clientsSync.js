@@ -306,7 +306,7 @@ export async function createClientEvent(client, kind, effectiveDate, fields, not
   if (error) throw error;
   notifyClientsChanged();
   const label = EVENT_KIND_LABEL[kind] || kind;
-  const detailBits = kind === "type" ? `→ ${fields.new_type}${fields.new_agreed_hours != null ? ` (${fields.new_agreed_hours} hrs)` : ""}`
+  const detailBits = kind === "type" ? `→ ${fields.new_type}${fields.new_agreed_hours != null ? ` (${fields.new_agreed_hours} hrs)` : ""}${fields.carry_settle_month ? `, package balance held until ${fields.carry_settle_month}` : ""}`
     : kind === "consultant" ? `→ ${fields.new_consultant || "unassigned"}`
     : "";
   logClientHistory(client, `event_${kind}`, `Scheduled ${label}${detailBits ? ` ${detailBits}` : ""}, effective ${effectiveDate}`, { kind, effectiveDate, ...fields, note: note || null });
@@ -514,7 +514,8 @@ export function typeTimelineFor(client, events) {
     // id tie-break, same as latestByEffectiveDate -- two type events on the same date must
     // resolve to the same winner here as in the client's current row.
     .sort((a, b) => a.effective_date.localeCompare(b.effective_date) || a.id - b.id);
-  for (const e of typeEvents) segments.push({ from: e.effective_date, type: e.new_type, agreedHours: e.new_agreed_hours === null ? null : Number(e.new_agreed_hours), note: e.note || null });
+  // carrySettleMonth: see carryHoldFor in format.js.
+  for (const e of typeEvents) segments.push({ from: e.effective_date, type: e.new_type, agreedHours: e.new_agreed_hours === null ? null : Number(e.new_agreed_hours), note: e.note || null, carrySettleMonth: e.carry_settle_month ?? null });
   return segments;
 }
 

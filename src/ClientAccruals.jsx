@@ -307,7 +307,7 @@ export default function ClientAccruals({ canWrite = false }) {
                           {cell.hoursFlagged && <AlertTriangle size={11} style={{ marginRight: 4, verticalAlign: "-1px" }} />}
                           {fmt(cell.workedHours)}
                         </td>
-                        <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }} title={cell.isOverride ? "Historical figure from the original sheet" : "Computed from ClickUp hours"}>
+                        <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }} title={cell.isOverride ? "Historical figure from the original sheet" : cell.accrualValue != null && cell.accrualNote ? cell.accrualNote : "Computed from ClickUp hours"}>
                           {cell.accrualValue ?? cell.accrualNote ?? "—"}{cell.isOverride && <span className="pg-tag pg-tag--muted" style={{ marginLeft: 4 }}>sheet</span>}
                         </td>
                         {resetMonths.has(mk) && (

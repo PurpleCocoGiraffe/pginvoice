@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link2, MoreVertical, ChevronDown, Copy, Printer, Users, FileText } from "lucide-react";
-import { fmt, isPackageLikeType } from "./format.js";
+import { fmt, isPackageLikeType, monthKeyLabel } from "./format.js";
 import { isLifetimeBudgetType } from "./reconcile.js";
 import { typeLabelShort, typeTone } from "./clientTypeLabels.js";
 import { costCentreInvoicesFor, invoiceLineLabel, fmtMoney } from "./invoiceSplit.js";
@@ -65,6 +65,8 @@ function CostCentreBreakdown({ client: c, divider, showReset }) {
 
 // One sentence explaining a package -> hourly settlement (see settleHourly in format.js).
 function settlementText(s, worked) {
+  // Carry hold (holdHourly): the balance waits for its settle month.
+  if (s.held) return `${fmt(Math.abs(s.prior))} h of package ${s.prior < 0 ? "hours owed to the client" : "over-use"} held, settled in ${monthKeyLabel(s.settleMonth)}: invoice only this month's ${fmt(s.hoursToInvoice)} h.`;
   const base = s.prior < 0
     ? `${fmt(Math.abs(s.prior))} h of unused package hours owed to the client: ${fmt(Math.abs(s.applied))} h deducted from this month's ${fmt(worked)} h`
     : `${fmt(s.prior)} h of package over-use added to this month's ${fmt(worked)} h`;
@@ -200,6 +202,8 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // (clientListFilter.js withholdRedactedFigures) -- say so rather than "No package".
   const statusPill = c.withheld
     ? { label: "Not shared", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
+    : settle?.held
+    ? { label: "Carry held", tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
     : isWrapUp
     // Kept as short as the other pills (the fixed-width box clipped "Wrap-up · owes 13.2 h");
     // the hours still owed are the Remaining figure, spelled out in the tooltip.
@@ -283,7 +287,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
         <span className="pg-tag pg-tag--pill" style={{ color: typeTone(c.type) }}>{typeLabelShort(c.type)}</span>
         {settle ? (
           <span className="pg-row__num" style={{ color: settle.prior < 0 ? "var(--status-ok)" : "var(--status-over)" }} title={settlementText(settle, worked0(c))}>
-            <span className="pg-row__num-label">{settle.prior < 0 ? "Owed from package" : "Over-used package"}</span>
+            <span className="pg-row__num-label">{settle.held ? "Carry held" : settle.prior < 0 ? "Owed from package" : "Over-used package"}</span>
             {fmt(Math.abs(settle.prior))} h
           </span>
         ) : (

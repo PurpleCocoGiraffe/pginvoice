@@ -16,6 +16,8 @@ import { SEED_PEOPLE, loadKey as loadCapKey } from "./capacityData.js";
 import { ClientAvatar, PersonAvatar, resizePhotoFile } from "./avatar.jsx";
 import { useDismissable, useEscape } from "./useDismissable.js";
 import { adelaideDateKey } from "./dateMath.js";
+// isPackageLikeType here gates the carry-hold option only (accrual math), not the hours field.
+import { isPackageLikeType, monthKeyLabel } from "./format.js";
 
 // Popover for a client's logo -- upload an image directly, or type in the
 // client's website and let a favicon service supply the logo automatically.
@@ -187,7 +189,7 @@ function Stat({ value, label }) {
 // closed months' history (see deleteClientEvent's guard in clientsSync.js).
 function EventRow({ event: e, onDelete, deleting }) {
   const desc = e.kind === "type"
-    ? `→ ${TYPE_LABEL[e.new_type] || e.new_type}${hasAgreedHoursField(e.new_type) && e.new_agreed_hours != null ? ` (${e.new_agreed_hours} hrs)` : ""}`
+    ? `→ ${TYPE_LABEL[e.new_type] || e.new_type}${hasAgreedHoursField(e.new_type) && e.new_agreed_hours != null ? ` (${e.new_agreed_hours} hrs)` : ""}${e.carry_settle_month ? `, package balance held, settled ${monthKeyLabel(e.carry_settle_month)}` : ""}`
     : e.kind === "consultant" ? `→ ${e.new_consultant || "unassigned"}`
     : e.kind === "offboarding" ? "Offboarded"
     : e.kind === "reactivation" ? "Reactivated"
@@ -218,6 +220,8 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
   const [newHours, setNewHours] = useState(client.agreedHours ?? "");
   const [newConsultant, setNewConsultant] = useState(client.consultant || "");
   const [holdNote, setHoldNote] = useState("");
+  // Carry hold (carryHoldFor in format.js): month the package balance is settled in, "" = first hourly month.
+  const [carrySettleMonth, setCarrySettleMonth] = useState("");
   const [effectiveDate, setEffectiveDate] = useState(todayStr());
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
@@ -228,7 +232,7 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
   // into another's panel.
   useEffect(() => {
     setAction(null); setNewType(client.type); setNewHours(client.agreedHours ?? "");
-    setNewConsultant(client.consultant || ""); setHoldNote(""); setEffectiveDate(todayStr()); setErr(null);
+    setNewConsultant(client.consultant || ""); setHoldNote(""); setCarrySettleMonth(""); setEffectiveDate(todayStr()); setErr(null);
   }, [client.client]);
 
   const isActive = client.status === "active";
@@ -251,11 +255,18 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
       setErr(`Enter the ${hoursLabelFor(newType).toLowerCase()} (or choose a different type).`);
       return;
     }
+    const canHoldCarry = isPackageLikeType(client.type) && newType === "hourly";
+    const settle = canHoldCarry && carrySettleMonth ? carrySettleMonth : null;
+    if (action === "transition" && settle && effectiveDate && settle < effectiveDate.slice(0, 7)) {
+      setErr("The settle month can't be before the transition's effective date.");
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
       if (action === "transition") {
         const fields = { new_type: newType, new_agreed_hours: hasAgreedHoursField(newType) ? Number(newHours) || 0 : null };
+        if (settle) fields.carry_settle_month = settle;
         await createClientEvent(client.client, "type", effectiveDate, fields);
       } else if (action === "consultant") {
         await createClientEvent(client.client, "consultant", effectiveDate, { new_consultant: newConsultant || null });
@@ -336,6 +347,13 @@ function ModifyPanel({ client, events, onSaved, onEventsChanged }) {
             )}
           </div>
           {hasAgreedHoursField(newType) && <span className="pg-footnote" style={{ marginTop: -4 }}>{hoursLabelFor(newType)}</span>}
+          {isPackageLikeType(client.type) && newType === "hourly" && (
+            <label className="pg-field">
+              <span className="pg-field__label">Settle the package balance in a later month (optional)</span>
+              <input className="pg-input" type="month" value={carrySettleMonth} onChange={(e) => setCarrySettleMonth(e.target.value)} />
+              <span className="pg-footnote">Leave blank to settle the package balance on the first hourly invoice. Set a month to hold it untouched until then and settle it on that month&apos;s invoice.</span>
+            </label>
+          )}
           <label className="pg-field">
             <span className="pg-field__label">Effective date</span>
             <input className="pg-input" type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} />
