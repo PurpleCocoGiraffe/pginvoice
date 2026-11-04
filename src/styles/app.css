@@ -980,6 +980,9 @@ button { font: inherit; }
 .pg-row__name-sub { display: flex; align-items: center; gap: 4px; font-family: var(--font-body); font-size: 11px; color: var(--fg-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pg-row__num { font-family: var(--font-mono); font-size: 13px; color: var(--fg-primary); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pg-row__num-label { display: none; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-tertiary); margin-bottom: 2px; }
+/* A cell whose figure doesn't mean what its column header says (package -> hourly
+   settlement: "To invoice" under "Remaining") names itself on desktop too. */
+.pg-row__num-label--always { display: block; }
 .pg-row__status { text-align: right; font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--fg-secondary); }
 .pg-row__chevron {
   display: flex; align-items: center; justify-content: center; width: 26px; height: 26px;

@@ -287,7 +287,7 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
         <span className="pg-tag pg-tag--pill" style={{ color: typeTone(c.type) }}>{typeLabelShort(c.type)}</span>
         {settle ? (
           <span className="pg-row__num" style={{ color: settle.prior < 0 ? "var(--status-ok)" : "var(--status-over)" }} title={settlementText(settle, worked0(c))}>
-            <span className="pg-row__num-label">{settle.held ? "Carry held" : settle.prior < 0 ? "Owed from package" : "Over-used package"}</span>
+            <span className="pg-row__num-label pg-row__num-label--always">{settle.held ? "Carry held" : settle.prior < 0 ? "Owed from package" : "Over-used package"}</span>
             {fmt(Math.abs(settle.prior))} h
           </span>
         ) : (
@@ -305,7 +305,9 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
         </span>
         <span className="pg-row__num" style={remainingTone ? { color: remainingTone } : undefined}
           title={feeOnly ? "Effective rate: the fixed fee divided by every billable hour logged against it so far." : isWrapUp ? "Unutilised hours still owed to the client after this month's wrap-up work." : settle ? settlementText(settle, worked0(c)) : undefined}>
-          <span className="pg-row__num-label">{feeOnly ? "Effective rate" : isWrapUp ? "Owed" : settle ? "To invoice" : "Remaining"}</span>
+          {/* A settlement row's figure is the hours to invoice, not "Remaining" (the list's
+              column header) -- so its own label shows on desktop too. */}
+          <span className={"pg-row__num-label" + (settle ? " pg-row__num-label--always" : "")}>{feeOnly ? "Effective rate" : isWrapUp ? "Owed" : settle ? "To invoice" : "Remaining"}</span>
           {settle ? `${fmt(settle.hoursToInvoice)} h` : feeOnly
             ? (c.fixedFee.effectiveRate != null ? `${fmtMoney(c.fixedFee.effectiveRate).replace(/\.\d\d$/, "")}/h` : "—")
             : isQuoted

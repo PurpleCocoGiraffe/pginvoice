@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { replayClientAccruals, buildReconciliationClients } from "./accrualsSync.js";
 import { typeForMonth } from "./clientsSync.js";
 import { carryHoldFor, carryHeldNote, isCarryHeldNote, monthKeyLabel, HOURLY_SETTLEMENT_NOTE } from "./format.js";
-import { reconcileClientMonth, hourlySettlementCarryIn } from "./reconcile.js";
+import { reconcileClientMonth, hourlySettlementCarryIn, sumCarry } from "./reconcile.js";
 import { buildSummaryText } from "./clientSummary.js";
 import { buildPrintHtml } from "./printTemplate.js";
 
@@ -100,6 +100,11 @@ describe("Client Invoicing -- carry hold", () => {
 
   it("Dec: invoices 54.79 h + Dec hours, nothing left", () => {
     expect(recon("2026-12", "2026-11", 40).hourlySettlement).toEqual({ prior: 54.79, applied: 54.79, hoursToInvoice: 94.79, remaining: 0 });
+  });
+
+  it("the Carry KPI counts a held balance, not a settled one", () => {
+    expect(sumCarry([{ type: "hourly", ...recon("2026-11", "2026-10", 15.13) }])).toBeCloseTo(54.79, 6);
+    expect(sumCarry([{ type: "hourly", ...recon("2026-12", "2026-11", 40) }])).toBe(0);
   });
 
   it("Jan 2027: back on the 70 h package with no carry in", () => {
