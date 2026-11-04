@@ -421,8 +421,10 @@ export function priorFolderKeysFor({ name, costCentreFolders = null, clientName 
 
 // Carry-over KPI: absolute prior balance, only for rows that are actually package-like
 // (or drawing down an offboarded client's owed hours -- still a carried balance).
+// A carry-hold month (holdHourly) counts its held package balance too: it's still owed.
 export function sumCarry(list) {
-  return list.reduce((a, c) => a + ((isPackageLikeType(c.type) || c.status === "wrap_up") && c.priorBalance != null ? Math.abs(c.priorBalance) : 0), 0);
+  return list.reduce((a, c) => a + (c.hourlySettlement?.held ? Math.abs(c.hourlySettlement.prior)
+    : (isPackageLikeType(c.type) || c.status === "wrap_up") && c.priorBalance != null ? Math.abs(c.priorBalance) : 0), 0);
 }
 
 // Rows for the "last month accrued" ready-to-merge export: package-like type AND a real
