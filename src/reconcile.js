@@ -2,7 +2,7 @@
 // Split out of the component closure so every package/prior/estimate/mismatch rule is
 // directly testable -- most of them exist because a silent wrong-number bug shipped once
 // (see reconcile.test.js). No React or Supabase imports.
-import { isPackageLikeType, HOURLY_SETTLEMENT_FROM, settleHourly } from "./format.js";
+import { isPackageLikeType, HOURLY_SETTLEMENT_FROM, settleHourly, holdHourly } from "./format.js";
 import { prevMonthKeyStr } from "./parsers.js";
 
 // Below this many hours of disagreement between the ledger's recorded prior-month balance
@@ -139,17 +139,24 @@ export function billableMinutesByFolder(rows, monthKey, hasBillable, coveredMont
 // hourlySettlementPrior -- an hourly month's carry-in from a package (hourlySettlementCarryIn);
 //                  non-zero from HOURLY_SETTLEMENT_FROM = settle it on this month's invoice
 //                  (`hourlySettlement`: prior / applied / hoursToInvoice / remaining).
+// carryHold     -- carryHoldFor's { settleMonth, settling } for this month: before the settle
+//                  month the balance is held (holdHourly: `held`, nothing applied).
 export function reconcileClientMonth({
   worked, accruedClient: a, monthKey, priorKey, priorWorkedH = null,
   monthType = null, priorType = null, monthStatus = null, priorStatus = null,
   monthSegmentAgreed = null, allowScalarPackage = false, priorEnded = false,
-  wrapUpPrior = null, hourlySettlementPrior = null,
+  wrapUpPrior = null, hourlySettlementPrior = null, carryHold = null,
 }) {
   // Package -> hourly settlement (mirrors replayClientAccruals): everything else about an
   // hourly month stays "no package"; only the invoice hours change.
   if (monthType === "hourly" && monthKey && monthKey >= HOURLY_SETTLEMENT_FROM
       && hourlySettlementPrior != null && hourlySettlementPrior !== 0) {
-    return { ...NO_PACKAGE_RESULT, hourlySettlement: settleHourly(hourlySettlementPrior, worked) };
+    return {
+      ...NO_PACKAGE_RESULT,
+      hourlySettlement: carryHold && !carryHold.settling
+        ? holdHourly(hourlySettlementPrior, worked, carryHold.settleMonth)
+        : settleHourly(hourlySettlementPrior, worked),
+    };
   }
   // Wrap-up drawdown (mirrors replayClientAccruals' ended-period branch): we still owe an
   // offboarded client its unutilised hours, so work logged after the end is deducted from

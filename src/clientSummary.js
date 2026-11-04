@@ -1,6 +1,6 @@
 // Plain-text "Copy summary" for one Client Invoicing client. Pure (moved out of App.jsx's
 // component closure) so its figures are testable alongside reconcile.js.
-import { fmt, isPackageLikeType } from "./format.js";
+import { fmt, isPackageLikeType, monthKeyLabel } from "./format.js";
 import { typeLabelShort } from "./clientTypeLabels.js";
 import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
 import { WITHHELD_NOTE } from "./clientListFilter.js";
@@ -63,7 +63,10 @@ export function buildSummaryText(client, { invoiceMonth, priorMonthPretty } = {}
     // Moved off a package onto hourly: the package balance is settled on this invoice.
     const s = c.hourlySettlement;
     lines.push(`Billable time this month: ${fmt(billable)} h`);
-    if (s.prior < 0) lines.push(`Unused package hours owed to the client${priorMonthPretty ? ` (from ${priorMonthPretty})` : ""}: ${fmt(Math.abs(s.prior))} h, ${fmt(Math.abs(s.applied))} h deducted`);
+    if (s.held) {
+      // Carry hold: the balance is settled in a later month, not on this invoice.
+      lines.push(`Package hours ${s.prior < 0 ? "owed to the client" : "over-used"}${priorMonthPretty ? ` (from ${priorMonthPretty})` : ""}: ${fmt(Math.abs(s.prior))} h, held, settled in ${monthKeyLabel(s.settleMonth)}`);
+    } else if (s.prior < 0) lines.push(`Unused package hours owed to the client${priorMonthPretty ? ` (from ${priorMonthPretty})` : ""}: ${fmt(Math.abs(s.prior))} h, ${fmt(Math.abs(s.applied))} h deducted`);
     else lines.push(`Package hours over-used${priorMonthPretty ? ` (from ${priorMonthPretty})` : ""}: ${fmt(s.prior)} h, added`);
     lines.push(`Hours to invoice: ${fmt(s.hoursToInvoice)} h`);
     if (s.remaining < 0) lines.push(`Still owed, carried to next month: ${fmt(Math.abs(s.remaining))} h`);

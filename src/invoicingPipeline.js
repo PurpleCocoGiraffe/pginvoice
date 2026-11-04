@@ -18,6 +18,7 @@ import {
   endedCarryIn, fixedFeeSummary, hourlySettlementCarryIn,
 } from "./reconcile.js";
 import { adelaideMonthKey } from "./dateMath.js";
+import { carryHoldFor } from "./format.js";
 
 // ---------------------------- Capacity Planning ----------------------------
 // capClients: the cap_clients roster (pginvoice_app_state). Per-group dominant type and
@@ -456,6 +457,8 @@ export function buildClientsForMonth(ctx, monthKey, priorKey, { currentMonthKey 
       priorEnded,
       wrapUpPrior,
       hourlySettlementPrior: monthType === "hourly" && !priorEnded ? hourlySettlementCarryIn(accruedClient, priorKey, priorType) : null,
+      // A package -> hourly move that holds the balance until a later settle month.
+      carryHold: !isSubProject ? carryHoldFor(seg, monthKey) : null,
     });
     const clientObj = {
       ...c, worked, billableWorked, accruedClient, matchInfo,

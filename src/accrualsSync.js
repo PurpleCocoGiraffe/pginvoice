@@ -9,7 +9,7 @@ import { fetchClients, fetchClientEvents, typeForMonth, statusForMonth, lifecycl
 import { monthLabel } from "./parsers.js";
 import { PG_DATA_EVENT } from "./idbStore.js";
 import { PG_ACCRUALS_KEY } from "./storageKeys.js";
-import { carryOutOf, HOURLY_SETTLEMENT_FROM, HOURLY_SETTLEMENT_NOTE, settleHourly } from "./format.js";
+import { carryOutOf, HOURLY_SETTLEMENT_FROM, HOURLY_SETTLEMENT_NOTE, settleHourly, carryHoldFor, carryHeldNote, isCarryHeldNote } from "./format.js";
 
 export { carryOutOf };
 
@@ -133,7 +133,8 @@ export function buildReconciliationClients(rows) {
     const settledHourly = {};
     for (const [mk, cell] of Object.entries(c.months)) {
       if (cell.isOverride && cell.accrualNote === NOT_INVOICED_NOTE) notInvoiced[mk] = true;
-      if (!cell.isOverride && cell.accrualNote === HOURLY_SETTLEMENT_NOTE) settledHourly[mk] = true;
+      // (and held months, isCarryHeldNote -- their balance is settled in a later month)
+      if (!cell.isOverride && (cell.accrualNote === HOURLY_SETTLEMENT_NOTE || isCarryHeldNote(cell.accrualNote))) settledHourly[mk] = true;
       monthSet.add(mk);
       const carry = carryOutOf(cell);
       if (carry !== null) balances[mk] = carry;
@@ -420,6 +421,29 @@ export function replayClientAccruals(c, { startMonth, cur, segFor, statusFor, wo
     // its invoice instead of dropping it -- an over-use is added in full, owed hours are
     // deducted from the month's hours and any rest carries into the next hourly month. The
     // row records what's still owed (0 once settled). A human override is left alone.
+    // Carry hold (carryHoldFor in format.js): before the settle month the balance is held
+    // untouched instead -- the row records it (accrual_value = the balance, carryHeldNote)
+    // and hands it forward; the settle month then settles it in the branch below.
+    const hold = carryHoldFor(seg, mk);
+    if (hold && !hold.settling && mk >= HOURLY_SETTLEMENT_FROM && prior !== 0 && !existing?.isOverride) {
+      const workedHours = Math.round((workedMinutesFor(mk) / 60) * 100) / 100;
+      const held = Math.round(prior * 100) / 100;
+      const accrualNote = carryHeldNote(hold.settleMonth);
+      const cell = { accrualValue: held, accrualNote, agreedHpm: null, pct: null, comment: existing?.comment ?? null, workedHours, isOverride: false, hoursFlagged: false, flaggedFromHours: null, resetValue, resetNote };
+      const changed = !existing || existing.accrualValue !== held || existing.workedHours !== workedHours || existing.accrualNote !== accrualNote
+        || existing.agreedHpm != null || existing.pct != null || !!existing.hoursFlagged;
+      c.months[mk] = cell;
+      if (changed) {
+        rows.push({
+          client: c.client, account_manager: c.manager || null, agreed_hpm: null,
+          month_key: mk, accrual_value: held, accrual_note: accrualNote, pct_over_under: null,
+          worked_hours: workedHours, is_override: false, hours_flagged: false, flagged_from_hours: null,
+        });
+      }
+      prior = resetValue ?? held;
+      mk = shiftMonthKey(mk, 1);
+      continue;
+    }
     if (seg.type === "hourly" && mk >= HOURLY_SETTLEMENT_FROM && prior !== 0 && !existing?.isOverride) {
       const worked = workedMinutesFor(mk) / 60;
       const workedHours = Math.round(worked * 100) / 100;

@@ -1,6 +1,6 @@
 import { LETTERHEAD_FOOTER_B64 } from "./letterheadFooter.js";
 import { NORDIQUE_FONT_FACE_CSS } from "./nordiqueFont.js";
-import { fmt, esc, filenameSafe, isPackageLikeType } from "./format.js";
+import { fmt, esc, filenameSafe, isPackageLikeType, monthKeyLabel } from "./format.js";
 import { unfilteredForExport, isLifetimeBudgetType } from "./reconcile.js";
 import { WITHHELD_NOTE } from "./clientListFilter.js";
 import { notInvoicedLines } from "./clientSummary.js";
@@ -95,10 +95,10 @@ function reconciliationHtml(c, priorMonthText) {
     <tr class="noborder"><td colspan="2" class="section-heading">Hourly invoice</td></tr>
     <tr class="datarow"><td class="label">Billable time tracked this month</td><td class="right">${fmt(billableRounded)} h</td></tr>
     <tr class="datarow"><td class="label">${settle.prior < 0 ? "Unused package hours owed to you" : "Package hours over-used"}${priorMonthText ? ` (carried in from ${esc(priorMonthText)})` : ""}</td><td class="right">${fmt(Math.abs(settle.prior))} h</td></tr>
-    <tr class="datarow"><td class="label">${settle.prior < 0 ? "Deducted this month" : "Added this month"}</td><td class="right">${settle.applied < 0 ? "-" : "+"}${fmt(Math.abs(settle.applied))} h</td></tr>
-    <tr class="total"><td>Hours to invoice</td><td class="right">${fmt(settle.hoursToInvoice)} h</td></tr>${settle.remaining < 0 ? `
+    ${settle.held ? `<tr class="datarow"><td class="label">Held, settled in ${esc(monthKeyLabel(settle.settleMonth))}</td><td class="right">0 h this month</td></tr>` : `<tr class="datarow"><td class="label">${settle.prior < 0 ? "Deducted this month" : "Added this month"}</td><td class="right">${settle.applied < 0 ? "-" : "+"}${fmt(Math.abs(settle.applied))} h</td></tr>`}
+    <tr class="total"><td>Hours to invoice</td><td class="right">${fmt(settle.hoursToInvoice)} h</td></tr>${settle.remaining < 0 && !settle.held ? `
     <tr class="datarow"><td class="label">Still owed, carried to next month</td><td class="right">${fmt(Math.abs(settle.remaining))} h</td></tr>` : ""}
-    <tr class="noborder"><td colspan="2" class="note-cell">This client has moved from a package to hourly billing. The balance left on the package is settled on the hourly invoice: unused hours are deducted, over-used hours are added.</td></tr>` : isPkg && !hasPkg ? `
+    <tr class="noborder"><td colspan="2" class="note-cell">${settle.held ? `This client is billed hourly this month. The balance left on the package is held, not settled on this invoice, and is settled on the ${esc(monthKeyLabel(settle.settleMonth))} invoice.` : "This client has moved from a package to hourly billing. The balance left on the package is settled on the hourly invoice: unused hours are deducted, over-used hours are added."}</td></tr>` : isPkg && !hasPkg ? `
     <tr class="noborder"><td colspan="2" class="section-heading">Reconciliation</td></tr>
     <tr class="datarow"><td class="label">Time tracked this month</td><td class="right">${fmt(workedRounded)} h</td></tr>
     <tr class="noborder"><td colspan="2" class="note-cell">No package on file for this client this month, so no balance is calculated.</td></tr>` : isPkg && onHold ? `
