@@ -202,8 +202,12 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
   // (clientListFilter.js withholdRedactedFigures) -- say so rather than "No package".
   const statusPill = c.withheld
     ? { label: "Not shared", tone: "var(--fg-tertiary)", bg: "var(--bg-elevated)" }
+    // Package -> hourly settlement: an hourly month has nothing "remaining", so the hours to
+    // invoice live here rather than under the Remaining column (tooltip: the working).
     : settle?.held
     ? { label: "Carry held", tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
+    : settle
+    ? { label: `Invoice ${fmt(settle.hoursToInvoice)} h`, tone: "var(--fg-secondary)", bg: "var(--bg-elevated)" }
     : isWrapUp
     // Kept as short as the other pills (the fixed-width box clipped "Wrap-up · owes 13.2 h");
     // the hours still owed are the Remaining figure, spelled out in the tooltip.
@@ -304,11 +308,11 @@ export function ClientRow({ index, client: c, active, onOpen, nested, parentName
           <span className="pg-row__num-label">Worked</span>{fmt(worked)} h
         </span>
         <span className="pg-row__num" style={remainingTone ? { color: remainingTone } : undefined}
-          title={feeOnly ? "Effective rate: the fixed fee divided by every billable hour logged against it so far." : isWrapUp ? "Unutilised hours still owed to the client after this month's wrap-up work." : settle ? settlementText(settle, worked0(c)) : undefined}>
-          {/* A settlement row's figure is the hours to invoice, not "Remaining" (the list's
-              column header) -- so its own label shows on desktop too. */}
-          <span className={"pg-row__num-label" + (settle ? " pg-row__num-label--always" : "")}>{feeOnly ? "Effective rate" : isWrapUp ? "Owed" : settle ? "To invoice" : "Remaining"}</span>
-          {settle ? `${fmt(settle.hoursToInvoice)} h` : feeOnly
+          title={feeOnly ? "Effective rate: the fixed fee divided by every billable hour logged against it so far." : isWrapUp ? "Unutilised hours still owed to the client after this month's wrap-up work." : undefined}>
+          {/* A settlement row (hourly) has no Remaining figure: its hours to invoice are in
+              the status pill, never under the Remaining column header. */}
+          {!settle && <span className="pg-row__num-label">{feeOnly ? "Effective rate" : isWrapUp ? "Owed" : "Remaining"}</span>}
+          {settle ? "" : feeOnly
             ? (c.fixedFee.effectiveRate != null ? `${fmtMoney(c.fixedFee.effectiveRate).replace(/\.\d\d$/, "")}/h` : "—")
             : isQuoted
             ? (c.quotedRemaining != null ? `${c.quotedRemaining < 0 ? "−" : ""}${fmt(Math.abs(c.quotedRemaining))} h` : "—")
